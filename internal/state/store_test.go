@@ -49,3 +49,42 @@ func TestRunAttemptLifecycle(t *testing.T) {
 		t.Fatalf("attempts = %#v", attempts)
 	}
 }
+
+func TestRoutingDecisionLifecycle(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(filepath.Join(t.TempDir(), "orchestrator.db"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	defer store.Close()
+
+	started := time.Now().UTC()
+	run := app.Run{ID: "r_1", JobName: "train", Script: "train.py", Provider: "auto", State: app.RunStateRunning, StartedAt: started}
+	if err := store.CreateRun(ctx, run); err != nil {
+		t.Fatalf("CreateRun returned error: %v", err)
+	}
+	decision := app.RoutingDecision{
+		RunID:            "r_1",
+		SelectedProvider: "mock-gcp",
+		Objective:        "min_cost",
+		SelectionReason:  "selected mock-gcp by min_cost",
+		EligibleProviders: []app.RoutingCandidate{{
+			Provider: "mock-gcp",
+			Score:    1.3,
+		}},
+		RejectedProviders: []app.RoutingCandidate{{
+			Provider: "local",
+			Reasons:  []string{"local provider does not fetch URI data inputs"},
+		}},
+	}
+	if err := store.SaveRoutingDecision(ctx, decision); err != nil {
+		t.Fatalf("SaveRoutingDecision returned error: %v", err)
+	}
+	got, err := store.GetRoutingDecision(ctx, "r_1")
+	if err != nil {
+		t.Fatalf("GetRoutingDecision returned error: %v", err)
+	}
+	if got.SelectedProvider != "mock-gcp" || len(got.RejectedProviders) != 1 {
+		t.Fatalf("decision = %#v", got)
+	}
+}

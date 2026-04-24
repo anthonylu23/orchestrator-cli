@@ -34,6 +34,7 @@ Inspect artifacts:
 ```sh
 ./bin/orchestrator-cli --home "$ORCHESTRATOR_CLI_HOME" status <run-id>
 ./bin/orchestrator-cli --home "$ORCHESTRATOR_CLI_HOME" logs <run-id>
+./bin/orchestrator-cli --home "$ORCHESTRATOR_CLI_HOME" cancel <run-id>
 ```
 
 Run checks:
@@ -45,4 +46,16 @@ go vet ./...
 
 ## Current Limits
 
-Only the `local` provider is implemented. URI data inputs are validated for supported schemes, but runtime fetching is deferred to the mock/cloud provider phases. `logs --follow` follows active run artifacts until the run reaches a terminal state. `cancel`, `resume`, auto-routing, mock failover, and real cloud providers are still roadmap items.
+The `local` provider and deterministic mock providers are implemented. URI data inputs are validated for supported schemes and accepted by mock providers, but real runtime fetching is deferred to cloud provider phases. `logs --follow` follows active run artifacts until the run reaches a terminal state. Explicit `resume` and real cloud providers are still roadmap items.
+
+## Runtime Workspace
+
+Each run gets a workspace at:
+
+```text
+<home>/runs/<run-id>/workspace
+```
+
+Bundled local data inputs are copied into that workspace. Mounts must be under `/workspace`; `/workspace/data/train` becomes `<home>/runs/<run-id>/workspace/data/train`. The local runtime rewrites job arguments and job environment values that reference declared mounts to their host paths before executing the script.
+
+The local provider stores a `local:<pid>` provider reference on the running attempt. `orchestrator-cli cancel <run-id>` uses that reference to interrupt the process, then marks the run and attempt as `canceled` and rewrites `summary.json`.

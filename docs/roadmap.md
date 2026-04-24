@@ -23,14 +23,13 @@ Exit criteria:
 
 ## Phase 1 - Local Orchestration Vertical Slice
 
-Status: in progress. The local provider can execute real scripts, persist SQLite run and attempt state, parse structured JSONL events from mixed output, follow logs for active runs, and write `events.jsonl`, `logs.txt`, and `summary.json`. Remaining Phase 1 work includes fuller local data materialization semantics and `cancel`.
+Status: substantially complete. The local provider can execute real scripts from a per-run workspace, materialize bundled local data under stable `/workspace` mounts, persist SQLite run and attempt state, parse structured JSONL events from mixed output, follow logs for active runs, cancel active local processes, and write `events.jsonl`, `logs.txt`, and `summary.json`.
 
 Next steps:
 
-1. Materialize bundled local data into the provider workspace and document exact mount rewriting behavior for local runs.
-2. Implement `cancel` for active local processes.
-3. Add the mock provider, routing decisions, forced failure modes, and checkpoint resume flow.
-4. Add provider adapter contract tests before the first real cloud adapter.
+1. Harden diagnostics and exit codes around provider and data preparation failures.
+2. Add broader provider adapter contract tests before the first real cloud adapter.
+3. Prepare GCP provider scaffolding.
 
 Goals:
 
@@ -60,6 +59,8 @@ Exit criteria:
 6. Success and failure both produce durable artifacts.
 
 ## Phase 2 - Mock Cloud and Failure Simulation
+
+Status: substantially complete. The mock providers support configurable costs, scripted events, retryable failure modes, `provider=auto` routing, persisted routing decisions, checkpoint discovery from `events.jsonl`, and resume into a second attempt under one run.
 
 Goals:
 

@@ -1,0 +1,43 @@
+job:
+  name: "mock-failover-demo"
+  script: "examples/train.py"
+  args: ["--train-data", "/workspace/data/train"]
+
+data:
+  inputs:
+    - name: "train"
+      source: "s3://example-bucket/datasets/train"
+      mount: "/workspace/data/train"
+      mode: "uri"
+
+routing:
+  objective: "min_cost"
+  max_attempts: 2
+
+mock:
+  providers:
+    - name: "mock-lambda"
+      hourly_cost: 1.10
+      failure_mode: "capacity"
+      events:
+        - type: "metric"
+          step: 400
+          split: "train"
+          metrics:
+            loss: 0.72
+            accuracy: 0.61
+        - type: "checkpoint"
+          step: 800
+          checkpoint_uri: "mock://checkpoints/r_123/ckpt-800"
+
+    - name: "mock-gcp"
+      hourly_cost: 1.30
+      events:
+        - type: "metric"
+          step: 1200
+          split: "train"
+          metrics:
+            loss: 0.31
+            accuracy: 0.88
+        - type: "status"
+          state: "completed"

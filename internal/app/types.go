@@ -9,6 +9,7 @@ type ProviderName string
 
 const (
 	ProviderLocal ProviderName = "local"
+	ProviderAuto  ProviderName = "auto"
 )
 
 type DataInputMode string
@@ -121,6 +122,21 @@ type Summary struct {
 	ExitReason       string             `json:"exit_reason"`
 }
 
+type RoutingCandidate struct {
+	Provider string   `json:"provider"`
+	Score    float64  `json:"score,omitempty"`
+	Reasons  []string `json:"reasons,omitempty"`
+}
+
+type RoutingDecision struct {
+	RunID             string             `json:"run_id"`
+	SelectedProvider  string             `json:"selected_provider"`
+	Objective         string             `json:"objective"`
+	SelectionReason   string             `json:"selection_reason"`
+	EligibleProviders []RoutingCandidate `json:"eligible_providers,omitempty"`
+	RejectedProviders []RoutingCandidate `json:"rejected_providers,omitempty"`
+}
+
 type ProviderCapabilities struct {
 	GPUFamilies             []string `json:"gpu_families"`
 	Regions                 []string `json:"regions"`
@@ -173,6 +189,18 @@ func (e *ProviderError) Unwrap() error {
 	return e.Err
 }
 
+func (e *ProviderError) Retryable() bool {
+	if e == nil {
+		return false
+	}
+	switch e.Kind {
+	case ProviderErrorCapacity, ProviderErrorNetwork, ProviderErrorInternal:
+		return true
+	default:
+		return false
+	}
+}
+
 type SupportReport struct {
 	Supported bool     `json:"supported"`
 	Reasons   []string `json:"reasons,omitempty"`
@@ -195,6 +223,7 @@ type SubmitRequest struct {
 	ResumeFrom *CheckpointRef
 	RuntimeEnv map[string]string
 	RunDir     string
+	OnStarted  func(ref ProviderJobRef) error
 }
 
 type SubmitResult struct {

@@ -10,8 +10,10 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/anthonylu23/orchestrator-cli/internal/app"
@@ -52,6 +54,11 @@ func (p *Provider) ValidateJob(ctx context.Context, spec app.JobSpec) app.Suppor
 	if _, err := os.Stat(spec.Script); err != nil {
 		return app.SupportReport{Supported: false, Reasons: []string{fmt.Sprintf("script %q is not readable", spec.Script)}}
 	}
+	for _, input := range spec.Data {
+		if input.Mode == app.DataInputModeURI {
+			return app.SupportReport{Supported: false, Reasons: []string{"local provider does not fetch URI data inputs"}}
+		}
+	}
 	return app.SupportReport{Supported: true}
 }
 
@@ -88,6 +95,14 @@ func (p *Provider) Submit(ctx context.Context, req app.SubmitRequest) (app.Submi
 	if err := cmd.Start(); err != nil {
 		return app.SubmitResult{}, fmt.Errorf("start local job: %w", err)
 	}
+	providerRef := fmt.Sprintf("local:%d", cmd.Process.Pid)
+	if req.OnStarted != nil {
+		if err := req.OnStarted(app.ProviderJobRef{ID: providerRef}); err != nil {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+			return app.SubmitResult{}, err
+		}
+	}
 
 	var wg sync.WaitGroup
 	var writeMu sync.Mutex
@@ -98,14 +113,14 @@ func (p *Provider) Submit(ctx context.Context, req app.SubmitRequest) (app.Submi
 	wg.Wait()
 
 	if waitErr == nil {
-		return app.SubmitResult{ProviderJobRef: "local:" + req.AttemptID, ExitCode: 0, ExitReason: "completed"}, nil
+		return app.SubmitResult{ProviderJobRef: providerRef, ExitCode: 0, ExitReason: "completed"}, nil
 	}
 	var exitErr *exec.ExitError
 	if errors.As(waitErr, &exitErr) {
 		exitCode := exitErr.ExitCode()
-		return app.SubmitResult{ProviderJobRef: "local:" + req.AttemptID, ExitCode: exitCode, ExitReason: fmt.Sprintf("process exited with code %d", exitCode)}, nil
+		return app.SubmitResult{ProviderJobRef: providerRef, ExitCode: exitCode, ExitReason: fmt.Sprintf("process exited with code %d", exitCode)}, nil
 	}
-	return app.SubmitResult{ProviderJobRef: "local:" + req.AttemptID, ExitCode: 1, ExitReason: waitErr.Error()}, nil
+	return app.SubmitResult{ProviderJobRef: providerRef, ExitCode: 1, ExitReason: waitErr.Error()}, nil
 }
 
 func (p *Provider) GetStatus(ctx context.Context, ref app.ProviderJobRef) (app.ProviderJobStatus, error) {
@@ -117,7 +132,22 @@ func (p *Provider) StreamLogs(ctx context.Context, req app.LogStreamRequest) (ap
 }
 
 func (p *Provider) Cancel(ctx context.Context, ref app.ProviderJobRef) error {
-	return fmt.Errorf("cancel is not implemented for completed local provider references")
+	pidValue := strings.TrimPrefix(ref.ID, "local:")
+	pid, err := strconv.Atoi(pidValue)
+	if err != nil {
+		return fmt.Errorf("invalid local provider ref %q", ref.ID)
+	}
+	process, err := os.FindProcess(pid)
+	if err != nil {
+		return err
+	}
+	if err := process.Signal(os.Interrupt); err != nil {
+		if errors.Is(err, os.ErrProcessDone) || errors.Is(err, syscall.ESRCH) {
+			return nil
+		}
+		return err
+	}
+	return nil
 }
 
 func (p *Provider) consume(wg *sync.WaitGroup, writeMu *sync.Mutex, reader io.Reader, terminal io.Writer, logFile io.Writer, eventFile io.Writer, runID string, attemptID string) {

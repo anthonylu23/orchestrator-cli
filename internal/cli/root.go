@@ -12,11 +12,15 @@ import (
 
 	"github.com/anthonylu23/orchestrator-cli/internal/app"
 	"github.com/anthonylu23/orchestrator-cli/internal/artifact"
+	"github.com/anthonylu23/orchestrator-cli/internal/checkpoint"
 	"github.com/anthonylu23/orchestrator-cli/internal/config"
 	"github.com/anthonylu23/orchestrator-cli/internal/data"
 	"github.com/anthonylu23/orchestrator-cli/internal/event"
 	"github.com/anthonylu23/orchestrator-cli/internal/provider"
 	localprovider "github.com/anthonylu23/orchestrator-cli/internal/provider/local"
+	mockprovider "github.com/anthonylu23/orchestrator-cli/internal/provider/mock"
+	"github.com/anthonylu23/orchestrator-cli/internal/routing"
+	"github.com/anthonylu23/orchestrator-cli/internal/runtimeprep"
 	"github.com/anthonylu23/orchestrator-cli/internal/state"
 	"github.com/anthonylu23/orchestrator-cli/internal/summary"
 	"github.com/spf13/cobra"
@@ -46,6 +50,7 @@ func NewRootCommand(opts Options) *cobra.Command {
 	root.AddCommand(newTrainCommand(opts, &home))
 	root.AddCommand(newStatusCommand(opts, &home))
 	root.AddCommand(newLogsCommand(opts, &home))
+	root.AddCommand(newCancelCommand(opts, &home))
 	root.AddCommand(newProvidersCommand(opts))
 	return root
 }
@@ -92,9 +97,6 @@ func newTrainCommand(opts Options, home *string) *cobra.Command {
 }
 
 func runTrain(ctx context.Context, opts Options, resolved config.ResolvedTrainConfig) (int, error) {
-	if resolved.Provider != string(app.ProviderLocal) {
-		return 1, fmt.Errorf("provider %q is not implemented yet", resolved.Provider)
-	}
 	if err := artifact.EnsureHome(resolved.OrchestratorHome); err != nil {
 		return 1, err
 	}
@@ -107,11 +109,11 @@ func runTrain(ctx context.Context, opts Options, resolved config.ResolvedTrainCo
 	if err != nil {
 		return 10, err
 	}
-	_ = manifest
+	job := resolved.Job
+	job.Data = append([]app.DataInput(nil), manifest.Inputs...)
 
 	now := time.Now().UTC()
 	runID := app.NewRunID()
-	attemptID := app.NewAttemptID()
 	paths := artifact.ForRun(resolved.OrchestratorHome, runID)
 	if err := artifact.EnsureRun(paths); err != nil {
 		return 1, err
@@ -126,44 +128,141 @@ func runTrain(ctx context.Context, opts Options, resolved config.ResolvedTrainCo
 	if err := store.CreateRun(ctx, run); err != nil {
 		return 1, err
 	}
-	attempt := app.Attempt{ID: attemptID, RunID: runID, Provider: resolved.Provider, State: app.AttemptStateRunning, StartedAt: now}
-	if err := store.CreateAttempt(ctx, attempt); err != nil {
-		return 1, err
-	}
 
-	registry := provider.NewRegistry(localprovider.New(opts.Stdout, opts.Stderr))
-	adapter, err := registry.Get(resolved.Provider)
-	if err != nil {
-		return 1, err
+	registry := buildProviderRegistry(opts, resolved.Mock)
+	maxAttempts := resolved.Routing.MaxAttempts
+	if maxAttempts < 1 {
+		maxAttempts = 1
 	}
-	if report := adapter.ValidateJob(ctx, resolved.Job); !report.Supported {
+	excluded := map[string]bool{}
+	var resumeFrom *app.CheckpointRef
+	for attemptNumber := 1; attemptNumber <= maxAttempts; attemptNumber++ {
+		selectedProvider := resolved.Provider
+		if selectedProvider == string(app.ProviderAuto) {
+			decision, err := routing.Select(ctx, registry, job, routing.Options{Objective: resolved.Routing.Objective, Exclude: excluded})
+			decision.RunID = runID
+			if decision.RunID != "" {
+				_ = store.SaveRoutingDecision(ctx, decision)
+			}
+			if err != nil {
+				finishRunOnly(ctx, store, runID, 30, err.Error())
+				_ = writeSummary(ctx, store, paths, runID)
+				return 30, err
+			}
+			selectedProvider = decision.SelectedProvider
+			fmt.Fprintf(opts.Stdout, "Selected %s: %s\n", selectedProvider, decision.SelectionReason)
+		}
+		code, retryable, err := runAttempt(ctx, opts, store, registry, paths, runID, selectedProvider, job, manifest, resumeFrom)
+		if err == nil {
+			return code, nil
+		}
+		if !retryable || resolved.Provider != string(app.ProviderAuto) || attemptNumber == maxAttempts {
+			if retryable {
+				finishRunOnly(ctx, store, runID, code, err.Error())
+			}
+			_ = writeSummary(ctx, store, paths, runID)
+			return code, err
+		}
+		excluded[selectedProvider] = true
+		checkpointRef, checkpointErr := (checkpoint.Resolver{Home: resolved.OrchestratorHome}).Latest(ctx, runID)
+		if checkpointErr != nil || checkpointRef == nil {
+			message := "retryable provider failure but no checkpoint was found"
+			finishRunOnly(ctx, store, runID, 40, message)
+			_ = writeSummary(ctx, store, paths, runID)
+			return 40, fmt.Errorf("%s", message)
+		}
+		resumeFrom = checkpointRef
+		fmt.Fprintf(opts.Stdout, "Found checkpoint: step %d\n", checkpointRef.Step)
+	}
+	return 1, fmt.Errorf("run did not complete")
+}
+
+func finishFailed(ctx context.Context, store *state.Store, runID string, attemptID string, code int, reason string, providerRef string) {
+	endedAt := time.Now().UTC()
+	_ = store.FinishAttempt(ctx, attemptID, app.AttemptStateFailed, code, reason, providerRef, endedAt)
+	_ = store.FinishRun(ctx, runID, app.RunStateFailed, code, reason, endedAt)
+}
+
+func finishRunOnly(ctx context.Context, store *state.Store, runID string, code int, reason string) {
+	_ = store.FinishRun(ctx, runID, app.RunStateFailed, code, reason, time.Now().UTC())
+}
+
+func runAttempt(ctx context.Context, opts Options, store *state.Store, registry *provider.Registry, paths artifact.Paths, runID string, selectedProvider string, job app.JobSpec, manifest app.DataManifest, resumeFrom *app.CheckpointRef) (int, bool, error) {
+	attemptID := app.NewAttemptID()
+	attempt := app.Attempt{ID: attemptID, RunID: runID, Provider: selectedProvider, State: app.AttemptStateRunning, StartedAt: time.Now().UTC()}
+	if err := store.CreateAttempt(ctx, attempt); err != nil {
+		return 1, false, err
+	}
+	adapter, err := registry.Get(selectedProvider)
+	if err != nil {
+		finishFailed(ctx, store, runID, attemptID, 1, err.Error(), "")
+		return 1, false, err
+	}
+	attemptJob := job
+	if selectedProvider == string(app.ProviderLocal) {
+		prepared, err := runtimeprep.PrepareLocal(job, manifest, paths.Workspace)
+		if err != nil {
+			finishFailed(ctx, store, runID, attemptID, 10, err.Error(), "")
+			_ = writeSummary(ctx, store, paths, runID)
+			return 10, false, err
+		}
+		attemptJob = prepared.Job
+	}
+	if report := adapter.ValidateJob(ctx, attemptJob); !report.Supported {
 		reason := "job is not supported"
 		if len(report.Reasons) > 0 {
 			reason = report.Reasons[0]
 		}
 		finishFailed(ctx, store, runID, attemptID, 10, reason, "")
 		_ = writeSummary(ctx, store, paths, runID)
-		return 10, fmt.Errorf("%s", reason)
+		return 10, false, fmt.Errorf("%s", reason)
 	}
-
+	resumeValue := ""
+	if resumeFrom != nil {
+		resumeValue = resumeFrom.URI
+	}
 	runtimeEnv := map[string]string{
 		"ORCHESTRATOR_RUN_ID":         runID,
 		"ORCHESTRATOR_ATTEMPT_ID":     attemptID,
 		"ORCHESTRATOR_CHECKPOINT_DIR": paths.Checkpoints,
-		"ORCHESTRATOR_RESUME_FROM":    "",
+		"ORCHESTRATOR_RESUME_FROM":    resumeValue,
 		"ORCHESTRATOR_EVENTS_PATH":    paths.EventsJSONL,
 	}
 	result, err := adapter.Submit(ctx, app.SubmitRequest{
-		JobSpec:    resolved.Job,
+		JobSpec:    attemptJob,
 		RunID:      runID,
 		AttemptID:  attemptID,
+		ResumeFrom: resumeFrom,
 		RuntimeEnv: runtimeEnv,
 		RunDir:     paths.RunDir,
+		OnStarted: func(ref app.ProviderJobRef) error {
+			return store.UpdateAttemptProviderRef(ctx, attemptID, ref.ID)
+		},
 	})
 	if err != nil {
-		finishFailed(ctx, store, runID, attemptID, 1, err.Error(), result.ProviderJobRef)
-		_ = writeSummary(ctx, store, paths, runID)
-		return 1, err
+		var providerErr *app.ProviderError
+		retryable := errors.As(err, &providerErr) && providerErr.Retryable()
+		endedAt := time.Now().UTC()
+		if finishErr := store.FinishAttempt(ctx, attemptID, app.AttemptStateFailed, result.ExitCode, err.Error(), result.ProviderJobRef, endedAt); finishErr != nil {
+			return 1, false, finishErr
+		}
+		if !retryable {
+			if finishErr := store.FinishRun(ctx, runID, app.RunStateFailed, result.ExitCode, err.Error(), endedAt); finishErr != nil {
+				return 1, false, finishErr
+			}
+		}
+		return result.ExitCode, retryable, err
+	}
+	currentRun, err := store.GetRun(ctx, runID)
+	if err != nil {
+		return 1, false, err
+	}
+	if currentRun.State == app.RunStateCanceled {
+		if err := writeSummary(ctx, store, paths, runID); err != nil {
+			return 1, false, err
+		}
+		fmt.Fprintf(opts.Stdout, "Run %s %s\n", runID, app.RunStateCanceled)
+		return 130, false, nil
 	}
 	endedAt := time.Now().UTC()
 	runState, attemptState := app.RunStateSucceeded, app.AttemptStateSucceeded
@@ -172,22 +271,16 @@ func runTrain(ctx context.Context, opts Options, resolved config.ResolvedTrainCo
 		attemptState = app.AttemptStateFailed
 	}
 	if err := store.FinishAttempt(ctx, attemptID, attemptState, result.ExitCode, result.ExitReason, result.ProviderJobRef, endedAt); err != nil {
-		return 1, err
+		return 1, false, err
 	}
 	if err := store.FinishRun(ctx, runID, runState, result.ExitCode, result.ExitReason, endedAt); err != nil {
-		return 1, err
+		return 1, false, err
 	}
 	if err := writeSummary(ctx, store, paths, runID); err != nil {
-		return 1, err
+		return 1, false, err
 	}
 	fmt.Fprintf(opts.Stdout, "Run %s %s\n", runID, runState)
-	return result.ExitCode, nil
-}
-
-func finishFailed(ctx context.Context, store *state.Store, runID string, attemptID string, code int, reason string, providerRef string) {
-	endedAt := time.Now().UTC()
-	_ = store.FinishAttempt(ctx, attemptID, app.AttemptStateFailed, code, reason, providerRef, endedAt)
-	_ = store.FinishRun(ctx, runID, app.RunStateFailed, code, reason, endedAt)
+	return result.ExitCode, false, nil
 }
 
 func writeSummary(ctx context.Context, store *state.Store, paths artifact.Paths, runID string) error {
@@ -264,6 +357,76 @@ func newLogsCommand(opts Options, home *string) *cobra.Command {
 	return cmd
 }
 
+func newCancelCommand(opts Options, home *string) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "cancel <run-id>",
+		Short: "Cancel a running local run",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			resolvedHome, err := resolveHome(*home)
+			if err != nil {
+				return err
+			}
+			return cancelRun(cmd.Context(), opts, resolvedHome, args[0])
+		},
+	}
+	return cmd
+}
+
+func cancelRun(ctx context.Context, opts Options, home string, runID string) error {
+	paths := artifact.ForRun(home, runID)
+	store, err := state.Open(paths.DB)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+
+	run, err := store.GetRun(ctx, runID)
+	if err != nil {
+		return err
+	}
+	if run.State != app.RunStateRunning {
+		fmt.Fprintf(opts.Stdout, "Run %s already %s\n", runID, run.State)
+		return nil
+	}
+	attempts, err := store.AttemptsByRun(ctx, runID)
+	if err != nil {
+		return err
+	}
+	var running *app.Attempt
+	for i := range attempts {
+		if attempts[i].State == app.AttemptStateRunning {
+			running = &attempts[i]
+		}
+	}
+	if running == nil {
+		return fmt.Errorf("run %s has no running attempt", runID)
+	}
+	if running.ProviderRef == "" {
+		return fmt.Errorf("run %s has no provider process reference yet", runID)
+	}
+	registry := provider.NewRegistry(localprovider.New(opts.Stdout, opts.Stderr))
+	adapter, err := registry.Get(running.Provider)
+	if err != nil {
+		return err
+	}
+	if err := adapter.Cancel(ctx, app.ProviderJobRef{ID: running.ProviderRef}); err != nil {
+		return err
+	}
+	endedAt := time.Now().UTC()
+	if err := store.FinishAttempt(ctx, running.ID, app.AttemptStateCanceled, 130, "canceled", running.ProviderRef, endedAt); err != nil {
+		return err
+	}
+	if err := store.FinishRun(ctx, runID, app.RunStateCanceled, 130, "canceled", endedAt); err != nil {
+		return err
+	}
+	if err := writeSummary(ctx, store, paths, runID); err != nil {
+		return err
+	}
+	fmt.Fprintf(opts.Stdout, "Run %s canceled\n", runID)
+	return nil
+}
+
 func followLogs(ctx context.Context, w io.Writer, home string, runID string, path string) error {
 	store, err := state.Open(filepath.Join(home, "orchestrator.db"))
 	if err != nil {
@@ -317,7 +480,7 @@ func newProvidersCommand(opts Options) *cobra.Command {
 		Use:   "list",
 		Short: "List providers",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			registry := provider.NewRegistry(localprovider.New(opts.Stdout, opts.Stderr))
+			registry := buildProviderRegistry(opts, config.MockConfig{})
 			names := registry.List()
 			if asJSON {
 				return json.NewEncoder(opts.Stdout).Encode(names)
@@ -331,6 +494,63 @@ func newProvidersCommand(opts Options) *cobra.Command {
 	list.Flags().BoolVar(&asJSON, "json", false, "Print JSON")
 	cmd.AddCommand(list)
 	return cmd
+}
+
+func buildProviderRegistry(opts Options, mockConfig config.MockConfig) *provider.Registry {
+	adapters := []app.ProviderAdapter{localprovider.New(opts.Stdout, opts.Stderr)}
+	for _, providerConfig := range mergedMockProviders(mockConfig) {
+		adapters = append(adapters, mockprovider.New(mockprovider.Config{
+			Name:        providerConfig.Name,
+			HourlyCost:  providerConfig.HourlyCost,
+			FailureMode: providerConfig.FailureMode,
+			Events:      mockEvents(providerConfig.Events),
+		}, opts.Stdout, opts.Stderr))
+	}
+	return provider.NewRegistry(adapters...)
+}
+
+func mergedMockProviders(mockConfig config.MockConfig) []config.MockProviderConfig {
+	defaults := []config.MockProviderConfig{
+		{Name: "mock-lambda", HourlyCost: 1.10, FailureMode: mockprovider.FailureCapacity},
+		{Name: "mock-gcp", HourlyCost: 1.30},
+	}
+	if len(mockConfig.Providers) == 0 {
+		return defaults
+	}
+	byName := map[string]config.MockProviderConfig{}
+	for _, item := range defaults {
+		byName[item.Name] = item
+	}
+	for _, item := range mockConfig.Providers {
+		byName[item.Name] = item
+	}
+	out := make([]config.MockProviderConfig, 0, len(byName))
+	for _, name := range []string{"mock-lambda", "mock-gcp"} {
+		if item, ok := byName[name]; ok {
+			out = append(out, item)
+			delete(byName, name)
+		}
+	}
+	for _, item := range byName {
+		out = append(out, item)
+	}
+	return out
+}
+
+func mockEvents(configs []config.MockEventConfig) []app.Event {
+	events := make([]app.Event, 0, len(configs))
+	for _, cfg := range configs {
+		events = append(events, app.Event{
+			Type:          app.EventType(cfg.Type),
+			Step:          cfg.Step,
+			Split:         cfg.Split,
+			State:         cfg.State,
+			CheckpointURI: cfg.CheckpointURI,
+			Message:       cfg.Message,
+			Metrics:       cfg.Metrics,
+		})
+	}
+	return events
 }
 
 func resolveHome(flag string) (string, error) {

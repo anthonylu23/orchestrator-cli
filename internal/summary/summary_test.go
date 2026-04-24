@@ -29,3 +29,15 @@ func TestBuildSummary(t *testing.T) {
 		t.Fatalf("best step = %#v", got.BestStep)
 	}
 }
+
+func TestBuildSummaryCountsResumes(t *testing.T) {
+	run := app.Run{ID: "r_1", State: app.RunStateSucceeded}
+	attempts := []app.Attempt{
+		{ID: "a_1", RunID: "r_1", State: app.AttemptStateFailed},
+		{ID: "a_2", RunID: "r_1", State: app.AttemptStateSucceeded},
+	}
+	got := Build(run, attempts, nil)
+	if got.ResumeCount != 1 {
+		t.Fatalf("resume count = %d", got.ResumeCount)
+	}
+}

@@ -45,7 +45,7 @@ Core entities:
 3. `Event`: structured metric, checkpoint, status, and log payloads linked to a run and attempt.
 4. `Summary`: derived final metrics, best metrics, runtime, checkpoint count, resume count, provider attempts, and exit reason.
 
-SQLite is the canonical state store for runs and attempts. Files under `~/.orchestrator-cli/runs/<run-id>/` are durable user-facing artifacts.
+SQLite is the canonical state store for runs and attempts. Files under `~/.orchestrator-cli/runs/<run-id>/` are durable user-facing artifacts. Local attempts also use a per-run workspace at `runs/<run-id>/workspace`.
 
 ## Data Preparation
 
@@ -56,7 +56,7 @@ Initial data input modes:
 1. `bundle`: package a local file or directory with the job.
 2. `uri`: resolve a remote `http://`, `https://`, `s3://`, or `gs://` source at runtime.
 
-Training scripts should consume stable mounted paths, not provider-specific source locations. Local paths default to `bundle`; URI sources default to `uri`; omitted mounts default to `/workspace/data/<name>`.
+Training scripts should consume stable mounted paths, not provider-specific source locations. Local paths default to `bundle`; URI sources default to `uri`; omitted mounts default to `/workspace/data/<name>`. Local execution maps `/workspace/...` mounts into the run workspace before process start.
 
 ```go
 type DataInput struct {
@@ -159,6 +159,8 @@ objective
 selection reason
 ```
 
+Routing decisions are stored in SQLite with JSON snapshots of eligible and rejected providers. This makes the final provider selection explainable after the run completes.
+
 For `provider=auto`, Orchestrator filters incompatible providers, ranks eligible providers by objective, and selects the best candidate. On resumable provider failure, the core discovers the latest checkpoint, excludes providers according to failure policy, and submits a new attempt with resume metadata.
 
 ## Checkpoints
@@ -171,7 +173,7 @@ type CheckpointResolver interface {
 }
 ```
 
-Real cross-provider resume requires shared storage reachable from both providers. Local/mock tests should model the behavior before adding GCS or S3.
+The current resolver reads structured checkpoint events from `events.jsonl` and returns the highest-step checkpoint. Real cross-provider resume requires shared storage reachable from both providers. Local/mock tests model the metadata flow before adding GCS or S3.
 
 ## Runtime and Telemetry
 
@@ -189,7 +191,7 @@ type RuntimeBundle struct {
 
 Early local execution may run scripts directly. Cloud execution may initially require explicit images rather than automatic packaging.
 
-The local provider materializes bundled data into the workspace. The mock provider simulates data preparation, URI fetch success, and URI fetch failure. Future cloud providers can upload bundled data to staging storage or use provider-native transfer behavior.
+The local provider materializes bundled data into the workspace and executes the script from that workspace. The mock provider simulates data preparation, URI fetch success, configured logs/events, and retryable failures. Future cloud providers can upload bundled data to staging storage or use provider-native transfer behavior.
 
 The event ingestor accepts mixed stdout. Valid JSON events are persisted as structured records and raw logs remain available.
 
@@ -200,6 +202,7 @@ Artifacts:
 ~/.orchestrator-cli/runs/<run-id>/events.jsonl
 ~/.orchestrator-cli/runs/<run-id>/summary.json
 ~/.orchestrator-cli/runs/<run-id>/logs.txt
+~/.orchestrator-cli/runs/<run-id>/workspace/
 ```
 
 ## Data Failure Behavior

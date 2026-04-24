@@ -13,8 +13,10 @@ import (
 const DefaultBundleMaxSizeMB = 512
 
 type Config struct {
-	Job  JobConfig  `yaml:"job"`
-	Data DataConfig `yaml:"data"`
+	Job     JobConfig     `yaml:"job"`
+	Data    DataConfig    `yaml:"data"`
+	Routing RoutingConfig `yaml:"routing"`
+	Mock    MockConfig    `yaml:"mock"`
 }
 
 type JobConfig struct {
@@ -35,6 +37,32 @@ type BundleConfig struct {
 	RequireOverrideAboveLimit bool `yaml:"require_override_above_limit"`
 }
 
+type RoutingConfig struct {
+	Objective   string `yaml:"objective"`
+	MaxAttempts int    `yaml:"max_attempts"`
+}
+
+type MockConfig struct {
+	Providers []MockProviderConfig `yaml:"providers"`
+}
+
+type MockProviderConfig struct {
+	Name        string            `yaml:"name"`
+	HourlyCost  float64           `yaml:"hourly_cost"`
+	FailureMode string            `yaml:"failure_mode"`
+	Events      []MockEventConfig `yaml:"events"`
+}
+
+type MockEventConfig struct {
+	Type          string             `yaml:"type"`
+	Step          *int64             `yaml:"step"`
+	Split         string             `yaml:"split"`
+	State         string             `yaml:"state"`
+	CheckpointURI string             `yaml:"checkpoint_uri"`
+	Message       string             `yaml:"message"`
+	Metrics       map[string]float64 `yaml:"metrics"`
+}
+
 type TrainFlags struct {
 	ConfigPath           string
 	Provider             string
@@ -47,6 +75,8 @@ type TrainFlags struct {
 type ResolvedTrainConfig struct {
 	Provider                  string
 	Job                       app.JobSpec
+	Routing                   RoutingConfig
+	Mock                      MockConfig
 	BundleMaxSizeBytes        int64
 	RequireOverrideAboveLimit bool
 	AllowLargeDataBundle      bool
@@ -119,11 +149,23 @@ func LoadTrain(flags TrainFlags) (ResolvedTrainConfig, error) {
 	return ResolvedTrainConfig{
 		Provider:                  provider,
 		Job:                       job,
+		Routing:                   resolveRouting(cfg.Routing),
+		Mock:                      cfg.Mock,
 		BundleMaxSizeBytes:        int64(maxSizeMB) * 1024 * 1024,
 		RequireOverrideAboveLimit: requireOverride,
 		AllowLargeDataBundle:      flags.AllowLargeDataBundle,
 		OrchestratorHome:          home,
 	}, nil
+}
+
+func resolveRouting(routing RoutingConfig) RoutingConfig {
+	if routing.Objective == "" {
+		routing.Objective = "min_cost"
+	}
+	if routing.MaxAttempts == 0 {
+		routing.MaxAttempts = 2
+	}
+	return routing
 }
 
 func LoadFile(path string) (Config, error) {

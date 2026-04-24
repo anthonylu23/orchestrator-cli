@@ -3,6 +3,7 @@ package state
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -56,6 +57,15 @@ CREATE TABLE IF NOT EXISTS attempts (
   provider_ref TEXT NOT NULL DEFAULT '',
   FOREIGN KEY(run_id) REFERENCES runs(id)
 );
+CREATE TABLE IF NOT EXISTS routing_decisions (
+  run_id TEXT PRIMARY KEY,
+  selected_provider TEXT NOT NULL,
+  objective TEXT NOT NULL,
+  selection_reason TEXT NOT NULL,
+  eligible_json TEXT NOT NULL,
+  rejected_json TEXT NOT NULL,
+  FOREIGN KEY(run_id) REFERENCES runs(id)
+);
 `)
 	return err
 }
@@ -88,6 +98,54 @@ func (s *Store) FinishAttempt(ctx context.Context, attemptID string, state app.A
 UPDATE attempts SET state = ?, exit_code = ?, exit_reason = ?, provider_ref = ?, ended_at = ? WHERE id = ?`,
 		state, exitCode, exitReason, providerRef, endedAt.Format(time.RFC3339Nano), attemptID)
 	return err
+}
+
+func (s *Store) UpdateAttemptProviderRef(ctx context.Context, attemptID string, providerRef string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE attempts SET provider_ref = ? WHERE id = ?`, providerRef, attemptID)
+	return err
+}
+
+func (s *Store) SaveRoutingDecision(ctx context.Context, decision app.RoutingDecision) error {
+	eligible, err := json.Marshal(decision.EligibleProviders)
+	if err != nil {
+		return err
+	}
+	rejected, err := json.Marshal(decision.RejectedProviders)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx, `
+INSERT INTO routing_decisions (run_id, selected_provider, objective, selection_reason, eligible_json, rejected_json)
+VALUES (?, ?, ?, ?, ?, ?)
+ON CONFLICT(run_id) DO UPDATE SET
+  selected_provider = excluded.selected_provider,
+  objective = excluded.objective,
+  selection_reason = excluded.selection_reason,
+  eligible_json = excluded.eligible_json,
+  rejected_json = excluded.rejected_json`,
+		decision.RunID, decision.SelectedProvider, decision.Objective, decision.SelectionReason, string(eligible), string(rejected))
+	return err
+}
+
+func (s *Store) GetRoutingDecision(ctx context.Context, runID string) (app.RoutingDecision, error) {
+	row := s.db.QueryRowContext(ctx, `
+SELECT run_id, selected_provider, objective, selection_reason, eligible_json, rejected_json
+FROM routing_decisions WHERE run_id = ?`, runID)
+	var decision app.RoutingDecision
+	var eligible, rejected string
+	if err := row.Scan(&decision.RunID, &decision.SelectedProvider, &decision.Objective, &decision.SelectionReason, &eligible, &rejected); err != nil {
+		if err == sql.ErrNoRows {
+			return app.RoutingDecision{}, fmt.Errorf("routing decision for run %q not found", runID)
+		}
+		return app.RoutingDecision{}, err
+	}
+	if err := json.Unmarshal([]byte(eligible), &decision.EligibleProviders); err != nil {
+		return app.RoutingDecision{}, err
+	}
+	if err := json.Unmarshal([]byte(rejected), &decision.RejectedProviders); err != nil {
+		return app.RoutingDecision{}, err
+	}
+	return decision, nil
 }
 
 func (s *Store) GetRun(ctx context.Context, runID string) (app.Run, error) {

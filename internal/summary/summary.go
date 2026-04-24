@@ -14,6 +14,9 @@ func Build(run app.Run, attempts []app.Attempt, events []app.Event) app.Summary 
 	if !run.StartedAt.IsZero() && !run.EndedAt.IsZero() {
 		out.RuntimeSeconds = run.EndedAt.Sub(run.StartedAt).Seconds()
 	}
+	if len(attempts) > 1 {
+		out.ResumeCount = len(attempts) - 1
+	}
 	if out.ExitReason == "" && len(attempts) > 0 {
 		out.ExitReason = attempts[len(attempts)-1].ExitReason
 	}

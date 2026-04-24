@@ -13,6 +13,7 @@ type Paths struct {
 	Home        string
 	DB          string
 	RunDir      string
+	Workspace   string
 	EventsJSONL string
 	Logs        string
 	Summary     string
@@ -25,6 +26,7 @@ func ForRun(home string, runID string) Paths {
 		Home:        home,
 		DB:          filepath.Join(home, "orchestrator.db"),
 		RunDir:      runDir,
+		Workspace:   filepath.Join(runDir, "workspace"),
 		EventsJSONL: filepath.Join(runDir, "events.jsonl"),
 		Logs:        filepath.Join(runDir, "logs.txt"),
 		Summary:     filepath.Join(runDir, "summary.json"),
@@ -39,6 +41,9 @@ func EnsureHome(home string) error {
 func EnsureRun(paths Paths) error {
 	if err := os.MkdirAll(paths.Checkpoints, 0o755); err != nil {
 		return fmt.Errorf("create run directories: %w", err)
+	}
+	if err := os.MkdirAll(paths.Workspace, 0o755); err != nil {
+		return fmt.Errorf("create workspace directory: %w", err)
 	}
 	for _, path := range []string{paths.EventsJSONL, paths.Logs} {
 		file, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)

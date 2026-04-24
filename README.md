@@ -6,9 +6,9 @@ The project is designed as a systems engineering and ML infrastructure tool: the
 
 ## Status
 
-Orchestrator now has an initial local orchestration vertical slice. The current implementation can run a local Python training script, persist SQLite run state, capture mixed logs and structured JSONL events, and produce durable run artifacts.
+Orchestrator now has a local orchestration vertical slice plus deterministic mock-provider failover. The current implementation can run a local Python training script, persist SQLite run state, capture mixed logs and structured JSONL events, materialize local data bundles, cancel active local runs, route across mock providers, and resume from the latest checkpoint after a simulated provider failure.
 
-Mock cloud failover, routing, resume, and real cloud providers remain roadmap work.
+Real cloud providers remain roadmap work.
 
 ## Quick Start
 
@@ -35,7 +35,23 @@ Inspect a run:
 ```sh
 ./bin/orchestrator-cli status <run-id>
 ./bin/orchestrator-cli logs <run-id>
+./bin/orchestrator-cli cancel <run-id>
 ./bin/orchestrator-cli providers list --json
+```
+
+Run the mock failover demo:
+
+```sh
+./bin/orchestrator-cli train --provider auto --config examples/failover.yaml
+```
+
+Expected output includes:
+
+```text
+Selected mock-lambda
+Found checkpoint: step 800
+Selected mock-gcp
+Run <run-id> succeeded
 ```
 
 Run tests:
@@ -61,12 +77,14 @@ The first impressive demo is intentionally narrower than full multi-cloud suppor
 
 ```sh
 orchestrator-cli train --provider local --script examples/train.py
+orchestrator-cli train --provider auto --config examples/failover.yaml
 orchestrator-cli status <run-id>
 orchestrator-cli logs <run-id> --follow
+orchestrator-cli cancel <run-id>
 orchestrator-cli providers list --json
 ```
 
-Planned commands not implemented yet include `provider=auto`, `resume`, `cancel`, mock cloud failover, and real provider adapters.
+Planned commands not implemented yet include explicit `resume` and real provider adapters.
 
 ## Data Inputs
 
@@ -95,6 +113,23 @@ data:
 
 Local paths default to bundled inputs. URI sources default to runtime-resolved inputs. Oversized local bundles fail preflight unless the user passes an explicit override such as `--allow-large-data-bundle`.
 
+For local runs, bundled files and directories are copied into each run workspace under `runs/<run-id>/workspace`. Mounts must be under `/workspace`; for example, `/workspace/data/train` maps to `runs/<run-id>/workspace/data/train`. Job arguments and environment values that reference declared mounts are rewritten to host paths before the local process starts.
+
+Example local data run:
+
+```yaml
+job:
+  script: "examples/read_data.py"
+  args: ["/workspace/data/train.txt"]
+
+data:
+  inputs:
+    - name: "train"
+      source: "./data/train.txt"
+      mount: "/workspace/data/train.txt"
+      mode: "bundle"
+```
+
 ## Architecture Flow
 
 ```text
@@ -120,6 +155,7 @@ By default Orchestrator writes to `~/.orchestrator-cli`. Set `ORCHESTRATOR_CLI_H
 ~/.orchestrator-cli/runs/<run-id>/logs.txt
 ~/.orchestrator-cli/runs/<run-id>/summary.json
 ~/.orchestrator-cli/runs/<run-id>/checkpoints/
+~/.orchestrator-cli/runs/<run-id>/workspace/
 ```
 
 ## Roadmap Summary
