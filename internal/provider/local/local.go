@@ -19,6 +19,7 @@ import (
 	"github.com/anthonylu23/orchestrator-cli/internal/app"
 	"github.com/anthonylu23/orchestrator-cli/internal/artifact"
 	"github.com/anthonylu23/orchestrator-cli/internal/event"
+	"github.com/anthonylu23/orchestrator-cli/internal/redact"
 )
 
 type Provider struct {
@@ -83,6 +84,7 @@ func (p *Provider) Submit(ctx context.Context, req app.SubmitRequest) (app.Submi
 	cmd := exec.CommandContext(ctx, cmdName, args...)
 	cmd.Dir = req.JobSpec.WorkDir
 	cmd.Env = mergedEnv(req.JobSpec.Env, req.RuntimeEnv)
+	redactor := redact.FromEnvironment(req.JobSpec.Env, req.RuntimeEnv)
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -107,8 +109,8 @@ func (p *Provider) Submit(ctx context.Context, req app.SubmitRequest) (app.Submi
 	var wg sync.WaitGroup
 	var writeMu sync.Mutex
 	wg.Add(2)
-	go p.consume(&wg, &writeMu, stdout, p.stdout(), logFile, eventFile, req.RunID, req.AttemptID)
-	go p.consume(&wg, &writeMu, stderr, p.stderr(), logFile, eventFile, req.RunID, req.AttemptID)
+	go p.consume(&wg, &writeMu, stdout, p.stdout(), logFile, eventFile, req.RunID, req.AttemptID, redactor)
+	go p.consume(&wg, &writeMu, stderr, p.stderr(), logFile, eventFile, req.RunID, req.AttemptID, redactor)
 	waitErr := cmd.Wait()
 	wg.Wait()
 
@@ -120,7 +122,7 @@ func (p *Provider) Submit(ctx context.Context, req app.SubmitRequest) (app.Submi
 		exitCode := exitErr.ExitCode()
 		return app.SubmitResult{ProviderJobRef: providerRef, ExitCode: exitCode, ExitReason: fmt.Sprintf("process exited with code %d", exitCode)}, nil
 	}
-	return app.SubmitResult{ProviderJobRef: providerRef, ExitCode: 1, ExitReason: waitErr.Error()}, nil
+	return app.SubmitResult{ProviderJobRef: providerRef, ExitCode: 1, ExitReason: redactor.String(waitErr.Error())}, nil
 }
 
 func (p *Provider) GetStatus(ctx context.Context, ref app.ProviderJobRef) (app.ProviderJobStatus, error) {
@@ -150,17 +152,18 @@ func (p *Provider) Cancel(ctx context.Context, ref app.ProviderJobRef) error {
 	return nil
 }
 
-func (p *Provider) consume(wg *sync.WaitGroup, writeMu *sync.Mutex, reader io.Reader, terminal io.Writer, logFile io.Writer, eventFile io.Writer, runID string, attemptID string) {
+func (p *Provider) consume(wg *sync.WaitGroup, writeMu *sync.Mutex, reader io.Reader, terminal io.Writer, logFile io.Writer, eventFile io.Writer, runID string, attemptID string, redactor redact.Redactor) {
 	defer wg.Done()
 	scanner := bufio.NewScanner(reader)
 	for scanner.Scan() {
 		line := scanner.Text()
+		redactedLine := redactor.Line(line)
 		writeMu.Lock()
-		_, _ = fmt.Fprintln(terminal, line)
-		_, _ = fmt.Fprintln(logFile, line)
+		_, _ = fmt.Fprintln(terminal, redactedLine)
+		_, _ = fmt.Fprintln(logFile, redactedLine)
 		parsed := event.ParseLine(line, runID, attemptID, p.now())
 		if parsed.Structured {
-			_ = event.WriteJSONL(eventFile, parsed.Event)
+			_ = event.WriteJSONL(eventFile, redactor.Event(parsed.Event))
 		}
 		writeMu.Unlock()
 	}

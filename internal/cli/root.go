@@ -19,6 +19,7 @@ import (
 	"github.com/anthonylu23/orchestrator-cli/internal/provider"
 	localprovider "github.com/anthonylu23/orchestrator-cli/internal/provider/local"
 	mockprovider "github.com/anthonylu23/orchestrator-cli/internal/provider/mock"
+	"github.com/anthonylu23/orchestrator-cli/internal/redact"
 	"github.com/anthonylu23/orchestrator-cli/internal/routing"
 	"github.com/anthonylu23/orchestrator-cli/internal/runtimeprep"
 	"github.com/anthonylu23/orchestrator-cli/internal/state"
@@ -111,6 +112,7 @@ func runTrain(ctx context.Context, opts Options, resolved config.ResolvedTrainCo
 	}
 	job := resolved.Job
 	job.Data = append([]app.DataInput(nil), manifest.Inputs...)
+	runRedactor := redact.FromEnvironment(job.Env)
 
 	now := time.Now().UTC()
 	runID := app.NewRunID()
@@ -145,7 +147,7 @@ func runTrain(ctx context.Context, opts Options, resolved config.ResolvedTrainCo
 				_ = store.SaveRoutingDecision(ctx, decision)
 			}
 			if err != nil {
-				finishRunOnly(ctx, store, runID, 30, err.Error())
+				finishRunOnly(ctx, store, runID, 30, runRedactor.String(err.Error()))
 				_ = writeSummary(ctx, store, paths, runID)
 				return 30, err
 			}
@@ -158,7 +160,7 @@ func runTrain(ctx context.Context, opts Options, resolved config.ResolvedTrainCo
 		}
 		if !retryable || resolved.Provider != string(app.ProviderAuto) || attemptNumber == maxAttempts {
 			if retryable {
-				finishRunOnly(ctx, store, runID, code, err.Error())
+				finishRunOnly(ctx, store, runID, code, runRedactor.String(err.Error()))
 			}
 			_ = writeSummary(ctx, store, paths, runID)
 			return code, err
@@ -188,21 +190,27 @@ func finishRunOnly(ctx context.Context, store *state.Store, runID string, code i
 }
 
 func runAttempt(ctx context.Context, opts Options, store *state.Store, registry *provider.Registry, paths artifact.Paths, runID string, selectedProvider string, job app.JobSpec, manifest app.DataManifest, resumeFrom *app.CheckpointRef) (int, bool, error) {
+	baseRedactor := redact.FromEnvironment(job.Env)
 	attemptID := app.NewAttemptID()
 	attempt := app.Attempt{ID: attemptID, RunID: runID, Provider: selectedProvider, State: app.AttemptStateRunning, StartedAt: time.Now().UTC()}
+	if resumeFrom != nil {
+		attempt.ResumeFromURI = resumeFrom.URI
+		step := resumeFrom.Step
+		attempt.ResumeFromStep = &step
+	}
 	if err := store.CreateAttempt(ctx, attempt); err != nil {
 		return 1, false, err
 	}
 	adapter, err := registry.Get(selectedProvider)
 	if err != nil {
-		finishFailed(ctx, store, runID, attemptID, 1, err.Error(), "")
+		finishFailed(ctx, store, runID, attemptID, 1, baseRedactor.String(err.Error()), "")
 		return 1, false, err
 	}
 	attemptJob := job
 	if selectedProvider == string(app.ProviderLocal) {
 		prepared, err := runtimeprep.PrepareLocal(job, manifest, paths.Workspace)
 		if err != nil {
-			finishFailed(ctx, store, runID, attemptID, 10, err.Error(), "")
+			finishFailed(ctx, store, runID, attemptID, 10, baseRedactor.String(err.Error()), "")
 			_ = writeSummary(ctx, store, paths, runID)
 			return 10, false, err
 		}
@@ -213,7 +221,7 @@ func runAttempt(ctx context.Context, opts Options, store *state.Store, registry 
 		if len(report.Reasons) > 0 {
 			reason = report.Reasons[0]
 		}
-		finishFailed(ctx, store, runID, attemptID, 10, reason, "")
+		finishFailed(ctx, store, runID, attemptID, 10, baseRedactor.String(reason), "")
 		_ = writeSummary(ctx, store, paths, runID)
 		return 10, false, fmt.Errorf("%s", reason)
 	}
@@ -228,6 +236,17 @@ func runAttempt(ctx context.Context, opts Options, store *state.Store, registry 
 		"ORCHESTRATOR_RESUME_FROM":    resumeValue,
 		"ORCHESTRATOR_EVENTS_PATH":    paths.EventsJSONL,
 	}
+	attemptRedactor := redact.FromEnvironment(attemptJob.Env, runtimeEnv)
+	estimate, err := adapter.Estimate(ctx, attemptJob)
+	if err != nil {
+		reason := attemptRedactor.String(err.Error())
+		finishFailed(ctx, store, runID, attemptID, 30, reason, "")
+		_ = writeSummary(ctx, store, paths, runID)
+		return 30, false, err
+	}
+	if err := store.UpdateAttemptEstimate(ctx, attemptID, estimate); err != nil {
+		return 1, false, err
+	}
 	result, err := adapter.Submit(ctx, app.SubmitRequest{
 		JobSpec:    attemptJob,
 		RunID:      runID,
@@ -236,18 +255,23 @@ func runAttempt(ctx context.Context, opts Options, store *state.Store, registry 
 		RuntimeEnv: runtimeEnv,
 		RunDir:     paths.RunDir,
 		OnStarted: func(ref app.ProviderJobRef) error {
-			return store.UpdateAttemptProviderRef(ctx, attemptID, ref.ID)
+			return store.UpdateAttemptProviderRef(ctx, attemptID, attemptRedactor.String(ref.ID))
 		},
 	})
 	if err != nil {
 		var providerErr *app.ProviderError
 		retryable := errors.As(err, &providerErr) && providerErr.Retryable()
 		endedAt := time.Now().UTC()
-		if finishErr := store.FinishAttempt(ctx, attemptID, app.AttemptStateFailed, result.ExitCode, err.Error(), result.ProviderJobRef, endedAt); finishErr != nil {
+		reason := attemptRedactor.String(err.Error())
+		if result.ExitReason != "" {
+			reason = attemptRedactor.String(result.ExitReason)
+		}
+		providerRef := attemptRedactor.String(result.ProviderJobRef)
+		if finishErr := store.FinishAttempt(ctx, attemptID, app.AttemptStateFailed, result.ExitCode, reason, providerRef, endedAt); finishErr != nil {
 			return 1, false, finishErr
 		}
 		if !retryable {
-			if finishErr := store.FinishRun(ctx, runID, app.RunStateFailed, result.ExitCode, err.Error(), endedAt); finishErr != nil {
+			if finishErr := store.FinishRun(ctx, runID, app.RunStateFailed, result.ExitCode, reason, endedAt); finishErr != nil {
 				return 1, false, finishErr
 			}
 		}
@@ -270,10 +294,12 @@ func runAttempt(ctx context.Context, opts Options, store *state.Store, registry 
 		runState = app.RunStateFailed
 		attemptState = app.AttemptStateFailed
 	}
-	if err := store.FinishAttempt(ctx, attemptID, attemptState, result.ExitCode, result.ExitReason, result.ProviderJobRef, endedAt); err != nil {
+	exitReason := attemptRedactor.String(result.ExitReason)
+	providerRef := attemptRedactor.String(result.ProviderJobRef)
+	if err := store.FinishAttempt(ctx, attemptID, attemptState, result.ExitCode, exitReason, providerRef, endedAt); err != nil {
 		return 1, false, err
 	}
-	if err := store.FinishRun(ctx, runID, runState, result.ExitCode, result.ExitReason, endedAt); err != nil {
+	if err := store.FinishRun(ctx, runID, runState, result.ExitCode, exitReason, endedAt); err != nil {
 		return 1, false, err
 	}
 	if err := writeSummary(ctx, store, paths, runID); err != nil {
@@ -296,7 +322,8 @@ func writeSummary(ctx context.Context, store *state.Store, paths artifact.Paths,
 	if err != nil {
 		return err
 	}
-	return artifact.WriteSummary(paths.Summary, summary.Build(run, attempts, events))
+	built := summary.Build(run, attempts, events)
+	return artifact.WriteSummary(paths.Summary, redact.FromEnvironment().Summary(built))
 }
 
 func newStatusCommand(opts Options, home *string) *cobra.Command {
@@ -436,22 +463,10 @@ func followLogs(ctx context.Context, w io.Writer, home string, runID string, pat
 
 	var offset int64
 	for {
-		file, err := os.Open(path)
+		var err error
+		offset, err = copyLogFromOffset(w, path, offset)
 		if err != nil {
 			return err
-		}
-		if _, err := file.Seek(offset, io.SeekStart); err != nil {
-			_ = file.Close()
-			return err
-		}
-		written, copyErr := io.Copy(w, file)
-		offset += written
-		closeErr := file.Close()
-		if copyErr != nil {
-			return copyErr
-		}
-		if closeErr != nil {
-			return closeErr
 		}
 
 		run, err := store.GetRun(ctx, runID)
@@ -459,15 +474,35 @@ func followLogs(ctx context.Context, w io.Writer, home string, runID string, pat
 			return err
 		}
 		if run.State != app.RunStateRunning {
-			return nil
+			_, err := copyLogFromOffset(w, path, offset)
+			return err
 		}
 
 		select {
 		case <-ctx.Done():
+			if _, err := copyLogFromOffset(w, path, offset); err != nil {
+				return err
+			}
 			return ctx.Err()
 		case <-time.After(500 * time.Millisecond):
 		}
 	}
+}
+
+func copyLogFromOffset(w io.Writer, path string, offset int64) (int64, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return offset, err
+	}
+	defer file.Close()
+	if _, err := file.Seek(offset, io.SeekStart); err != nil {
+		return offset, err
+	}
+	written, err := io.Copy(w, file)
+	if err != nil {
+		return offset, err
+	}
+	return offset + written, nil
 }
 
 func newProvidersCommand(opts Options) *cobra.Command {

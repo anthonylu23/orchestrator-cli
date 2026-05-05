@@ -11,6 +11,7 @@ import (
 	"github.com/anthonylu23/orchestrator-cli/internal/app"
 	"github.com/anthonylu23/orchestrator-cli/internal/artifact"
 	"github.com/anthonylu23/orchestrator-cli/internal/event"
+	"github.com/anthonylu23/orchestrator-cli/internal/redact"
 )
 
 const (
@@ -66,6 +67,7 @@ func (p *Provider) Estimate(ctx context.Context, spec app.JobSpec) (app.CostEsti
 }
 
 func (p *Provider) Submit(ctx context.Context, req app.SubmitRequest) (app.SubmitResult, error) {
+	redactor := redact.FromEnvironment(req.JobSpec.Env, req.RuntimeEnv)
 	providerRef := fmt.Sprintf("mock:%s:%s", p.config.Name, req.AttemptID)
 	if req.OnStarted != nil {
 		if err := req.OnStarted(app.ProviderJobRef{ID: providerRef}); err != nil {
@@ -84,9 +86,9 @@ func (p *Provider) Submit(ctx context.Context, req app.SubmitRequest) (app.Submi
 	}
 	defer eventFile.Close()
 
-	p.writeLog(logFile, fmt.Sprintf("mock provider %s started", p.config.Name))
+	p.writeLog(logFile, redactor.String(fmt.Sprintf("mock provider %s started", p.config.Name)))
 	if req.ResumeFrom != nil {
-		p.writeLog(logFile, fmt.Sprintf("resuming from checkpoint step %d: %s", req.ResumeFrom.Step, req.ResumeFrom.URI))
+		p.writeLog(logFile, redactor.String(fmt.Sprintf("resuming from checkpoint step %d: %s", req.ResumeFrom.Step, req.ResumeFrom.URI)))
 	}
 	for _, scripted := range p.config.Events {
 		ev := scripted
@@ -96,23 +98,24 @@ func (p *Provider) Submit(ctx context.Context, req app.SubmitRequest) (app.Submi
 			ev.Timestamp = p.now()
 		}
 		if ev.Type == app.EventTypeLog {
-			p.writeLog(logFile, ev.Message)
+			p.writeLog(logFile, redactor.String(ev.Message))
 			continue
 		}
-		if err := event.WriteJSONL(eventFile, ev); err != nil {
+		if err := event.WriteJSONL(eventFile, redactor.Event(ev)); err != nil {
 			return app.SubmitResult{}, err
 		}
 		encoded := fmt.Sprintf("%s", ev.Type)
 		if ev.Step != nil {
 			encoded = fmt.Sprintf("%s step=%d", encoded, *ev.Step)
 		}
-		p.writeLog(logFile, encoded)
+		p.writeLog(logFile, redactor.String(encoded))
 	}
 	if err := p.failureError(); err != nil {
-		p.writeLog(logFile, err.Error())
-		return app.SubmitResult{ProviderJobRef: providerRef, ExitCode: 1, ExitReason: err.Error()}, err
+		message := redactor.String(err.Error())
+		p.writeLog(logFile, message)
+		return app.SubmitResult{ProviderJobRef: providerRef, ExitCode: 1, ExitReason: message}, &app.ProviderError{Kind: err.Kind, Message: message, Err: err.Err}
 	}
-	p.writeLog(logFile, fmt.Sprintf("mock provider %s completed", p.config.Name))
+	p.writeLog(logFile, redactor.String(fmt.Sprintf("mock provider %s completed", p.config.Name)))
 	return app.SubmitResult{ProviderJobRef: providerRef, ExitCode: 0, ExitReason: "completed"}, nil
 }
 

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/anthonylu23/orchestrator-cli/internal/app"
@@ -20,6 +21,10 @@ func Open(path string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
+	if _, err := db.ExecContext(context.Background(), `PRAGMA busy_timeout = 5000`); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 	store := &Store{db: db}
 	if err := store.migrate(context.Background()); err != nil {
 		_ = db.Close()
@@ -33,7 +38,7 @@ func (s *Store) Close() error {
 }
 
 func (s *Store) migrate(ctx context.Context) error {
-	_, err := s.db.ExecContext(ctx, `
+	if _, err := s.db.ExecContext(ctx, `
 CREATE TABLE IF NOT EXISTS runs (
   id TEXT PRIMARY KEY,
   job_name TEXT NOT NULL,
@@ -66,7 +71,48 @@ CREATE TABLE IF NOT EXISTS routing_decisions (
   rejected_json TEXT NOT NULL,
   FOREIGN KEY(run_id) REFERENCES runs(id)
 );
-`)
+`); err != nil {
+		return err
+	}
+	for _, column := range []struct {
+		name string
+		def  string
+	}{
+		{name: "resume_from_uri", def: "TEXT NOT NULL DEFAULT ''"},
+		{name: "resume_from_step", def: "INTEGER"},
+		{name: "estimated_hourly_usd", def: "REAL"},
+		{name: "estimate_currency", def: "TEXT NOT NULL DEFAULT ''"},
+	} {
+		if err := s.addColumnIfMissing(ctx, "attempts", column.name, column.def); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Store) addColumnIfMissing(ctx context.Context, table string, column string, definition string) error {
+	rows, err := s.db.QueryContext(ctx, fmt.Sprintf("PRAGMA table_info(%s)", table))
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid int
+		var name, columnType string
+		var notNull int
+		var defaultValue interface{}
+		var primaryKey int
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			return err
+		}
+		if strings.EqualFold(name, column) {
+			return rows.Err()
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx, fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", table, column, definition))
 	return err
 }
 
@@ -80,9 +126,13 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 
 func (s *Store) CreateAttempt(ctx context.Context, attempt app.Attempt) error {
 	_, err := s.db.ExecContext(ctx, `
-INSERT INTO attempts (id, run_id, provider, state, started_at, exit_code, exit_reason, provider_ref)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		attempt.ID, attempt.RunID, attempt.Provider, attempt.State, attempt.StartedAt.Format(time.RFC3339Nano), attempt.ExitCode, attempt.ExitReason, attempt.ProviderRef)
+INSERT INTO attempts (
+  id, run_id, provider, state, started_at, exit_code, exit_reason, provider_ref,
+  resume_from_uri, resume_from_step, estimated_hourly_usd, estimate_currency
+)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		attempt.ID, attempt.RunID, attempt.Provider, attempt.State, attempt.StartedAt.Format(time.RFC3339Nano), attempt.ExitCode, attempt.ExitReason, attempt.ProviderRef,
+		attempt.ResumeFromURI, attempt.ResumeFromStep, attempt.EstimatedHourlyUSD, attempt.EstimateCurrency)
 	return err
 }
 
@@ -102,6 +152,11 @@ UPDATE attempts SET state = ?, exit_code = ?, exit_reason = ?, provider_ref = ?,
 
 func (s *Store) UpdateAttemptProviderRef(ctx context.Context, attemptID string, providerRef string) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE attempts SET provider_ref = ? WHERE id = ?`, providerRef, attemptID)
+	return err
+}
+
+func (s *Store) UpdateAttemptEstimate(ctx context.Context, attemptID string, estimate app.CostEstimate) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE attempts SET estimated_hourly_usd = ?, estimate_currency = ? WHERE id = ?`, estimate.HourlyUSD, estimate.Currency, attemptID)
 	return err
 }
 
@@ -169,7 +224,8 @@ FROM runs WHERE id = ?`, runID)
 
 func (s *Store) AttemptsByRun(ctx context.Context, runID string) ([]app.Attempt, error) {
 	rows, err := s.db.QueryContext(ctx, `
-SELECT id, run_id, provider, state, started_at, COALESCE(ended_at, ''), exit_code, exit_reason, provider_ref
+SELECT id, run_id, provider, state, started_at, COALESCE(ended_at, ''), exit_code, exit_reason, provider_ref,
+  resume_from_uri, resume_from_step, estimated_hourly_usd, estimate_currency
 FROM attempts WHERE run_id = ? ORDER BY started_at`, runID)
 	if err != nil {
 		return nil, err
@@ -180,12 +236,23 @@ FROM attempts WHERE run_id = ? ORDER BY started_at`, runID)
 	for rows.Next() {
 		var attempt app.Attempt
 		var started, ended string
-		if err := rows.Scan(&attempt.ID, &attempt.RunID, &attempt.Provider, &attempt.State, &started, &ended, &attempt.ExitCode, &attempt.ExitReason, &attempt.ProviderRef); err != nil {
+		var resumeFromStep sql.NullInt64
+		var estimatedHourlyUSD sql.NullFloat64
+		if err := rows.Scan(&attempt.ID, &attempt.RunID, &attempt.Provider, &attempt.State, &started, &ended, &attempt.ExitCode, &attempt.ExitReason, &attempt.ProviderRef,
+			&attempt.ResumeFromURI, &resumeFromStep, &estimatedHourlyUSD, &attempt.EstimateCurrency); err != nil {
 			return nil, err
 		}
 		attempt.StartedAt = mustParseTime(started)
 		if ended != "" {
 			attempt.EndedAt = mustParseTime(ended)
+		}
+		if resumeFromStep.Valid {
+			step := resumeFromStep.Int64
+			attempt.ResumeFromStep = &step
+		}
+		if estimatedHourlyUSD.Valid {
+			hourlyUSD := estimatedHourlyUSD.Float64
+			attempt.EstimatedHourlyUSD = &hourlyUSD
 		}
 		attempts = append(attempts, attempt)
 	}
