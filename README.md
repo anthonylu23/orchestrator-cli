@@ -8,6 +8,8 @@ The project is designed as a systems engineering and ML infrastructure tool: the
 
 Orchestrator now has a local orchestration vertical slice plus deterministic mock-provider failover. The current implementation can run a local Python training script, persist SQLite run state, capture mixed logs and structured JSONL events, materialize local data bundles, cancel active local runs, route across mock providers, and resume from the latest checkpoint after a simulated provider failure.
 
+Run artifacts redact secret-like keys and known secret environment values before persistence. Attempt history also records resume checkpoint provenance and provider cost estimates so failover decisions remain explainable after completion.
+
 Real cloud providers remain roadmap work.
 
 ## Quick Start
@@ -145,6 +147,8 @@ CLI command
 
 The core user-facing object is a run. Each provider execution is an attempt. This lets one run fail on one provider and resume on another provider while preserving a single user-facing run history.
 
+For `provider=auto`, routing checks provider capabilities before ranking candidates. Providers that cannot satisfy bundled data inputs or declared URI schemes are rejected with persisted reasons.
+
 ## Artifacts
 
 By default Orchestrator writes to `~/.orchestrator-cli`. Set `ORCHESTRATOR_CLI_HOME` or pass `--home` to isolate runs.
@@ -157,6 +161,8 @@ By default Orchestrator writes to `~/.orchestrator-cli`. Set `ORCHESTRATOR_CLI_H
 ~/.orchestrator-cli/runs/<run-id>/checkpoints/
 ~/.orchestrator-cli/runs/<run-id>/workspace/
 ```
+
+`summary.json` includes final metrics and direction-aware `best_metrics`: common loss/error/perplexity/latency/duration metrics are minimized, while other metrics are maximized. Provider attempts include resume checkpoint and estimate fields when available.
 
 ## Roadmap Summary
 

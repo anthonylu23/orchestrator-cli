@@ -41,3 +41,20 @@ func TestBuildSummaryCountsResumes(t *testing.T) {
 		t.Fatalf("resume count = %d", got.ResumeCount)
 	}
 }
+
+func TestBuildSummaryUsesMetricDirectionDefaults(t *testing.T) {
+	step1 := int64(1)
+	step2 := int64(2)
+	run := app.Run{ID: "r_1", State: app.RunStateSucceeded}
+	events := []app.Event{
+		{Type: app.EventTypeMetric, Step: &step1, Metrics: map[string]float64{"loss": 0.9, "accuracy": 0.6}},
+		{Type: app.EventTypeMetric, Step: &step2, Metrics: map[string]float64{"loss": 0.3, "accuracy": 0.8}},
+	}
+	got := Build(run, nil, events)
+	if got.BestMetrics["loss"] != 0.3 {
+		t.Fatalf("best loss = %f", got.BestMetrics["loss"])
+	}
+	if got.BestMetrics["accuracy"] != 0.8 {
+		t.Fatalf("best accuracy = %f", got.BestMetrics["accuracy"])
+	}
+}

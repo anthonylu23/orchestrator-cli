@@ -1,6 +1,8 @@
 package summary
 
 import (
+	"strings"
+
 	"github.com/anthonylu23/orchestrator-cli/internal/app"
 )
 
@@ -29,7 +31,7 @@ func Build(run app.Run, attempts []app.Attempt, events []app.Event) app.Summary 
 		case app.EventTypeMetric:
 			for k, v := range ev.Metrics {
 				final[k] = v
-				if _, ok := best[k]; !ok || v > best[k] {
+				if isBetterMetricValue(k, v, best[k], best) {
 					best[k] = v
 					if ev.Step != nil {
 						step := *ev.Step
@@ -49,4 +51,24 @@ func Build(run app.Run, attempts []app.Attempt, events []app.Event) app.Summary 
 		out.BestStep = bestStep
 	}
 	return out
+}
+
+func isBetterMetricValue(name string, candidate float64, current float64, best map[string]float64) bool {
+	if _, ok := best[name]; !ok {
+		return true
+	}
+	if lowerIsBetter(name) {
+		return candidate < current
+	}
+	return candidate > current
+}
+
+func lowerIsBetter(name string) bool {
+	normalized := strings.ToLower(name)
+	for _, marker := range []string{"loss", "error", "err", "perplexity", "ppl", "latency", "duration"} {
+		if strings.Contains(normalized, marker) {
+			return true
+		}
+	}
+	return false
 }

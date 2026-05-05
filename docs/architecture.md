@@ -41,7 +41,7 @@ Run r_123
 Core entities:
 
 1. `Run`: job spec, desired state, current state, timestamps, and final outcome.
-2. `Attempt`: provider name, provider job reference, attempt state, resume checkpoint, cost estimate, and exit reason.
+2. `Attempt`: provider name, provider job reference, attempt state, resume checkpoint URI/step, cost estimate, and exit reason.
 3. `Event`: structured metric, checkpoint, status, and log payloads linked to a run and attempt.
 4. `Summary`: derived final metrics, best metrics, runtime, checkpoint count, resume count, provider attempts, and exit reason.
 
@@ -75,7 +75,7 @@ type DataManifest struct {
 
 Bundled local data is guarded by a configured size limit. If the bundle exceeds the limit, preflight fails unless the user passes an explicit override such as `--allow-large-data-bundle`.
 
-Private data access uses BYO environment authentication early. Orchestrator may pass selected environment variables to data fetch steps, but raw credentials must be redacted from logs and omitted from SQLite, run metadata, `events.jsonl`, and `summary.json`.
+Private data access uses BYO environment authentication early. Orchestrator may pass selected environment variables to data fetch steps, but raw credentials must be redacted from logs and omitted from SQLite, run metadata, `events.jsonl`, and `summary.json`. Redaction covers secret-like structured keys and known secret values from job, runtime, and inherited environment variables.
 
 ## Provider Adapter Contract
 
@@ -147,7 +147,7 @@ The core uses these categories to decide whether a failure is retryable, resumab
 
 ## Routing and Failover
 
-The routing engine consumes job requirements, provider capabilities, support reports, cost estimates, provider health, and user policy.
+The routing engine consumes job requirements, provider capabilities, support reports, cost estimates, provider health, and user policy. Core routing rejects providers whose capabilities cannot satisfy declared data inputs before cost ranking. Bundled inputs require `SupportsDataBundle`, and URI inputs require a matching supported URI scheme.
 
 It produces a persisted routing decision:
 
@@ -161,7 +161,7 @@ selection reason
 
 Routing decisions are stored in SQLite with JSON snapshots of eligible and rejected providers. This makes the final provider selection explainable after the run completes.
 
-For `provider=auto`, Orchestrator filters incompatible providers, ranks eligible providers by objective, and selects the best candidate. On resumable provider failure, the core discovers the latest checkpoint, excludes providers according to failure policy, and submits a new attempt with resume metadata.
+For `provider=auto`, Orchestrator filters incompatible providers, ranks eligible providers by objective, and selects the best candidate. On resumable provider failure, the core discovers the latest checkpoint, excludes providers according to failure policy, and submits a new attempt with resume metadata. Attempts persist resume checkpoint and estimate provenance for later inspection through summaries and state.
 
 ## Checkpoints
 
@@ -193,7 +193,9 @@ Early local execution may run scripts directly. Cloud execution may initially re
 
 The local provider materializes bundled data into the workspace and executes the script from that workspace. The mock provider simulates data preparation, URI fetch success, configured logs/events, and retryable failures. Future cloud providers can upload bundled data to staging storage or use provider-native transfer behavior.
 
-The event ingestor accepts mixed stdout. Valid JSON events are persisted as structured records and raw logs remain available.
+The event ingestor accepts mixed stdout. Valid JSON events are persisted as structured records and raw logs remain available after redaction. Secret-like keys and known secret values are replaced with `[REDACTED]` before logs, events, summaries, or provider failure reasons are written.
+
+Summaries keep `best_metrics` as a directional view. Metrics whose names contain `loss`, `error`, `err`, `perplexity`, `ppl`, `latency`, or `duration` are minimized; other metrics are maximized.
 
 Artifacts:
 

@@ -14,6 +14,7 @@ The implementation is a Go CLI with a small internal package split:
 8. `internal/provider/local`: local script execution provider.
 9. `internal/event`: mixed stdout parsing and JSONL helpers.
 10. `internal/artifact` and `internal/summary`: durable artifact paths and summary generation.
+11. `internal/redact`: redaction of secret-like keys and known secret environment values before persistence.
 
 ## Local Workflow
 
@@ -46,7 +47,7 @@ go vet ./...
 
 ## Current Limits
 
-The `local` provider and deterministic mock providers are implemented. URI data inputs are validated for supported schemes and accepted by mock providers, but real runtime fetching is deferred to cloud provider phases. `logs --follow` follows active run artifacts until the run reaches a terminal state. Explicit `resume` and real cloud providers are still roadmap items.
+The `local` provider and deterministic mock providers are implemented. URI data inputs are validated for supported schemes and accepted by mock providers, but real runtime fetching is deferred to cloud provider phases. `logs --follow` follows active run artifacts until the run reaches a terminal state and drains newly appended logs before returning. Explicit `resume` and real cloud providers are still roadmap items.
 
 ## Runtime Workspace
 
@@ -59,3 +60,7 @@ Each run gets a workspace at:
 Bundled local data inputs are copied into that workspace. Mounts must be under `/workspace`; `/workspace/data/train` becomes `<home>/runs/<run-id>/workspace/data/train`. The local runtime rewrites job arguments and job environment values that reference declared mounts to their host paths before executing the script.
 
 The local provider stores a `local:<pid>` provider reference on the running attempt. `orchestrator-cli cancel <run-id>` uses that reference to interrupt the process, then marks the run and attempt as `canceled` and rewrites `summary.json`.
+
+Attempt records include optional resume checkpoint and cost estimate provenance. Existing SQLite databases are migrated in place by adding missing attempt columns when opened.
+
+Before writing logs, `events.jsonl`, summaries, or provider failure reasons, providers and orchestration code redact secret-like keys and known secret values from job/runtime/inherited environment variables. Do not add new persistence paths without using the redaction utility.

@@ -196,6 +196,16 @@ func TestAutoProviderMockFailoverIntegration(t *testing.T) {
 	if len(summary.ProviderAttempts) != 2 {
 		t.Fatalf("attempts = %#v", summary.ProviderAttempts)
 	}
+	if summary.ProviderAttempts[0].EstimatedHourlyUSD == nil || *summary.ProviderAttempts[0].EstimatedHourlyUSD != 1.10 {
+		t.Fatalf("first attempt estimate = %#v", summary.ProviderAttempts[0])
+	}
+	second := summary.ProviderAttempts[1]
+	if second.ResumeFromURI != "mock://checkpoints/r_123/ckpt-800" || second.ResumeFromStep == nil || *second.ResumeFromStep != 800 {
+		t.Fatalf("second attempt resume provenance = %#v", second)
+	}
+	if second.EstimatedHourlyUSD == nil || *second.EstimatedHourlyUSD != 1.30 || second.EstimateCurrency != "USD" {
+		t.Fatalf("second attempt estimate = %#v", second)
+	}
 	store, err := state.Open(paths.DB)
 	if err != nil {
 		t.Fatalf("open state: %v", err)
@@ -210,6 +220,68 @@ func TestAutoProviderMockFailoverIntegration(t *testing.T) {
 	}
 	if len(decision.RejectedProviders) == 0 {
 		t.Fatalf("expected rejected providers: %#v", decision)
+	}
+}
+
+func TestLocalTrainRedactsSecretsFromArtifacts(t *testing.T) {
+	dir := t.TempDir()
+	home := filepath.Join(dir, "home")
+	script := filepath.Join(dir, "secret.py")
+	if err := os.WriteFile(script, []byte(`
+import json
+import os
+
+secret = os.environ["API_TOKEN"]
+print("plain " + secret)
+print(json.dumps({
+    "type": "status",
+    "state": "ok",
+    "api_key": "raw-event-secret",
+    "nested": {"message": secret},
+}))
+`), 0o600); err != nil {
+		t.Fatalf("write script: %v", err)
+	}
+	configPath := filepath.Join(dir, "orchestrator.yaml")
+	config := `
+job:
+  script: "` + script + `"
+  env:
+    API_TOKEN: "secret-value-123"
+`
+	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	cmd := NewRootCommand(Options{Stdout: &stdout, Stderr: &stderr})
+	cmd.SetArgs([]string{"--home", home, "train", "--provider", "local", "--config", configPath})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("train returned error: %v\nstdout=%s\nstderr=%s", err, stdout.String(), stderr.String())
+	}
+	runID := extractRunID(t, stdout.String())
+	paths := artifact.ForRun(home, runID)
+	logs, err := os.ReadFile(paths.Logs)
+	if err != nil {
+		t.Fatalf("read logs: %v", err)
+	}
+	events, err := os.ReadFile(paths.EventsJSONL)
+	if err != nil {
+		t.Fatalf("read events: %v", err)
+	}
+	summary, err := os.ReadFile(paths.Summary)
+	if err != nil {
+		t.Fatalf("read summary: %v", err)
+	}
+	for _, content := range []string{string(logs), string(events), string(summary)} {
+		if strings.Contains(content, "secret-value-123") || strings.Contains(content, "raw-event-secret") {
+			t.Fatalf("secret persisted in artifact:\n%s", content)
+		}
+	}
+	for _, content := range []string{string(logs), string(events)} {
+		if !strings.Contains(content, "[REDACTED]") {
+			t.Fatalf("expected redaction marker in artifact:\n%s", content)
+		}
 	}
 }
 
