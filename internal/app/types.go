@@ -74,15 +74,19 @@ type Run struct {
 }
 
 type Attempt struct {
-	ID          string       `json:"id"`
-	RunID       string       `json:"run_id"`
-	Provider    string       `json:"provider"`
-	State       AttemptState `json:"state"`
-	StartedAt   time.Time    `json:"started_at"`
-	EndedAt     time.Time    `json:"ended_at,omitempty"`
-	ExitCode    int          `json:"exit_code"`
-	ExitReason  string       `json:"exit_reason,omitempty"`
-	ProviderRef string       `json:"provider_ref,omitempty"`
+	ID                 string       `json:"id"`
+	RunID              string       `json:"run_id"`
+	Provider           string       `json:"provider"`
+	State              AttemptState `json:"state"`
+	StartedAt          time.Time    `json:"started_at"`
+	EndedAt            time.Time    `json:"ended_at,omitempty"`
+	ExitCode           int          `json:"exit_code"`
+	ExitReason         string       `json:"exit_reason,omitempty"`
+	ProviderRef        string       `json:"provider_ref,omitempty"`
+	ResumeFromURI      string       `json:"resume_from_uri,omitempty"`
+	ResumeFromStep     *int64       `json:"resume_from_step,omitempty"`
+	EstimatedHourlyUSD *float64     `json:"estimated_hourly_usd,omitempty"`
+	EstimateCurrency   string       `json:"estimate_currency,omitempty"`
 }
 
 type EventType string
