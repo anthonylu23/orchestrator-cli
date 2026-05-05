@@ -23,7 +23,7 @@ Exit criteria:
 
 ## Phase 1 - Local Orchestration Vertical Slice
 
-Status: substantially complete. The local provider can execute real scripts from a per-run workspace, materialize bundled local data under stable `/workspace` mounts, persist SQLite run and attempt state, parse structured JSONL events from mixed output, follow logs for active runs, cancel active local processes, and write `events.jsonl`, `logs.txt`, and `summary.json`.
+Status: substantially complete. The local provider can execute real scripts from a per-run workspace, materialize bundled local data under stable `/workspace` mounts, persist SQLite run and attempt state, parse structured JSONL events from mixed output, follow logs for active runs with a final drain on completion/cancelation, cancel active local processes, redact secrets before persistence, and write `events.jsonl`, `logs.txt`, and `summary.json`.
 
 Next steps:
 
@@ -60,7 +60,7 @@ Exit criteria:
 
 ## Phase 2 - Mock Cloud and Failure Simulation
 
-Status: substantially complete. The mock providers support configurable costs, scripted events, retryable failure modes, `provider=auto` routing, persisted routing decisions, checkpoint discovery from `events.jsonl`, and resume into a second attempt under one run.
+Status: substantially complete. The mock providers support configurable costs, scripted events, retryable failure modes, `provider=auto` routing, persisted routing decisions, checkpoint discovery from `events.jsonl`, and resume into a second attempt under one run with persisted resume and estimate provenance.
 
 Goals:
 
@@ -100,14 +100,14 @@ Goals:
 1. Add provider adapter contract tests.
 2. Normalize provider error categories and retryability.
 3. Add adapter contract checks for bundled data and supported URI schemes.
-4. Harden capability matching and support reports.
+4. Continue hardening capability matching and support reports after core routing rejection.
 5. Improve diagnostics for auth, invalid spec, data preparation, capacity, quota, network, runtime, and internal failures.
 
 Exit criteria:
 
 1. Adding a new provider does not require core orchestration changes.
 2. Adapter tests verify submit/status/logs/cancel behavior, data input handling, capability reporting, and error mapping.
-3. Routing and failure decisions are explainable from persisted state.
+3. Routing, resume, and failure decisions are explainable from persisted state.
 
 ## Phase 4 - First Real Provider: GCP
 
