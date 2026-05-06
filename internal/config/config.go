@@ -6,7 +6,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/anthonylu23/orchestrator-cli/internal/app"
+	"github.com/anthonylu23/switchboard-cli/internal/app"
+	"github.com/anthonylu23/switchboard-cli/internal/home"
 	"gopkg.in/yaml.v3"
 )
 
@@ -69,7 +70,7 @@ type TrainFlags struct {
 	Script               string
 	Args                 []string
 	AllowLargeDataBundle bool
-	OrchestratorHome     string
+	SwitchboardHome      string
 }
 
 type ResolvedTrainConfig struct {
@@ -80,7 +81,7 @@ type ResolvedTrainConfig struct {
 	BundleMaxSizeBytes        int64
 	RequireOverrideAboveLimit bool
 	AllowLargeDataBundle      bool
-	OrchestratorHome          string
+	SwitchboardHome           string
 }
 
 func LoadTrain(flags TrainFlags) (ResolvedTrainConfig, error) {
@@ -134,16 +135,9 @@ func LoadTrain(flags TrainFlags) (ResolvedTrainConfig, error) {
 		requireOverride = true
 	}
 
-	home := flags.OrchestratorHome
-	if home == "" {
-		home = os.Getenv("ORCHESTRATOR_CLI_HOME")
-	}
-	if home == "" {
-		userHome, err := os.UserHomeDir()
-		if err != nil {
-			return ResolvedTrainConfig{}, fmt.Errorf("resolve user home: %w", err)
-		}
-		home = filepath.Join(userHome, ".orchestrator-cli")
+	resolvedHome, err := home.Resolve(flags.SwitchboardHome)
+	if err != nil {
+		return ResolvedTrainConfig{}, err
 	}
 
 	return ResolvedTrainConfig{
@@ -154,7 +148,7 @@ func LoadTrain(flags TrainFlags) (ResolvedTrainConfig, error) {
 		BundleMaxSizeBytes:        int64(maxSizeMB) * 1024 * 1024,
 		RequireOverrideAboveLimit: requireOverride,
 		AllowLargeDataBundle:      flags.AllowLargeDataBundle,
-		OrchestratorHome:          home,
+		SwitchboardHome:           resolvedHome,
 	}, nil
 }
 

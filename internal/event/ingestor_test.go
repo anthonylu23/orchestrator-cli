@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/anthonylu23/orchestrator-cli/internal/app"
+	"github.com/anthonylu23/switchboard-cli/internal/app"
 )
 
 func TestParseLineMetric(t *testing.T) {

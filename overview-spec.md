@@ -1,6 +1,6 @@
-# Orchestrator CLI Specs
+# Switchboard CLI Specs
 
-The Orchestrator CLI specs have moved into `/docs`:
+The Switchboard CLI specs have moved into `/docs`:
 
 - [Overview](docs/overview.md)
 - [Architecture](docs/architecture.md)

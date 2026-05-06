@@ -11,11 +11,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/anthonylu23/orchestrator-cli/internal/app"
-	"github.com/anthonylu23/orchestrator-cli/internal/artifact"
-	"github.com/anthonylu23/orchestrator-cli/internal/config"
-	mockprovider "github.com/anthonylu23/orchestrator-cli/internal/provider/mock"
-	"github.com/anthonylu23/orchestrator-cli/internal/state"
+	"github.com/anthonylu23/switchboard-cli/internal/app"
+	"github.com/anthonylu23/switchboard-cli/internal/artifact"
+	"github.com/anthonylu23/switchboard-cli/internal/config"
+	mockprovider "github.com/anthonylu23/switchboard-cli/internal/provider/mock"
+	"github.com/anthonylu23/switchboard-cli/internal/state"
 )
 
 func TestLocalTrainStatusLogsIntegration(t *testing.T) {
@@ -80,7 +80,7 @@ func TestLocalTrainMaterializesBundledData(t *testing.T) {
 	if err := os.WriteFile(dataPath, []byte("materialized-data\n"), 0o600); err != nil {
 		t.Fatalf("write data: %v", err)
 	}
-	configPath := filepath.Join(dir, "orchestrator.yaml")
+	configPath := filepath.Join(dir, "switchboard.yaml")
 	config := `
 job:
   script: "` + filepath.Join(repo, "examples", "read_data.py") + `"
@@ -244,7 +244,7 @@ print(json.dumps({
 `), 0o600); err != nil {
 		t.Fatalf("write script: %v", err)
 	}
-	configPath := filepath.Join(dir, "orchestrator.yaml")
+	configPath := filepath.Join(dir, "switchboard.yaml")
 	config := `
 job:
   script: "` + script + `"
@@ -284,6 +284,40 @@ job:
 		if !strings.Contains(content, "[REDACTED]") {
 			t.Fatalf("expected redaction marker in artifact:\n%s", content)
 		}
+	}
+}
+
+func TestLocalTrainInjectsSwitchboardAndLegacyRuntimeEnv(t *testing.T) {
+	dir := t.TempDir()
+	home := filepath.Join(dir, "home")
+	script := filepath.Join(dir, "runtime_env.py")
+	if err := os.WriteFile(script, []byte(`
+import os
+
+pairs = [
+    ("SWITCHBOARD_RUN_ID", "ORCHESTRATOR_RUN_ID"),
+    ("SWITCHBOARD_ATTEMPT_ID", "ORCHESTRATOR_ATTEMPT_ID"),
+    ("SWITCHBOARD_CHECKPOINT_DIR", "ORCHESTRATOR_CHECKPOINT_DIR"),
+    ("SWITCHBOARD_RESUME_FROM", "ORCHESTRATOR_RESUME_FROM"),
+    ("SWITCHBOARD_EVENTS_PATH", "ORCHESTRATOR_EVENTS_PATH"),
+]
+for current, legacy in pairs:
+    assert current in os.environ, current
+    assert legacy in os.environ, legacy
+    assert os.environ[current] == os.environ[legacy], (current, legacy)
+print("runtime env ok")
+`), 0o600); err != nil {
+		t.Fatalf("write script: %v", err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	cmd := NewRootCommand(Options{Stdout: &stdout, Stderr: &stderr})
+	cmd.SetArgs([]string{"--home", home, "train", "--provider", "local", "--script", script})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("train returned error: %v\nstdout=%s\nstderr=%s", err, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "runtime env ok") {
+		t.Fatalf("stdout = %s", stdout.String())
 	}
 }
 
@@ -327,8 +361,8 @@ func TestLocalTrainFailureProducesArtifacts(t *testing.T) {
 
 func TestRunTrainMissingDataReturnsInvalidSpecExit(t *testing.T) {
 	code, err := runTrain(context.Background(), Options{Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}, config.ResolvedTrainConfig{
-		Provider:         string(app.ProviderLocal),
-		OrchestratorHome: filepath.Join(t.TempDir(), "home"),
+		Provider:        string(app.ProviderLocal),
+		SwitchboardHome: filepath.Join(t.TempDir(), "home"),
 		Job: app.JobSpec{
 			Script: filepath.Join(repoRoot(t), "examples", "train.py"),
 			Data: []app.DataInput{{
@@ -349,10 +383,10 @@ func TestRunTrainMissingDataReturnsInvalidSpecExit(t *testing.T) {
 func TestRunTrainRetryableFailureWithoutCheckpointReturnsMissingResumeExit(t *testing.T) {
 	var stdout bytes.Buffer
 	code, err := runTrain(context.Background(), Options{Stdout: &stdout, Stderr: &bytes.Buffer{}}, config.ResolvedTrainConfig{
-		Provider:         string(app.ProviderAuto),
-		OrchestratorHome: filepath.Join(t.TempDir(), "home"),
-		Job:              app.JobSpec{Script: "train.py"},
-		Routing:          config.RoutingConfig{Objective: "min_cost", MaxAttempts: 2},
+		Provider:        string(app.ProviderAuto),
+		SwitchboardHome: filepath.Join(t.TempDir(), "home"),
+		Job:             app.JobSpec{Script: "train.py"},
+		Routing:         config.RoutingConfig{Objective: "min_cost", MaxAttempts: 2},
 		Mock: config.MockConfig{Providers: []config.MockProviderConfig{{
 			Name:        "mock-lambda",
 			HourlyCost:  1.10,
@@ -373,10 +407,10 @@ func TestRunTrainRetryableFailureWithoutCheckpointReturnsMissingResumeExit(t *te
 func TestRunTrainTerminalProviderFailureDoesNotFailOver(t *testing.T) {
 	var stdout bytes.Buffer
 	code, err := runTrain(context.Background(), Options{Stdout: &stdout, Stderr: &bytes.Buffer{}}, config.ResolvedTrainConfig{
-		Provider:         string(app.ProviderAuto),
-		OrchestratorHome: filepath.Join(t.TempDir(), "home"),
-		Job:              app.JobSpec{Script: "train.py"},
-		Routing:          config.RoutingConfig{Objective: "min_cost", MaxAttempts: 2},
+		Provider:        string(app.ProviderAuto),
+		SwitchboardHome: filepath.Join(t.TempDir(), "home"),
+		Job:             app.JobSpec{Script: "train.py"},
+		Routing:         config.RoutingConfig{Objective: "min_cost", MaxAttempts: 2},
 		Mock: config.MockConfig{Providers: []config.MockProviderConfig{{
 			Name:        "mock-lambda",
 			HourlyCost:  1.10,
