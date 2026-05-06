@@ -32,6 +32,14 @@ type Options struct {
 	Stderr io.Writer
 }
 
+const (
+	exitCodeInternal      = 1
+	exitCodeInvalidSpec   = 10
+	exitCodeRouting       = 30
+	exitCodeMissingResume = 40
+	exitCodeCanceled      = 130
+)
+
 func NewRootCommand(opts Options) *cobra.Command {
 	if opts.Stdout == nil {
 		opts.Stdout = os.Stdout
@@ -99,7 +107,7 @@ func newTrainCommand(opts Options, home *string) *cobra.Command {
 
 func runTrain(ctx context.Context, opts Options, resolved config.ResolvedTrainConfig) (int, error) {
 	if err := artifact.EnsureHome(resolved.OrchestratorHome); err != nil {
-		return 1, err
+		return exitCodeInternal, err
 	}
 
 	manifest, err := data.Prepare(resolved.Job, data.PreflightOptions{
@@ -108,7 +116,7 @@ func runTrain(ctx context.Context, opts Options, resolved config.ResolvedTrainCo
 		AllowLargeBundle:     resolved.AllowLargeDataBundle,
 	})
 	if err != nil {
-		return 10, err
+		return exitCodeInvalidSpec, err
 	}
 	job := resolved.Job
 	job.Data = append([]app.DataInput(nil), manifest.Inputs...)
@@ -118,17 +126,17 @@ func runTrain(ctx context.Context, opts Options, resolved config.ResolvedTrainCo
 	runID := app.NewRunID()
 	paths := artifact.ForRun(resolved.OrchestratorHome, runID)
 	if err := artifact.EnsureRun(paths); err != nil {
-		return 1, err
+		return exitCodeInternal, err
 	}
 	store, err := state.Open(paths.DB)
 	if err != nil {
-		return 1, err
+		return exitCodeInternal, err
 	}
 	defer store.Close()
 
 	run := app.Run{ID: runID, JobName: resolved.Job.Name, Script: resolved.Job.Script, Provider: resolved.Provider, State: app.RunStateRunning, StartedAt: now}
 	if err := store.CreateRun(ctx, run); err != nil {
-		return 1, err
+		return exitCodeInternal, err
 	}
 
 	registry := buildProviderRegistry(opts, resolved.Mock)
@@ -147,9 +155,9 @@ func runTrain(ctx context.Context, opts Options, resolved config.ResolvedTrainCo
 				_ = store.SaveRoutingDecision(ctx, decision)
 			}
 			if err != nil {
-				finishRunOnly(ctx, store, runID, 30, runRedactor.String(err.Error()))
+				finishRunOnly(ctx, store, runID, exitCodeRouting, runRedactor.String(err.Error()))
 				_ = writeSummary(ctx, store, paths, runID)
-				return 30, err
+				return exitCodeRouting, err
 			}
 			selectedProvider = decision.SelectedProvider
 			fmt.Fprintf(opts.Stdout, "Selected %s: %s\n", selectedProvider, decision.SelectionReason)
@@ -169,14 +177,14 @@ func runTrain(ctx context.Context, opts Options, resolved config.ResolvedTrainCo
 		checkpointRef, checkpointErr := (checkpoint.Resolver{Home: resolved.OrchestratorHome}).Latest(ctx, runID)
 		if checkpointErr != nil || checkpointRef == nil {
 			message := "retryable provider failure but no checkpoint was found"
-			finishRunOnly(ctx, store, runID, 40, message)
+			finishRunOnly(ctx, store, runID, exitCodeMissingResume, message)
 			_ = writeSummary(ctx, store, paths, runID)
-			return 40, fmt.Errorf("%s", message)
+			return exitCodeMissingResume, fmt.Errorf("%s", message)
 		}
 		resumeFrom = checkpointRef
 		fmt.Fprintf(opts.Stdout, "Found checkpoint: step %d\n", checkpointRef.Step)
 	}
-	return 1, fmt.Errorf("run did not complete")
+	return exitCodeInternal, fmt.Errorf("run did not complete")
 }
 
 func finishFailed(ctx context.Context, store *state.Store, runID string, attemptID string, code int, reason string, providerRef string) {
@@ -199,20 +207,20 @@ func runAttempt(ctx context.Context, opts Options, store *state.Store, registry 
 		attempt.ResumeFromStep = &step
 	}
 	if err := store.CreateAttempt(ctx, attempt); err != nil {
-		return 1, false, err
+		return exitCodeInternal, false, err
 	}
 	adapter, err := registry.Get(selectedProvider)
 	if err != nil {
-		finishFailed(ctx, store, runID, attemptID, 1, baseRedactor.String(err.Error()), "")
-		return 1, false, err
+		finishFailed(ctx, store, runID, attemptID, exitCodeInternal, baseRedactor.String(err.Error()), "")
+		return exitCodeInternal, false, err
 	}
 	attemptJob := job
 	if selectedProvider == string(app.ProviderLocal) {
 		prepared, err := runtimeprep.PrepareLocal(job, manifest, paths.Workspace)
 		if err != nil {
-			finishFailed(ctx, store, runID, attemptID, 10, baseRedactor.String(err.Error()), "")
+			finishFailed(ctx, store, runID, attemptID, exitCodeInvalidSpec, baseRedactor.String(err.Error()), "")
 			_ = writeSummary(ctx, store, paths, runID)
-			return 10, false, err
+			return exitCodeInvalidSpec, false, err
 		}
 		attemptJob = prepared.Job
 	}
@@ -221,9 +229,9 @@ func runAttempt(ctx context.Context, opts Options, store *state.Store, registry 
 		if len(report.Reasons) > 0 {
 			reason = report.Reasons[0]
 		}
-		finishFailed(ctx, store, runID, attemptID, 10, baseRedactor.String(reason), "")
+		finishFailed(ctx, store, runID, attemptID, exitCodeInvalidSpec, baseRedactor.String(reason), "")
 		_ = writeSummary(ctx, store, paths, runID)
-		return 10, false, fmt.Errorf("%s", reason)
+		return exitCodeInvalidSpec, false, fmt.Errorf("%s", reason)
 	}
 	resumeValue := ""
 	if resumeFrom != nil {
@@ -240,12 +248,12 @@ func runAttempt(ctx context.Context, opts Options, store *state.Store, registry 
 	estimate, err := adapter.Estimate(ctx, attemptJob)
 	if err != nil {
 		reason := attemptRedactor.String(err.Error())
-		finishFailed(ctx, store, runID, attemptID, 30, reason, "")
+		finishFailed(ctx, store, runID, attemptID, exitCodeRouting, reason, "")
 		_ = writeSummary(ctx, store, paths, runID)
-		return 30, false, err
+		return exitCodeRouting, false, err
 	}
 	if err := store.UpdateAttemptEstimate(ctx, attemptID, estimate); err != nil {
-		return 1, false, err
+		return exitCodeInternal, false, err
 	}
 	result, err := adapter.Submit(ctx, app.SubmitRequest{
 		JobSpec:    attemptJob,
@@ -259,8 +267,7 @@ func runAttempt(ctx context.Context, opts Options, store *state.Store, registry 
 		},
 	})
 	if err != nil {
-		var providerErr *app.ProviderError
-		retryable := errors.As(err, &providerErr) && providerErr.Retryable()
+		retryable := app.IsRetryableProviderError(err)
 		endedAt := time.Now().UTC()
 		reason := attemptRedactor.String(err.Error())
 		if result.ExitReason != "" {
@@ -268,25 +275,25 @@ func runAttempt(ctx context.Context, opts Options, store *state.Store, registry 
 		}
 		providerRef := attemptRedactor.String(result.ProviderJobRef)
 		if finishErr := store.FinishAttempt(ctx, attemptID, app.AttemptStateFailed, result.ExitCode, reason, providerRef, endedAt); finishErr != nil {
-			return 1, false, finishErr
+			return exitCodeInternal, false, finishErr
 		}
 		if !retryable {
 			if finishErr := store.FinishRun(ctx, runID, app.RunStateFailed, result.ExitCode, reason, endedAt); finishErr != nil {
-				return 1, false, finishErr
+				return exitCodeInternal, false, finishErr
 			}
 		}
 		return result.ExitCode, retryable, err
 	}
 	currentRun, err := store.GetRun(ctx, runID)
 	if err != nil {
-		return 1, false, err
+		return exitCodeInternal, false, err
 	}
 	if currentRun.State == app.RunStateCanceled {
 		if err := writeSummary(ctx, store, paths, runID); err != nil {
-			return 1, false, err
+			return exitCodeInternal, false, err
 		}
 		fmt.Fprintf(opts.Stdout, "Run %s %s\n", runID, app.RunStateCanceled)
-		return 130, false, nil
+		return exitCodeCanceled, false, nil
 	}
 	endedAt := time.Now().UTC()
 	runState, attemptState := app.RunStateSucceeded, app.AttemptStateSucceeded
@@ -297,13 +304,13 @@ func runAttempt(ctx context.Context, opts Options, store *state.Store, registry 
 	exitReason := attemptRedactor.String(result.ExitReason)
 	providerRef := attemptRedactor.String(result.ProviderJobRef)
 	if err := store.FinishAttempt(ctx, attemptID, attemptState, result.ExitCode, exitReason, providerRef, endedAt); err != nil {
-		return 1, false, err
+		return exitCodeInternal, false, err
 	}
 	if err := store.FinishRun(ctx, runID, runState, result.ExitCode, exitReason, endedAt); err != nil {
-		return 1, false, err
+		return exitCodeInternal, false, err
 	}
 	if err := writeSummary(ctx, store, paths, runID); err != nil {
-		return 1, false, err
+		return exitCodeInternal, false, err
 	}
 	fmt.Fprintf(opts.Stdout, "Run %s %s\n", runID, runState)
 	return result.ExitCode, false, nil
@@ -441,10 +448,10 @@ func cancelRun(ctx context.Context, opts Options, home string, runID string) err
 		return err
 	}
 	endedAt := time.Now().UTC()
-	if err := store.FinishAttempt(ctx, running.ID, app.AttemptStateCanceled, 130, "canceled", running.ProviderRef, endedAt); err != nil {
+	if err := store.FinishAttempt(ctx, running.ID, app.AttemptStateCanceled, exitCodeCanceled, "canceled", running.ProviderRef, endedAt); err != nil {
 		return err
 	}
-	if err := store.FinishRun(ctx, runID, app.RunStateCanceled, 130, "canceled", endedAt); err != nil {
+	if err := store.FinishRun(ctx, runID, app.RunStateCanceled, exitCodeCanceled, "canceled", endedAt); err != nil {
 		return err
 	}
 	if err := writeSummary(ctx, store, paths, runID); err != nil {

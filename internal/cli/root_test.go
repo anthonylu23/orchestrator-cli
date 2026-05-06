@@ -13,6 +13,8 @@ import (
 
 	"github.com/anthonylu23/orchestrator-cli/internal/app"
 	"github.com/anthonylu23/orchestrator-cli/internal/artifact"
+	"github.com/anthonylu23/orchestrator-cli/internal/config"
+	mockprovider "github.com/anthonylu23/orchestrator-cli/internal/provider/mock"
 	"github.com/anthonylu23/orchestrator-cli/internal/state"
 )
 
@@ -320,6 +322,75 @@ func TestLocalTrainFailureProducesArtifacts(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "runtime failure") {
 		t.Fatalf("stderr = %s", stderr.String())
+	}
+}
+
+func TestRunTrainMissingDataReturnsInvalidSpecExit(t *testing.T) {
+	code, err := runTrain(context.Background(), Options{Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}, config.ResolvedTrainConfig{
+		Provider:         string(app.ProviderLocal),
+		OrchestratorHome: filepath.Join(t.TempDir(), "home"),
+		Job: app.JobSpec{
+			Script: filepath.Join(repoRoot(t), "examples", "train.py"),
+			Data: []app.DataInput{{
+				Name:   "missing",
+				Source: filepath.Join(t.TempDir(), "missing.csv"),
+				Mode:   app.DataInputModeBundle,
+			}},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected missing data error")
+	}
+	if code != exitCodeInvalidSpec {
+		t.Fatalf("exit code = %d, want %d", code, exitCodeInvalidSpec)
+	}
+}
+
+func TestRunTrainRetryableFailureWithoutCheckpointReturnsMissingResumeExit(t *testing.T) {
+	var stdout bytes.Buffer
+	code, err := runTrain(context.Background(), Options{Stdout: &stdout, Stderr: &bytes.Buffer{}}, config.ResolvedTrainConfig{
+		Provider:         string(app.ProviderAuto),
+		OrchestratorHome: filepath.Join(t.TempDir(), "home"),
+		Job:              app.JobSpec{Script: "train.py"},
+		Routing:          config.RoutingConfig{Objective: "min_cost", MaxAttempts: 2},
+		Mock: config.MockConfig{Providers: []config.MockProviderConfig{{
+			Name:        "mock-lambda",
+			HourlyCost:  1.10,
+			FailureMode: mockprovider.FailureCapacity,
+		}}},
+	})
+	if err == nil {
+		t.Fatal("expected missing checkpoint error")
+	}
+	if code != exitCodeMissingResume {
+		t.Fatalf("exit code = %d, want %d", code, exitCodeMissingResume)
+	}
+	if !strings.Contains(err.Error(), "no checkpoint") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestRunTrainTerminalProviderFailureDoesNotFailOver(t *testing.T) {
+	var stdout bytes.Buffer
+	code, err := runTrain(context.Background(), Options{Stdout: &stdout, Stderr: &bytes.Buffer{}}, config.ResolvedTrainConfig{
+		Provider:         string(app.ProviderAuto),
+		OrchestratorHome: filepath.Join(t.TempDir(), "home"),
+		Job:              app.JobSpec{Script: "train.py"},
+		Routing:          config.RoutingConfig{Objective: "min_cost", MaxAttempts: 2},
+		Mock: config.MockConfig{Providers: []config.MockProviderConfig{{
+			Name:        "mock-lambda",
+			HourlyCost:  1.10,
+			FailureMode: mockprovider.FailureRuntime,
+		}}},
+	})
+	if err == nil {
+		t.Fatal("expected terminal runtime failure")
+	}
+	if code != 1 {
+		t.Fatalf("exit code = %d, want 1", code)
+	}
+	if strings.Contains(stdout.String(), "Selected mock-gcp") {
+		t.Fatalf("terminal failure should not fail over, stdout = %s", stdout.String())
 	}
 }
 
