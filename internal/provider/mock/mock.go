@@ -59,6 +59,9 @@ func (p *Provider) Capabilities(ctx context.Context) (app.ProviderCapabilities, 
 }
 
 func (p *Provider) ValidateJob(ctx context.Context, spec app.JobSpec) app.SupportReport {
+	if spec.Script == "" {
+		return app.SupportReport{Supported: false, Reasons: []string{"script is required"}}
+	}
 	return app.SupportReport{Supported: true}
 }
 

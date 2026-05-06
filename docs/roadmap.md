@@ -95,11 +95,13 @@ Exit criteria:
 
 ## Phase 3 - Provider Extensibility Hardening
 
+Status: in progress. A shared provider contract harness now covers local and mock adapter identity, auth validation, capabilities, job validation, estimates, submit/status behavior, log streaming expectations, and cancel behavior. Routing tests cover capability and support-report rejection paths, and CLI tests pin key diagnostic exit categories.
+
 Goals:
 
-1. Add provider adapter contract tests.
-2. Normalize provider error categories and retryability.
-3. Add adapter contract checks for bundled data and supported URI schemes.
+1. Expand provider adapter contract tests as new provider capabilities are introduced.
+2. Keep provider error categories and retryability normalized through `ProviderError`.
+3. Keep adapter contract checks for bundled data and supported URI schemes current.
 4. Continue hardening capability matching and support reports after core routing rejection.
 5. Improve diagnostics for auth, invalid spec, data preparation, capacity, quota, network, runtime, and internal failures.
 

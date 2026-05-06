@@ -15,6 +15,7 @@ The implementation is a Go CLI with a small internal package split:
 9. `internal/event`: mixed stdout parsing and JSONL helpers.
 10. `internal/artifact` and `internal/summary`: durable artifact paths and summary generation.
 11. `internal/redact`: redaction of secret-like keys and known secret environment values before persistence.
+12. `internal/provider/contract`: reusable adapter contract checks for local, mock, and future providers.
 
 ## Local Workflow
 
@@ -43,6 +44,30 @@ Run checks:
 ```sh
 go test ./...
 go vet ./...
+```
+
+## Provider Contract Tests
+
+Provider implementations should opt into `internal/provider/contract` before being registered as production candidates. The contract validates adapter identity, auth validation, capabilities, job validation, estimates, submit/status behavior, log streaming expectations, and cancel behavior.
+
+When adding a provider:
+
+1. Implement `app.ProviderAdapter`.
+2. Add a provider-local `contract_test.go`.
+3. Declare intentional behavior differences in the contract subject, such as artifact-backed logs or provider-specific cancel setup.
+4. Add provider-specific tests only for behavior that cannot be represented by the shared contract.
+5. Run `go test ./internal/provider/...` before broader CLI integration tests.
+
+## Exit Codes
+
+The CLI keeps stable exit categories for automation:
+
+```text
+1    internal or unclassified failure
+10   invalid job spec or data preparation failure
+30   routing or provider selection failure
+40   retryable provider failure without a usable resume checkpoint
+130  canceled run
 ```
 
 ## Current Limits

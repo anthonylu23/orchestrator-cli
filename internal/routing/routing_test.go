@@ -86,9 +86,54 @@ func TestSelectRejectsUnsupportedURIScheme(t *testing.T) {
 	}
 }
 
+func TestSelectRecordsSupportReportRejection(t *testing.T) {
+	registry := provider.NewRegistry(staticProvider{
+		name:         "rejecting",
+		capabilities: app.ProviderCapabilities{SupportsLocalScript: true},
+		validateSet:  true,
+		validate: app.SupportReport{
+			Supported: false,
+			Reasons:   []string{"custom provider rejection"},
+		},
+	})
+	decision, err := Select(context.Background(), registry, app.JobSpec{Script: "train.py"}, Options{Objective: "min_cost"})
+	if err == nil {
+		t.Fatal("expected no eligible providers")
+	}
+	if len(decision.RejectedProviders) != 1 || decision.RejectedProviders[0].Reasons[0] != "custom provider rejection" {
+		t.Fatalf("decision = %#v", decision)
+	}
+}
+
+func TestSelectAcceptsSupportedURIScheme(t *testing.T) {
+	registry := provider.NewRegistry(staticProvider{
+		name: "s3-provider",
+		capabilities: app.ProviderCapabilities{
+			SupportsLocalScript: true,
+			SupportedURISchemes: []string{"s3"},
+		},
+	})
+	decision, err := Select(context.Background(), registry, app.JobSpec{
+		Script: "train.py",
+		Data: []app.DataInput{{
+			Name:   "train",
+			Source: "s3://bucket/train.csv",
+			Mode:   app.DataInputModeURI,
+		}},
+	}, Options{Objective: "min_cost"})
+	if err != nil {
+		t.Fatalf("Select returned error: %v", err)
+	}
+	if decision.SelectedProvider != "s3-provider" {
+		t.Fatalf("decision = %#v", decision)
+	}
+}
+
 type staticProvider struct {
 	name         string
 	capabilities app.ProviderCapabilities
+	validateSet  bool
+	validate     app.SupportReport
 }
 
 func (p staticProvider) Name() app.ProviderName {
@@ -104,6 +149,9 @@ func (p staticProvider) Capabilities(ctx context.Context) (app.ProviderCapabilit
 }
 
 func (p staticProvider) ValidateJob(ctx context.Context, spec app.JobSpec) app.SupportReport {
+	if p.validateSet {
+		return p.validate
+	}
 	return app.SupportReport{Supported: true}
 }
 

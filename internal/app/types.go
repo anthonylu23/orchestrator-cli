@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"time"
 )
 
@@ -203,6 +204,19 @@ func (e *ProviderError) Retryable() bool {
 	default:
 		return false
 	}
+}
+
+func ProviderErrorKindOf(err error) ProviderErrorKind {
+	var providerErr *ProviderError
+	if errors.As(err, &providerErr) && providerErr != nil {
+		return providerErr.Kind
+	}
+	return ProviderErrorUnknown
+}
+
+func IsRetryableProviderError(err error) bool {
+	var providerErr *ProviderError
+	return errors.As(err, &providerErr) && providerErr.Retryable()
 }
 
 type SupportReport struct {
