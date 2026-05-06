@@ -63,6 +63,12 @@ go test ./...
 go vet ./...
 ```
 
+Provider adapters should also pass the shared contract checks:
+
+```sh
+go test ./internal/provider/...
+```
+
 ## Product Wedge
 
 Given a training script and hardware constraints, Orchestrator should choose a compatible provider, run the job, persist telemetry, and resume from the latest checkpoint if a provider fails.

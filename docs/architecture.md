@@ -228,7 +228,7 @@ Adding a provider should require:
 3. Reporting capabilities.
 4. Mapping raw API errors into normalized provider errors.
 5. Supporting or explicitly rejecting bundled data and URI schemes.
-6. Passing adapter contract tests.
+6. Passing the shared provider contract tests, with explicit contract settings for intentional behavior differences such as artifact-backed logs.
 7. Registering the adapter.
 
 It should not require changes to CLI commands, the run state machine, retry/failover policy, telemetry parsing, or checkpoint resolution.
