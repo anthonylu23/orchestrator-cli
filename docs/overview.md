@@ -2,11 +2,11 @@
 
 ## Vision
 
-Orchestrator CLI is a local-first orchestration layer for ML and deep learning jobs. It should make training runs portable across execution backends without forcing users to learn each provider's job lifecycle, logging model, failure behavior, and resume workflow.
+Orchestrator CLI is a local-first orchestration layer for ML and deep learning jobs. It should make training runs portable across execution backends without forcing users to learn each provider's job lifecycle, hardware catalog, logging model, failure behavior, and resume workflow.
 
 ## Core Promise
 
-Run a training job through one CLI, materialize its data inputs consistently, observe it consistently, persist durable telemetry, and resume from the latest checkpoint when an execution backend fails.
+Run a training job through one CLI, materialize its data inputs consistently, choose suitable execution infrastructure, observe it consistently, persist durable telemetry, and resume from the latest checkpoint when an execution backend fails.
 
 ## Target Users
 
@@ -16,15 +16,15 @@ Run a training job through one CLI, materialize its data inputs consistently, ob
 
 ## Product Wedge
 
-"Given my script and hardware constraints, run on the cheapest available compatible provider and resume if a provider fails."
+"Given my script, data, sizing profile, and budget, choose compatible provider and GPU hardware, run the job, and resume if execution fails."
 
-The first implementation should prove this through local and mock providers before integrating real cloud APIs. That keeps the early work focused on orchestration quality instead of provider setup friction.
+The first implementation proves the lifecycle through local and mock providers before integrating real cloud APIs. That keeps the early work focused on orchestration quality instead of provider setup friction. The next product layer is auto hardware routing: selecting provider and single-node GPU shape/count from model, data, batch, precision, probe output, and budget.
 
 ## Differentiation
 
 1. Provider adapter architecture that makes new backends straightforward to add.
 2. Run/attempt lifecycle model built for failover and checkpoint resume.
-3. Cost-aware routing with explicit provider rejection reasons.
+3. Cost-aware routing with explicit provider and hardware rejection reasons.
 4. Structured JSONL events and stable exit codes for automation.
 5. Minimal config for simple runs with optional YAML for advanced workflows.
 
@@ -39,6 +39,7 @@ The first implementation should prove this through local and mock providers befo
 7. Durable artifacts under `~/.orchestrator-cli/runs/<run-id>/`.
 8. Provider adapter contract tests.
 9. GCP as the first real provider after local/mock behavior is proven.
+10. Planned auto hardware routing after provider/hardware capability reporting exists.
 
 ## Deferred Scope
 
@@ -52,6 +53,16 @@ The first implementation should prove this through local and mock providers befo
 8. Complex sweeps or fan-out beyond basic future design notes.
 9. Enterprise governance and compliance features.
 10. Typed API connector framework for arbitrary dataset APIs.
+
+## Planned Auto Hardware Routing
+
+Auto hardware routing is planned, not implemented yet. The intended control levels are:
+
+1. `full_auto`: Orchestrator selects provider, GPU shape, and single-node GPU count.
+2. `auto_provider`: the user selects hardware requirements, and Orchestrator selects the provider.
+3. `manual`: the user selects both provider and hardware.
+
+The default objective should be fastest compatible infrastructure within a max estimated run cost. The sizing path should be probe-first: training scripts or frameworks emit a sizing profile, and user hints such as dataset size, model size, batch size, precision, optimizer, and sequence/image dimensions fill gaps or set bounds. If Orchestrator cannot estimate memory fit or total cost with enough confidence, it should fail before submit with clear guidance rather than overprovision silently.
 
 ## Early Runtime Assumptions
 

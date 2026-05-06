@@ -17,11 +17,14 @@ type Config struct {
 	Data    DataConfig    `yaml:"data"`
 	Routing RoutingConfig `yaml:"routing"`
 	Mock    MockConfig    `yaml:"mock"`
+	GCP     GCPConfig     `yaml:"gcp"`
 }
 
 type JobConfig struct {
 	Name    string            `yaml:"name"`
 	Script  string            `yaml:"script"`
+	Image   string            `yaml:"image"`
+	Command []string          `yaml:"command"`
 	Args    []string          `yaml:"args"`
 	Env     map[string]string `yaml:"env"`
 	WorkDir string            `yaml:"work_dir"`
@@ -44,6 +47,21 @@ type RoutingConfig struct {
 
 type MockConfig struct {
 	Providers []MockProviderConfig `yaml:"providers"`
+}
+
+type GCPConfig struct {
+	ProjectID           string  `yaml:"project_id"`
+	Location            string  `yaml:"location"`
+	OutputURIPrefix     string  `yaml:"output_uri_prefix"`
+	MachineType         string  `yaml:"machine_type"`
+	AcceleratorType     string  `yaml:"accelerator_type"`
+	AcceleratorCount    int32   `yaml:"accelerator_count"`
+	BootDiskType        string  `yaml:"boot_disk_type"`
+	BootDiskSizeGB      int32   `yaml:"boot_disk_size_gb"`
+	ServiceAccount      string  `yaml:"service_account"`
+	Network             string  `yaml:"network"`
+	PollIntervalSeconds int     `yaml:"poll_interval_seconds"`
+	EstimateHourlyUSD   float64 `yaml:"estimate_hourly_usd"`
 }
 
 type MockProviderConfig struct {
@@ -77,6 +95,7 @@ type ResolvedTrainConfig struct {
 	Job                       app.JobSpec
 	Routing                   RoutingConfig
 	Mock                      MockConfig
+	GCP                       GCPConfig
 	BundleMaxSizeBytes        int64
 	RequireOverrideAboveLimit bool
 	AllowLargeDataBundle      bool
@@ -101,6 +120,8 @@ func LoadTrain(flags TrainFlags) (ResolvedTrainConfig, error) {
 	job := app.JobSpec{
 		Name:    cfg.Job.Name,
 		Script:  cfg.Job.Script,
+		Image:   cfg.Job.Image,
+		Command: append([]string(nil), cfg.Job.Command...),
 		Args:    append([]string(nil), cfg.Job.Args...),
 		Env:     cloneMap(cfg.Job.Env),
 		Data:    append([]app.DataInput(nil), cfg.Data.Inputs...),
@@ -112,11 +133,15 @@ func LoadTrain(flags TrainFlags) (ResolvedTrainConfig, error) {
 	if len(flags.Args) > 0 {
 		job.Args = append([]string(nil), flags.Args...)
 	}
-	if job.Script == "" {
-		return ResolvedTrainConfig{}, errors.New("script is required")
+	if job.Script == "" && job.Image == "" {
+		return ResolvedTrainConfig{}, errors.New("script or image is required")
 	}
 	if job.Name == "" {
-		job.Name = filepath.Base(job.Script)
+		if job.Script != "" {
+			job.Name = filepath.Base(job.Script)
+		} else {
+			job.Name = filepath.Base(job.Image)
+		}
 	}
 	if job.Env == nil {
 		job.Env = map[string]string{}
@@ -151,11 +176,12 @@ func LoadTrain(flags TrainFlags) (ResolvedTrainConfig, error) {
 		Job:                       job,
 		Routing:                   resolveRouting(cfg.Routing),
 		Mock:                      cfg.Mock,
+		GCP:                       resolveGCP(cfg.GCP),
 		BundleMaxSizeBytes:        int64(maxSizeMB) * 1024 * 1024,
 		RequireOverrideAboveLimit: requireOverride,
 		AllowLargeDataBundle:      flags.AllowLargeDataBundle,
 		OrchestratorHome:          home,
-	}, nil
+	}, validateProviderConfig(provider, job, resolveGCP(cfg.GCP))
 }
 
 func resolveRouting(routing RoutingConfig) RoutingConfig {
@@ -166,6 +192,44 @@ func resolveRouting(routing RoutingConfig) RoutingConfig {
 		routing.MaxAttempts = 2
 	}
 	return routing
+}
+
+func resolveGCP(gcp GCPConfig) GCPConfig {
+	if gcp.Location == "" {
+		gcp.Location = "us-central1"
+	}
+	if gcp.MachineType == "" {
+		gcp.MachineType = "n1-standard-4"
+	}
+	if gcp.BootDiskType == "" {
+		gcp.BootDiskType = "pd-ssd"
+	}
+	if gcp.BootDiskSizeGB == 0 {
+		gcp.BootDiskSizeGB = 100
+	}
+	if gcp.PollIntervalSeconds == 0 {
+		gcp.PollIntervalSeconds = 30
+	}
+	return gcp
+}
+
+func validateProviderConfig(provider string, job app.JobSpec, gcp GCPConfig) error {
+	if provider != "gcp" {
+		return nil
+	}
+	if job.Image == "" {
+		return errors.New("gcp provider requires job.image")
+	}
+	if gcp.ProjectID == "" {
+		return errors.New("gcp.project_id is required")
+	}
+	if gcp.Location == "" {
+		return errors.New("gcp.location is required")
+	}
+	if gcp.OutputURIPrefix == "" {
+		return errors.New("gcp.output_uri_prefix is required")
+	}
+	return nil
 }
 
 func LoadFile(path string) (Config, error) {

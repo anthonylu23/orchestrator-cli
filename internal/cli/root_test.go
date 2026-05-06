@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -294,10 +296,223 @@ func TestProvidersListIncludesMocks(t *testing.T) {
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("providers list returned error: %v", err)
 	}
-	for _, name := range []string{"local", "mock-lambda", "mock-gcp"} {
+	for _, name := range []string{"local", "mock-lambda", "mock-gcp", "gcp"} {
 		if !strings.Contains(stdout.String(), name) {
 			t.Fatalf("%q missing from %s", name, stdout.String())
 		}
+	}
+}
+
+func TestGCPTrainIntegrationUsesConfiguredProvider(t *testing.T) {
+	dir := t.TempDir()
+	home := filepath.Join(dir, "home")
+	configPath := filepath.Join(dir, "orchestrator.yaml")
+	configContent := `
+job:
+  name: gcp-test
+  image: us-docker.pkg.dev/project/repo/train:latest
+  command: ["python", "-m", "trainer"]
+  args: ["--epochs", "1"]
+  env:
+    FOO: bar
+data:
+  inputs:
+    - name: train
+      source: gs://bucket/train
+      mode: uri
+gcp:
+  project_id: test-project
+  location: us-central1
+  output_uri_prefix: gs://bucket/outputs
+  machine_type: n1-standard-8
+  accelerator_type: NVIDIA_TESLA_T4
+  accelerator_count: 1
+  estimate_hourly_usd: 2.50
+`
+	if err := os.WriteFile(configPath, []byte(configContent), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	var captured config.GCPConfig
+	fake := &fakeGCPAdapter{}
+	var stdout, stderr bytes.Buffer
+	cmd := NewRootCommand(Options{
+		Stdout: &stdout,
+		Stderr: &stderr,
+		GCPProviderFactory: func(cfg config.GCPConfig, stdout io.Writer, stderr io.Writer) app.ProviderAdapter {
+			captured = cfg
+			return fake
+		},
+	})
+	cmd.SetArgs([]string{"--home", home, "train", "--provider", "gcp", "--config", configPath})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("train returned error: %v\nstdout=%s\nstderr=%s", err, stdout.String(), stderr.String())
+	}
+	if captured.ProjectID != "test-project" || captured.EstimateHourlyUSD != 2.50 {
+		t.Fatalf("captured config = %#v", captured)
+	}
+	runID := extractRunID(t, stdout.String())
+	paths := artifact.ForRun(home, runID)
+	store, err := state.Open(paths.DB)
+	if err != nil {
+		t.Fatalf("open state: %v", err)
+	}
+	defer store.Close()
+	attempts, err := store.AttemptsByRun(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("attempts: %v", err)
+	}
+	if len(attempts) != 1 {
+		t.Fatalf("attempts = %#v", attempts)
+	}
+	if attempts[0].Provider != "gcp" || attempts[0].ProviderRef != "projects/test-project/locations/us-central1/customJobs/fake" {
+		t.Fatalf("attempt = %#v", attempts[0])
+	}
+	if attempts[0].EstimatedHourlyUSD == nil || *attempts[0].EstimatedHourlyUSD != 2.5 {
+		t.Fatalf("estimate = %#v", attempts[0])
+	}
+
+	stdout.Reset()
+	statusCmd := NewRootCommand(Options{Stdout: &stdout, Stderr: &stderr})
+	statusCmd.SetArgs([]string{"--home", home, "status", runID, "--json"})
+	if err := statusCmd.Execute(); err != nil {
+		t.Fatalf("status json returned error: %v", err)
+	}
+	if !strings.Contains(stdout.String(), `"image":"us-docker.pkg.dev/project/repo/train:latest"`) {
+		t.Fatalf("status json = %s", stdout.String())
+	}
+
+	stdout.Reset()
+	statusCmd = NewRootCommand(Options{Stdout: &stdout, Stderr: &stderr})
+	statusCmd.SetArgs([]string{"--home", home, "status", runID})
+	if err := statusCmd.Execute(); err != nil {
+		t.Fatalf("status returned error: %v", err)
+	}
+	if !strings.Contains(stdout.String(), "us-docker.pkg.dev/project/repo/train:latest") {
+		t.Fatalf("status = %s", stdout.String())
+	}
+}
+
+func TestGCPProviderFailureUsesStableRoutingExit(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "orchestrator.yaml")
+	configContent := `
+job:
+  name: gcp-test
+  image: us-docker.pkg.dev/project/repo/train:latest
+gcp:
+  project_id: test-project
+  location: us-central1
+  output_uri_prefix: gs://bucket/outputs
+`
+	if err := os.WriteFile(configPath, []byte(configContent), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	code, err := runTrain(context.Background(), Options{
+		Stdout: &bytes.Buffer{},
+		Stderr: &bytes.Buffer{},
+		GCPProviderFactory: func(cfg config.GCPConfig, stdout io.Writer, stderr io.Writer) app.ProviderAdapter {
+			return &fakeGCPAdapter{submitErr: &app.ProviderError{Kind: app.ProviderErrorQuota, Message: "quota exceeded"}, submitExitCode: exitCodeRouting}
+		},
+	}, config.ResolvedTrainConfig{
+		Provider:         "gcp",
+		OrchestratorHome: filepath.Join(dir, "home"),
+		Job:              app.JobSpec{Name: "gcp-test", Image: "image"},
+		GCP: config.GCPConfig{
+			ProjectID:       "test-project",
+			Location:        "us-central1",
+			OutputURIPrefix: "gs://bucket/outputs",
+		},
+	})
+	if err == nil {
+		t.Fatal("expected gcp submit error")
+	}
+	if code != exitCodeRouting {
+		t.Fatalf("exit code = %d, want %d", code, exitCodeRouting)
+	}
+}
+
+func TestGCPCancelStateIsNotOverwrittenBySubmitError(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "home")
+	fake := &fakeGCPAdapter{
+		submitErr:      &app.ProviderError{Kind: app.ProviderErrorRuntime, Message: "gcp custom job canceled"},
+		submitExitCode: exitCodeCanceled,
+		submitStarted:  make(chan struct{}),
+		releaseSubmit:  make(chan struct{}),
+		cancelCalled:   make(chan struct{}),
+	}
+	opts := Options{
+		Stdout: &bytes.Buffer{},
+		Stderr: &bytes.Buffer{},
+		GCPProviderFactory: func(cfg config.GCPConfig, stdout io.Writer, stderr io.Writer) app.ProviderAdapter {
+			return fake
+		},
+	}
+
+	type trainResult struct {
+		code int
+		err  error
+	}
+	done := make(chan trainResult, 1)
+	go func() {
+		code, err := runTrain(context.Background(), opts, config.ResolvedTrainConfig{
+			Provider:         "gcp",
+			OrchestratorHome: home,
+			Job:              app.JobSpec{Name: "gcp-test", Image: "image"},
+			GCP: config.GCPConfig{
+				ProjectID:       "test-project",
+				Location:        "us-central1",
+				OutputURIPrefix: "gs://bucket/outputs",
+			},
+		})
+		done <- trainResult{code: code, err: err}
+	}()
+
+	select {
+	case <-fake.submitStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("submit did not start")
+	}
+	runID := waitForRunID(t, home)
+	if err := cancelRun(context.Background(), opts, home, runID); err != nil {
+		t.Fatalf("cancelRun returned error: %v", err)
+	}
+	select {
+	case <-fake.cancelCalled:
+	case <-time.After(5 * time.Second):
+		t.Fatal("fake cancel was not called")
+	}
+	close(fake.releaseSubmit)
+
+	select {
+	case result := <-done:
+		if result.err != nil {
+			t.Fatalf("runTrain returned error: %v", result.err)
+		}
+		if result.code != exitCodeCanceled {
+			t.Fatalf("exit code = %d, want %d", result.code, exitCodeCanceled)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("runTrain did not finish")
+	}
+
+	store, err := state.Open(artifact.ForRun(home, runID).DB)
+	if err != nil {
+		t.Fatalf("open state: %v", err)
+	}
+	defer store.Close()
+	run, err := store.GetRun(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("GetRun returned error: %v", err)
+	}
+	if run.State != app.RunStateCanceled || run.ExitCode != exitCodeCanceled {
+		t.Fatalf("run = %#v", run)
+	}
+	attempts, err := store.AttemptsByRun(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("AttemptsByRun returned error: %v", err)
+	}
+	if len(attempts) != 1 || attempts[0].State != app.AttemptStateCanceled || attempts[0].ExitCode != exitCodeCanceled {
+		t.Fatalf("attempts = %#v", attempts)
 	}
 }
 
@@ -450,3 +665,78 @@ func waitForText(t *testing.T, buf *bytes.Buffer, text string) {
 	}
 	t.Fatalf("%q not found in %q", text, buf.String())
 }
+
+type fakeGCPAdapter struct {
+	submitErr      error
+	submitExitCode int
+	submitStarted  chan struct{}
+	releaseSubmit  chan struct{}
+	cancelCalled   chan struct{}
+}
+
+func (a *fakeGCPAdapter) Name() app.ProviderName {
+	return "gcp"
+}
+
+func (a *fakeGCPAdapter) ValidateAuth(ctx context.Context) error {
+	return nil
+}
+
+func (a *fakeGCPAdapter) Capabilities(ctx context.Context) (app.ProviderCapabilities, error) {
+	return app.ProviderCapabilities{
+		SupportsDockerImage:     true,
+		SupportedURISchemes:     []string{"gs"},
+		SupportsObjectStorePull: true,
+	}, nil
+}
+
+func (a *fakeGCPAdapter) ValidateJob(ctx context.Context, spec app.JobSpec) app.SupportReport {
+	if spec.Image == "" {
+		return app.SupportReport{Supported: false, Reasons: []string{"gcp provider requires job.image"}}
+	}
+	return app.SupportReport{Supported: true}
+}
+
+func (a *fakeGCPAdapter) Estimate(ctx context.Context, spec app.JobSpec) (app.CostEstimate, error) {
+	return app.CostEstimate{HourlyUSD: 2.5, Currency: "USD"}, nil
+}
+
+func (a *fakeGCPAdapter) Submit(ctx context.Context, req app.SubmitRequest) (app.SubmitResult, error) {
+	ref := "projects/test-project/locations/us-central1/customJobs/fake"
+	if req.OnStarted != nil {
+		if err := req.OnStarted(app.ProviderJobRef{ID: ref}); err != nil {
+			return app.SubmitResult{}, err
+		}
+	}
+	if a.submitStarted != nil {
+		close(a.submitStarted)
+	}
+	if a.releaseSubmit != nil {
+		<-a.releaseSubmit
+	}
+	if a.submitErr != nil {
+		code := a.submitExitCode
+		if code == 0 {
+			code = 1
+		}
+		return app.SubmitResult{ProviderJobRef: ref, ExitCode: code, ExitReason: a.submitErr.Error()}, a.submitErr
+	}
+	return app.SubmitResult{ProviderJobRef: ref, ExitCode: 0, ExitReason: "completed"}, nil
+}
+
+func (a *fakeGCPAdapter) GetStatus(ctx context.Context, ref app.ProviderJobRef) (app.ProviderJobStatus, error) {
+	return app.ProviderJobStatus{State: app.AttemptStateSucceeded}, nil
+}
+
+func (a *fakeGCPAdapter) StreamLogs(ctx context.Context, req app.LogStreamRequest) (app.LogStream, error) {
+	return nil, errUnsupportedFakeLogs
+}
+
+func (a *fakeGCPAdapter) Cancel(ctx context.Context, ref app.ProviderJobRef) error {
+	if a.cancelCalled != nil {
+		close(a.cancelCalled)
+	}
+	return nil
+}
+
+var errUnsupportedFakeLogs = errors.New("unsupported")

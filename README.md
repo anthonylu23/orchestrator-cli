@@ -2,15 +2,15 @@
 
 Orchestrator CLI is a fault-tolerant ML job orchestrator with provider adapters, local durable run state, structured telemetry, and cost-aware scheduling.
 
-The project is designed as a systems engineering and ML infrastructure tool: the orchestration core owns lifecycle, retries, routing, failover, state, telemetry, and resume policy, while providers stay behind a small adapter contract.
+The project is designed as a systems engineering and ML infrastructure tool: the orchestration core owns lifecycle, retries, routing, failover, state, telemetry, resume policy, and eventually hardware selection, while providers stay behind a small adapter contract.
 
 ## Status
 
-Orchestrator now has a local orchestration vertical slice plus deterministic mock-provider failover. The current implementation can run a local Python training script, persist SQLite run state, capture mixed logs and structured JSONL events, materialize local data bundles, cancel active local runs, route across mock providers, and resume from the latest checkpoint after a simulated provider failure.
+Orchestrator now has a local orchestration vertical slice, deterministic mock-provider failover, and a first real GCP provider. The current implementation can run a local Python training script, persist SQLite run state, capture mixed logs and structured JSONL events, materialize local data bundles, cancel active local runs, route across mock providers, resume from the latest checkpoint after a simulated provider failure, and submit container-image jobs to Vertex AI CustomJob.
 
 Run artifacts redact secret-like keys and known secret environment values before persistence. Attempt history also records resume checkpoint provenance and provider cost estimates so failover decisions remain explainable after completion.
 
-Real cloud providers remain roadmap work.
+GCP v1 is container-image-first. Local script packaging, image build/push, richer GCP data staging, and auto hardware routing remain roadmap work.
 
 ## Quick Start
 
@@ -69,9 +69,15 @@ Provider adapters should also pass the shared contract checks:
 go test ./internal/provider/...
 ```
 
+Run a Vertex AI CustomJob from a prebuilt container image:
+
+```sh
+./bin/orchestrator-cli train --provider gcp --config examples/gcp-container.yaml
+```
+
 ## Product Wedge
 
-Given a training script and hardware constraints, Orchestrator should choose a compatible provider, run the job, persist telemetry, and resume from the latest checkpoint if a provider fails.
+Given a training script, data inputs, sizing profile, and budget, Orchestrator should choose compatible execution infrastructure, run the job, persist telemetry, and resume from the latest checkpoint if a provider fails.
 
 The first impressive demo is intentionally narrower than full multi-cloud support:
 
@@ -81,18 +87,21 @@ The first impressive demo is intentionally narrower than full multi-cloud suppor
 4. Simulate a cloud provider failure with the `mock` provider.
 5. Discover the latest checkpoint and resume on another adapter without changing orchestration code.
 
+The broader product direction extends `provider=auto` into auto hardware routing. Users should be able to choose between `full_auto` provider plus GPU selection, `auto_provider` with user-selected hardware, and fully manual provider/hardware configuration.
+
 ## Target Commands
 
 ```sh
 orchestrator-cli train --provider local --script examples/train.py
 orchestrator-cli train --provider auto --config examples/failover.yaml
+orchestrator-cli train --provider gcp --config examples/gcp-container.yaml
 orchestrator-cli status <run-id>
 orchestrator-cli logs <run-id> --follow
 orchestrator-cli cancel <run-id>
 orchestrator-cli providers list --json
 ```
 
-Planned commands not implemented yet include explicit `resume` and real provider adapters.
+Planned commands not implemented yet include explicit `resume`. Planned provider work includes local script packaging for GCP and additional cloud adapters.
 
 ## Data Inputs
 
@@ -122,6 +131,8 @@ data:
 Local paths default to bundled inputs. URI sources default to runtime-resolved inputs. Oversized local bundles fail preflight unless the user passes an explicit override such as `--allow-large-data-bundle`.
 
 For local runs, bundled files and directories are copied into each run workspace under `runs/<run-id>/workspace`. Mounts must be under `/workspace`; for example, `/workspace/data/train` maps to `runs/<run-id>/workspace/data/train`. Job arguments and environment values that reference declared mounts are rewritten to host paths before the local process starts.
+
+For GCP runs, v1 accepts `job.image` and `gs://` URI inputs only. Bundled local data and non-GCS URI inputs are rejected before submit. See [GCP Provider](docs/gcp-provider.md).
 
 Example local data run:
 
@@ -155,6 +166,8 @@ The core user-facing object is a run. Each provider execution is an attempt. Thi
 
 For `provider=auto`, routing checks provider capabilities before ranking candidates. Providers that cannot satisfy bundled data inputs or declared URI schemes are rejected with persisted reasons.
 
+Planned auto hardware routing will add GPU shape and GPU count selection on top of provider routing. See [Auto Hardware Routing](docs/auto-hardware-routing.md).
+
 ## Artifacts
 
 By default Orchestrator writes to `~/.orchestrator-cli`. Set `ORCHESTRATOR_CLI_HOME` or pass `--home` to isolate runs.
@@ -176,11 +189,14 @@ By default Orchestrator writes to `~/.orchestrator-cli`. Set `ORCHESTRATOR_CLI_H
 2. Local orchestration vertical slice.
 3. Mock cloud provider and failure simulation.
 4. Provider extensibility hardening.
-5. GCP as the first real provider.
-6. Later: Lambda, Hyperbolic, container packaging, shared checkpoint backends, fan-out sweeps, richer terminal UI, and optional hosted control plane.
+5. GCP as the first real provider: container-image CustomJob support is implemented; packaging and richer staging remain.
+6. Auto hardware routing for fastest compatible single-node GPU selection within a max run cost.
+7. Later: Lambda, Hyperbolic, container packaging, shared checkpoint backends, fan-out sweeps, richer terminal UI, and optional hosted control plane.
 
 ## Docs
 
 - [Overview](docs/overview.md)
 - [Architecture](docs/architecture.md)
+- [GCP Provider](docs/gcp-provider.md)
+- [Auto Hardware Routing](docs/auto-hardware-routing.md)
 - [Roadmap](docs/roadmap.md)

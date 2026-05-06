@@ -68,3 +68,63 @@ data:
 		t.Fatalf("bundle max = %d", got.BundleMaxSizeBytes)
 	}
 }
+
+func TestLoadTrainAcceptsContainerImageJob(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "orchestrator.yaml")
+	content := []byte(`
+job:
+  name: gcp-container
+  image: us-docker.pkg.dev/project/repo/train:latest
+  command: ["python", "-m", "trainer"]
+  args: ["--epochs", "2"]
+gcp:
+  project_id: test-project
+  location: us-central1
+  output_uri_prefix: gs://bucket/outputs
+`)
+	if err := os.WriteFile(configPath, content, 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	got, err := LoadTrain(TrainFlags{
+		ConfigPath:       configPath,
+		Provider:         "gcp",
+		OrchestratorHome: filepath.Join(dir, "home"),
+	})
+	if err != nil {
+		t.Fatalf("LoadTrain returned error: %v", err)
+	}
+	if got.Job.Script != "" || got.Job.Image != "us-docker.pkg.dev/project/repo/train:latest" {
+		t.Fatalf("job = %#v", got.Job)
+	}
+	if got.GCP.MachineType != "n1-standard-4" || got.GCP.BootDiskSizeGB != 100 || got.GCP.PollIntervalSeconds != 30 {
+		t.Fatalf("gcp defaults = %#v", got.GCP)
+	}
+}
+
+func TestLoadTrainRequiresGCPImageAndFields(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "orchestrator.yaml")
+	content := []byte(`
+job:
+  script: train.py
+gcp:
+  project_id: test-project
+`)
+	if err := os.WriteFile(configPath, content, 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	_, err := LoadTrain(TrainFlags{
+		ConfigPath:       configPath,
+		Provider:         "gcp",
+		OrchestratorHome: filepath.Join(dir, "home"),
+	})
+	if err == nil {
+		t.Fatal("expected gcp validation error")
+	}
+	if err.Error() != "gcp provider requires job.image" {
+		t.Fatalf("error = %v", err)
+	}
+}

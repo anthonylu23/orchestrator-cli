@@ -17,6 +17,7 @@ import (
 	"github.com/anthonylu23/orchestrator-cli/internal/data"
 	"github.com/anthonylu23/orchestrator-cli/internal/event"
 	"github.com/anthonylu23/orchestrator-cli/internal/provider"
+	gcpprovider "github.com/anthonylu23/orchestrator-cli/internal/provider/gcp"
 	localprovider "github.com/anthonylu23/orchestrator-cli/internal/provider/local"
 	mockprovider "github.com/anthonylu23/orchestrator-cli/internal/provider/mock"
 	"github.com/anthonylu23/orchestrator-cli/internal/redact"
@@ -28,8 +29,9 @@ import (
 )
 
 type Options struct {
-	Stdout io.Writer
-	Stderr io.Writer
+	Stdout             io.Writer
+	Stderr             io.Writer
+	GCPProviderFactory func(config.GCPConfig, io.Writer, io.Writer) app.ProviderAdapter
 }
 
 const (
@@ -134,12 +136,12 @@ func runTrain(ctx context.Context, opts Options, resolved config.ResolvedTrainCo
 	}
 	defer store.Close()
 
-	run := app.Run{ID: runID, JobName: resolved.Job.Name, Script: resolved.Job.Script, Provider: resolved.Provider, State: app.RunStateRunning, StartedAt: now}
+	run := app.Run{ID: runID, JobName: resolved.Job.Name, Script: resolved.Job.Script, Image: resolved.Job.Image, Provider: resolved.Provider, State: app.RunStateRunning, StartedAt: now}
 	if err := store.CreateRun(ctx, run); err != nil {
 		return exitCodeInternal, err
 	}
 
-	registry := buildProviderRegistry(opts, resolved.Mock)
+	registry := buildProviderRegistry(opts, resolved.Mock, resolved.GCP)
 	maxAttempts := resolved.Routing.MaxAttempts
 	if maxAttempts < 1 {
 		maxAttempts = 1
@@ -267,6 +269,17 @@ func runAttempt(ctx context.Context, opts Options, store *state.Store, registry 
 		},
 	})
 	if err != nil {
+		currentRun, runErr := store.GetRun(ctx, runID)
+		if runErr != nil {
+			return exitCodeInternal, false, runErr
+		}
+		if currentRun.State == app.RunStateCanceled {
+			if err := writeSummary(ctx, store, paths, runID); err != nil {
+				return exitCodeInternal, false, err
+			}
+			fmt.Fprintf(opts.Stdout, "Run %s %s\n", runID, app.RunStateCanceled)
+			return exitCodeCanceled, false, nil
+		}
 		retryable := app.IsRetryableProviderError(err)
 		endedAt := time.Now().UTC()
 		reason := attemptRedactor.String(err.Error())
@@ -356,12 +369,19 @@ func newStatusCommand(opts Options, home *string) *cobra.Command {
 			if asJSON {
 				return json.NewEncoder(opts.Stdout).Encode(run)
 			}
-			fmt.Fprintf(opts.Stdout, "%s\t%s\t%s\t%s\n", run.ID, run.State, run.Provider, run.Script)
+			fmt.Fprintf(opts.Stdout, "%s\t%s\t%s\t%s\n", run.ID, run.State, run.Provider, runTarget(run))
 			return nil
 		},
 	}
 	cmd.Flags().BoolVar(&asJSON, "json", false, "Print JSON")
 	return cmd
+}
+
+func runTarget(run app.Run) string {
+	if run.Script != "" {
+		return run.Script
+	}
+	return run.Image
 }
 
 func newLogsCommand(opts Options, home *string) *cobra.Command {
@@ -439,7 +459,7 @@ func cancelRun(ctx context.Context, opts Options, home string, runID string) err
 	if running.ProviderRef == "" {
 		return fmt.Errorf("run %s has no provider process reference yet", runID)
 	}
-	registry := provider.NewRegistry(localprovider.New(opts.Stdout, opts.Stderr))
+	registry := buildProviderRegistry(opts, config.MockConfig{}, config.GCPConfig{})
 	adapter, err := registry.Get(running.Provider)
 	if err != nil {
 		return err
@@ -522,7 +542,7 @@ func newProvidersCommand(opts Options) *cobra.Command {
 		Use:   "list",
 		Short: "List providers",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			registry := buildProviderRegistry(opts, config.MockConfig{})
+			registry := buildProviderRegistry(opts, config.MockConfig{}, config.GCPConfig{})
 			names := registry.List()
 			if asJSON {
 				return json.NewEncoder(opts.Stdout).Encode(names)
@@ -538,7 +558,7 @@ func newProvidersCommand(opts Options) *cobra.Command {
 	return cmd
 }
 
-func buildProviderRegistry(opts Options, mockConfig config.MockConfig) *provider.Registry {
+func buildProviderRegistry(opts Options, mockConfig config.MockConfig, gcpConfig config.GCPConfig) *provider.Registry {
 	adapters := []app.ProviderAdapter{localprovider.New(opts.Stdout, opts.Stderr)}
 	for _, providerConfig := range mergedMockProviders(mockConfig) {
 		adapters = append(adapters, mockprovider.New(mockprovider.Config{
@@ -548,7 +568,29 @@ func buildProviderRegistry(opts Options, mockConfig config.MockConfig) *provider
 			Events:      mockEvents(providerConfig.Events),
 		}, opts.Stdout, opts.Stderr))
 	}
+	if opts.GCPProviderFactory != nil {
+		adapters = append(adapters, opts.GCPProviderFactory(gcpConfig, opts.Stdout, opts.Stderr))
+	} else {
+		adapters = append(adapters, gcpprovider.New(gcpConfigFromConfig(gcpConfig), opts.Stdout, opts.Stderr))
+	}
 	return provider.NewRegistry(adapters...)
+}
+
+func gcpConfigFromConfig(cfg config.GCPConfig) gcpprovider.Config {
+	return gcpprovider.Config{
+		ProjectID:           cfg.ProjectID,
+		Location:            cfg.Location,
+		OutputURIPrefix:     cfg.OutputURIPrefix,
+		MachineType:         cfg.MachineType,
+		AcceleratorType:     cfg.AcceleratorType,
+		AcceleratorCount:    cfg.AcceleratorCount,
+		BootDiskType:        cfg.BootDiskType,
+		BootDiskSizeGB:      cfg.BootDiskSizeGB,
+		ServiceAccount:      cfg.ServiceAccount,
+		Network:             cfg.Network,
+		PollIntervalSeconds: cfg.PollIntervalSeconds,
+		EstimateHourlyUSD:   cfg.EstimateHourlyUSD,
+	}
 }
 
 func mergedMockProviders(mockConfig config.MockConfig) []config.MockProviderConfig {

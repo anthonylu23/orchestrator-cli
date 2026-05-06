@@ -37,7 +37,9 @@ type DataManifest struct {
 
 type JobSpec struct {
 	Name    string            `json:"name" yaml:"name"`
-	Script  string            `json:"script" yaml:"script"`
+	Script  string            `json:"script,omitempty" yaml:"script"`
+	Image   string            `json:"image,omitempty" yaml:"image"`
+	Command []string          `json:"command,omitempty" yaml:"command"`
 	Args    []string          `json:"args" yaml:"args"`
 	Env     map[string]string `json:"env" yaml:"env"`
 	Data    []DataInput       `json:"data" yaml:"data"`
@@ -66,6 +68,7 @@ type Run struct {
 	ID        string    `json:"id"`
 	JobName   string    `json:"job_name"`
 	Script    string    `json:"script"`
+	Image     string    `json:"image,omitempty"`
 	Provider  string    `json:"provider"`
 	State     RunState  `json:"state"`
 	StartedAt time.Time `json:"started_at"`

@@ -12,10 +12,11 @@ The implementation is a Go CLI with a small internal package split:
 6. `internal/state`: SQLite run and attempt persistence.
 7. `internal/provider`: provider registry and adapters.
 8. `internal/provider/local`: local script execution provider.
-9. `internal/event`: mixed stdout parsing and JSONL helpers.
-10. `internal/artifact` and `internal/summary`: durable artifact paths and summary generation.
-11. `internal/redact`: redaction of secret-like keys and known secret environment values before persistence.
-12. `internal/provider/contract`: reusable adapter contract checks for local, mock, and future providers.
+9. `internal/provider/gcp`: Vertex AI CustomJob provider for prebuilt container images.
+10. `internal/event`: mixed stdout parsing and JSONL helpers.
+11. `internal/artifact` and `internal/summary`: durable artifact paths and summary generation.
+12. `internal/redact`: redaction of secret-like keys and known secret environment values before persistence.
+13. `internal/provider/contract`: reusable adapter contract checks for local, mock, GCP, and future providers.
 
 ## Local Workflow
 
@@ -72,7 +73,7 @@ The CLI keeps stable exit categories for automation:
 
 ## Current Limits
 
-The `local` provider and deterministic mock providers are implemented. URI data inputs are validated for supported schemes and accepted by mock providers, but real runtime fetching is deferred to cloud provider phases. `logs --follow` follows active run artifacts until the run reaches a terminal state and drains newly appended logs before returning. Explicit `resume` and real cloud providers are still roadmap items.
+The `local` provider, deterministic mock providers, and a GCP Vertex AI CustomJob provider are implemented. GCP v1 requires a prebuilt `job.image` and supports only `gs://` URI data inputs; local script packaging, Docker image builds, source distribution upload, non-GCS cloud data inputs, and multi-worker training are deferred. `logs --follow` follows active run artifacts until the run reaches a terminal state and drains newly appended logs before returning. Explicit `resume` is still roadmap work.
 
 ## Runtime Workspace
 
@@ -86,6 +87,14 @@ Bundled local data inputs are copied into that workspace. Mounts must be under `
 
 The local provider stores a `local:<pid>` provider reference on the running attempt. `orchestrator-cli cancel <run-id>` uses that reference to interrupt the process, then marks the run and attempt as `canceled` and rewrites `summary.json`.
 
-Attempt records include optional resume checkpoint and cost estimate provenance. Existing SQLite databases are migrated in place by adding missing attempt columns when opened.
+The GCP provider stores the full Vertex AI CustomJob resource name as the provider reference. `orchestrator-cli cancel <run-id>` uses that reference to issue a best-effort CustomJob cancel request.
+
+Run records include the script path for script jobs and the image URI for container jobs; human-readable `status` output shows whichever target is present. Attempt records include optional resume checkpoint and cost estimate provenance. Existing SQLite databases are migrated in place by adding missing run and attempt columns when opened.
 
 Before writing logs, `events.jsonl`, summaries, or provider failure reasons, providers and orchestration code redact secret-like keys and known secret values from job/runtime/inherited environment variables. Do not add new persistence paths without using the redaction utility.
+
+## Next Steps
+
+1. Run a live GCP smoke test with `ORCHESTRATOR_GCP_LIVE=1` after ADC, Vertex AI, Artifact Registry, and a GCS output bucket are configured.
+2. Add local script packaging or image build/push only after the container-image CustomJob path is validated.
+3. Replace static GCP hourly estimates with provider pricing data during auto hardware routing work.

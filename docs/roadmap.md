@@ -4,7 +4,7 @@
 
 Build the orchestration system before chasing broad cloud coverage. Local and mock providers come first because they prove lifecycle, telemetry, routing, failure handling, and resume behavior quickly and repeatably.
 
-GCP is the first real provider target after the architecture is proven because it is well documented, conventional for ML infrastructure, and strong for systems credibility.
+GCP is the first real provider target after the architecture is proven because it is well documented, conventional for ML infrastructure, and strong for systems credibility. Auto hardware routing should build on real provider capability and pricing data once the provider boundary is stable.
 
 ## Phase 0 - Spec and Scaffold
 
@@ -95,7 +95,7 @@ Exit criteria:
 
 ## Phase 3 - Provider Extensibility Hardening
 
-Status: in progress. A shared provider contract harness now covers local and mock adapter identity, auth validation, capabilities, job validation, estimates, submit/status behavior, log streaming expectations, and cancel behavior. Routing tests cover capability and support-report rejection paths, and CLI tests pin key diagnostic exit categories.
+Status: in progress. A shared provider contract harness now covers local, mock, and fake-backed GCP adapter identity, auth validation, capabilities, job validation, estimates, submit/status behavior, log streaming expectations, and cancel behavior. Routing tests cover capability and support-report rejection paths, and CLI tests pin key diagnostic exit categories.
 
 Goals:
 
@@ -113,29 +113,56 @@ Exit criteria:
 
 ## Phase 4 - First Real Provider: GCP
 
+Status: in progress. The first GCP adapter submits prebuilt container images to Vertex AI CustomJob through the Google Cloud Go client, polls job status, records provider refs and estimates, reads Cloud Logging payloads into run artifacts, supports best-effort cancel, and rejects unsupported local bundles or non-GCS URI inputs before submit. Live project validation and packaging workflows are still pending.
+
 Goals:
 
-1. Implement GCP auth validation.
-2. Submit, status, logs, and cancel a real training job.
-3. Add basic GCP cost estimation and capability reporting.
-4. Define GCP staging behavior for bundled local data and URI-backed data.
-5. Document an end-to-end GCP example.
+1. Validate GCP auth through Application Default Credentials.
+2. Submit, status, logs, and cancel a Vertex AI CustomJob from a prebuilt container image.
+3. Add basic static GCP cost estimation and capability reporting.
+4. Reject unsupported bundled data and non-GCS URI-backed data clearly.
+5. Document a GCP container-image example.
 
 Exit criteria:
 
-1. A single command can launch and track a real GCP training run.
+1. A single command can launch and track a real GCP training run from a prebuilt container image.
 2. GCP can satisfy the documented data input contract or reject unsupported data modes clearly.
 3. GCP behavior passes the same adapter contract expectations as local/mock where applicable.
 4. Provider-specific errors are normalized before reaching orchestration code.
+
+Next steps:
+
+1. Run a live GCP smoke test against a configured project, Artifact Registry image, and GCS bucket.
+2. Decide whether local script packaging should use Orchestrator-managed image build/push or a Vertex AI source package path.
+3. Add richer GCP pricing/capacity facts as part of auto hardware routing.
+
+## Phase 5 - Auto Hardware Routing
+
+Goals:
+
+1. Add a concrete config schema for `full_auto`, `auto_provider`, and `manual` routing modes.
+2. Add a probe-first sizing profile contract for memory and runtime estimation.
+3. Extend provider capabilities to report concrete GPU shapes, VRAM, supported single-node GPU counts, regions, quota/capacity facts, and pricing.
+4. Route by fastest compatible hardware within a max estimated run cost.
+5. Persist selected provider, selected hardware, estimated VRAM, estimated runtime, estimated total cost, confidence, and rejection reasons.
+
+Exit criteria:
+
+1. Full-auto can select provider, GPU shape, and 1-N GPUs on one node from mock hardware catalogs.
+2. Auto-provider can honor user-selected hardware constraints while choosing the provider.
+3. Manual mode bypasses automatic provider/hardware choice but still validates compatibility.
+4. Low-confidence sizing fails before submit with clear guidance instead of overprovisioning.
+5. The design is documented in [Auto Hardware Routing](auto-hardware-routing.md).
 
 ## Later Phases
 
 1. Add Lambda and Hyperbolic adapters.
 2. Add explicit Docker image build/package workflow.
 3. Add GCS and S3 checkpoint backends.
-4. Add basic experiment fan-out.
-5. Add richer terminal attach views.
-6. Explore optional hosted run history and team visibility after CLI adoption.
+4. Add multi-node and distributed training topology after single-node auto hardware proves useful.
+5. Add basic experiment fan-out.
+6. Add richer terminal attach views.
+7. Explore optional hosted run history and team visibility after CLI adoption.
 
 ## Two-Week Success Target
 
@@ -156,7 +183,7 @@ The initial two-week milestone is not three-provider cloud coverage. It is a pol
 2. Event ingestion: mixed stdout, JSONL metrics, checkpoints, statuses, and plain logs.
 3. Data handling: bundled files/directories, URI inputs, size limit override, mounted paths, and secret redaction.
 4. State persistence: runs, attempts, routing decisions, summaries, and exit reasons.
-5. Routing: cheapest eligible provider under fixed constraints and declared data requirements.
+5. Routing: cheapest eligible provider today; planned fastest-within-budget provider and hardware selection under declared sizing, budget, and data requirements.
 6. Failure handling: retryable provider failures trigger alternate attempts.
 7. Resume: latest checkpoint is passed through `SubmitRequest.ResumeFrom`.
 8. Provider contract: local, mock, and future real providers satisfy the same core expectations.

@@ -19,7 +19,7 @@ Data Preparation
   validate inputs, estimate bundle size, build data manifest, prepare mounts
 
 Orchestration Core
-  run state machine, attempt manager, routing, retry/failover, checkpoints
+  run state machine, attempt manager, routing, retry/failover, checkpoints, future hardware selection
 
 Provider Layer
   provider registry, adapter contract, capabilities, normalized errors
@@ -126,6 +126,8 @@ type ProviderCapabilities struct {
 }
 ```
 
+Future auto hardware routing will require provider capabilities to grow from broad GPU families into concrete hardware shapes: GPU model, VRAM, supported GPU counts, regions, availability, quota, hourly price, and launch constraints. Providers should report these facts; the orchestration core should still own the final route decision.
+
 Adapters translate raw provider failures into normalized errors:
 
 ```go
@@ -162,6 +164,32 @@ selection reason
 Routing decisions are stored in SQLite with JSON snapshots of eligible and rejected providers. This makes the final provider selection explainable after the run completes.
 
 For `provider=auto`, Orchestrator filters incompatible providers, ranks eligible providers by objective, and selects the best candidate. On resumable provider failure, the core discovers the latest checkpoint, excludes providers according to failure policy, and submits a new attempt with resume metadata. Attempts persist resume checkpoint and estimate provenance for later inspection through summaries and state.
+
+## Planned Hardware Routing
+
+Auto hardware routing should extend provider routing without moving policy into adapters. The first version should stay single-node and choose one machine with 1-N GPUs.
+
+Planned control levels:
+
+1. `full_auto`: route provider and hardware.
+2. `auto_provider`: route provider while honoring user-selected hardware requirements.
+3. `manual`: use the specified provider and hardware.
+
+The preferred full-auto objective is fastest compatible hardware within a max estimated run cost. Inputs should come from a probe-first sizing profile plus user hints for dataset size, model size, batch size, precision, optimizer, and sequence/image shape. If the estimator cannot produce a confident memory and cost estimate, routing should reject full-auto before submit with actionable missing-input or bounds reasons.
+
+The planned routing flow is:
+
+```text
+job config
+  -> data preparation
+  -> sizing probe and user hints
+  -> provider and hardware inventory
+  -> memory/runtime/cost estimator
+  -> persisted routing decision
+  -> provider submit
+```
+
+Persisted decisions should include selected provider, GPU model/family, GPU count, estimated VRAM, estimated runtime, estimated total cost, confidence, and rejected provider/hardware reasons.
 
 ## Checkpoints
 
@@ -228,7 +256,8 @@ Adding a provider should require:
 3. Reporting capabilities.
 4. Mapping raw API errors into normalized provider errors.
 5. Supporting or explicitly rejecting bundled data and URI schemes.
-6. Passing the shared provider contract tests, with explicit contract settings for intentional behavior differences such as artifact-backed logs.
-7. Registering the adapter.
+6. Reporting concrete hardware shapes when auto hardware routing is implemented.
+7. Passing the shared provider contract tests, with explicit contract settings for intentional behavior differences such as artifact-backed logs.
+8. Registering the adapter.
 
 It should not require changes to CLI commands, the run state machine, retry/failover policy, telemetry parsing, or checkpoint resolution.
