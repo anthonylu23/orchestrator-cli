@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/anthonylu23/orchestrator-cli/internal/app"
+	"github.com/anthonylu23/switchboard-cli/internal/app"
 )
 
 func TestHostPathForMount(t *testing.T) {

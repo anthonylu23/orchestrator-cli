@@ -6,7 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/anthonylu23/orchestrator-cli/internal/app"
+	"github.com/anthonylu23/switchboard-cli/internal/app"
 )
 
 type Paths struct {
@@ -24,7 +24,7 @@ func ForRun(home string, runID string) Paths {
 	runDir := filepath.Join(home, "runs", runID)
 	return Paths{
 		Home:        home,
-		DB:          filepath.Join(home, "orchestrator.db"),
+		DB:          DBPath(home),
 		RunDir:      runDir,
 		Workspace:   filepath.Join(runDir, "workspace"),
 		EventsJSONL: filepath.Join(runDir, "events.jsonl"),
@@ -32,6 +32,18 @@ func ForRun(home string, runID string) Paths {
 		Summary:     filepath.Join(runDir, "summary.json"),
 		Checkpoints: filepath.Join(runDir, "checkpoints"),
 	}
+}
+
+func DBPath(home string) string {
+	current := filepath.Join(home, "switchboard.db")
+	legacy := filepath.Join(home, "orchestrator.db")
+	if _, err := os.Stat(current); err == nil {
+		return current
+	}
+	if _, err := os.Stat(legacy); err == nil {
+		return legacy
+	}
+	return current
 }
 
 func EnsureHome(home string) error {

@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/anthonylu23/orchestrator-cli/internal/app"
-	"github.com/anthonylu23/orchestrator-cli/internal/provider"
-	"github.com/anthonylu23/orchestrator-cli/internal/provider/mock"
+	"github.com/anthonylu23/switchboard-cli/internal/app"
+	"github.com/anthonylu23/switchboard-cli/internal/provider"
+	"github.com/anthonylu23/switchboard-cli/internal/provider/mock"
 )
 
 func TestSelectChoosesCheapestEligibleProvider(t *testing.T) {

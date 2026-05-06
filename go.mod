@@ -1,4 +1,4 @@
-module github.com/anthonylu23/orchestrator-cli
+module github.com/anthonylu23/switchboard-cli
 
 go 1.25.0
 

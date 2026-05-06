@@ -7,7 +7,7 @@ import (
 )
 
 func TestLoadTrainDefaults(t *testing.T) {
-	t.Setenv("ORCHESTRATOR_CLI_HOME", filepath.Join(t.TempDir(), "home"))
+	t.Setenv("SWITCHBOARD_CLI_HOME", filepath.Join(t.TempDir(), "home"))
 
 	got, err := LoadTrain(TrainFlags{Script: "examples/train.py"})
 	if err != nil {
@@ -27,9 +27,57 @@ func TestLoadTrainDefaults(t *testing.T) {
 	}
 }
 
+func TestLoadTrainSwitchboardHomePrecedesLegacyHome(t *testing.T) {
+	currentHome := filepath.Join(t.TempDir(), "switchboard-home")
+	legacyHome := filepath.Join(t.TempDir(), "orchestrator-home")
+	t.Setenv("SWITCHBOARD_CLI_HOME", currentHome)
+	t.Setenv("ORCHESTRATOR_CLI_HOME", legacyHome)
+
+	got, err := LoadTrain(TrainFlags{Script: "examples/train.py"})
+	if err != nil {
+		t.Fatalf("LoadTrain returned error: %v", err)
+	}
+	if got.SwitchboardHome != currentHome {
+		t.Fatalf("home = %q, want %q", got.SwitchboardHome, currentHome)
+	}
+}
+
+func TestLoadTrainUsesLegacyHomeEnvFallback(t *testing.T) {
+	legacyHome := filepath.Join(t.TempDir(), "orchestrator-home")
+	t.Setenv("SWITCHBOARD_CLI_HOME", "")
+	t.Setenv("ORCHESTRATOR_CLI_HOME", legacyHome)
+
+	got, err := LoadTrain(TrainFlags{Script: "examples/train.py"})
+	if err != nil {
+		t.Fatalf("LoadTrain returned error: %v", err)
+	}
+	if got.SwitchboardHome != legacyHome {
+		t.Fatalf("home = %q, want %q", got.SwitchboardHome, legacyHome)
+	}
+}
+
+func TestLoadTrainUsesExistingLegacyHomeBeforeDefault(t *testing.T) {
+	userHome := t.TempDir()
+	legacyHome := filepath.Join(userHome, ".orchestrator-cli")
+	if err := os.MkdirAll(legacyHome, 0o755); err != nil {
+		t.Fatalf("create legacy home: %v", err)
+	}
+	t.Setenv("SWITCHBOARD_CLI_HOME", "")
+	t.Setenv("ORCHESTRATOR_CLI_HOME", "")
+	t.Setenv("HOME", userHome)
+
+	got, err := LoadTrain(TrainFlags{Script: "examples/train.py"})
+	if err != nil {
+		t.Fatalf("LoadTrain returned error: %v", err)
+	}
+	if got.SwitchboardHome != legacyHome {
+		t.Fatalf("home = %q, want %q", got.SwitchboardHome, legacyHome)
+	}
+}
+
 func TestLoadTrainFlagsOverrideYAML(t *testing.T) {
 	dir := t.TempDir()
-	configPath := filepath.Join(dir, "orchestrator.yaml")
+	configPath := filepath.Join(dir, "switchboard.yaml")
 	content := []byte(`
 job:
   name: yaml-name
@@ -46,11 +94,11 @@ data:
 	}
 
 	got, err := LoadTrain(TrainFlags{
-		ConfigPath:       configPath,
-		Provider:         "local",
-		Script:           "flag.py",
-		Args:             []string{"--from-flag"},
-		OrchestratorHome: filepath.Join(dir, "home"),
+		ConfigPath:      configPath,
+		Provider:        "local",
+		Script:          "flag.py",
+		Args:            []string{"--from-flag"},
+		SwitchboardHome: filepath.Join(dir, "home"),
 	})
 	if err != nil {
 		t.Fatalf("LoadTrain returned error: %v", err)

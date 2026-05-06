@@ -3,7 +3,7 @@ package summary
 import (
 	"strings"
 
-	"github.com/anthonylu23/orchestrator-cli/internal/app"
+	"github.com/anthonylu23/switchboard-cli/internal/app"
 )
 
 func Build(run app.Run, attempts []app.Attempt, events []app.Event) app.Summary {

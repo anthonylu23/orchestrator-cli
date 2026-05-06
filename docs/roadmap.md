@@ -1,4 +1,4 @@
-# Orchestrator CLI Roadmap
+# Switchboard CLI Roadmap
 
 ## Strategy
 
@@ -43,16 +43,16 @@ Goals:
 Target commands:
 
 ```sh
-orchestrator-cli train --provider local --script examples/train.py
-orchestrator-cli status <run-id>
-orchestrator-cli logs <run-id> --follow
-orchestrator-cli cancel <run-id>
+switchboard-cli train --provider local --script examples/train.py
+switchboard-cli status <run-id>
+switchboard-cli logs <run-id> --follow
+switchboard-cli cancel <run-id>
 ```
 
 Exit criteria:
 
-1. A user can run an example ML script locally through Orchestrator.
-2. Orchestrator stores run state and attempts in SQLite.
+1. A user can run an example ML script locally through Switchboard.
+2. Switchboard stores run state and attempts in SQLite.
 3. Local training/test data is materialized at stable workspace paths.
 4. Oversized local data bundles require an explicit override.
 5. Logs and structured metrics are visible after the run.
@@ -73,7 +73,7 @@ Goals:
 Target demo:
 
 ```sh
-orchestrator-cli train --provider auto --config examples/failover.yaml
+switchboard-cli train --provider auto --config examples/failover.yaml
 ```
 
 Expected behavior:

@@ -6,7 +6,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/anthonylu23/orchestrator-cli/internal/app"
+	"github.com/anthonylu23/switchboard-cli/internal/app"
 )
 
 const Replacement = "[REDACTED]"

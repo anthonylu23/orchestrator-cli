@@ -1,12 +1,12 @@
-# Orchestrator CLI
+# Switchboard CLI
 
-Orchestrator CLI is a fault-tolerant ML job orchestrator with provider adapters, local durable run state, structured telemetry, and cost-aware scheduling.
+Switchboard CLI is a fault-tolerant ML job scheduler with provider adapters, local durable run state, structured telemetry, and cost-aware scheduling.
 
 The project is designed as a systems engineering and ML infrastructure tool: the orchestration core owns lifecycle, retries, routing, failover, state, telemetry, and resume policy, while providers stay behind a small adapter contract.
 
 ## Status
 
-Orchestrator now has a local orchestration vertical slice plus deterministic mock-provider failover. The current implementation can run a local Python training script, persist SQLite run state, capture mixed logs and structured JSONL events, materialize local data bundles, cancel active local runs, route across mock providers, and resume from the latest checkpoint after a simulated provider failure.
+Switchboard now has a local orchestration vertical slice plus deterministic mock-provider failover. The current implementation can run a local Python training script, persist SQLite run state, capture mixed logs and structured JSONL events, materialize local data bundles, cancel active local runs, route across mock providers, and resume from the latest checkpoint after a simulated provider failure.
 
 Run artifacts redact secret-like keys and known secret environment values before persistence. Attempt history also records resume checkpoint provenance and provider cost estimates so failover decisions remain explainable after completion.
 
@@ -17,34 +17,34 @@ Real cloud providers remain roadmap work.
 Build the CLI:
 
 ```sh
-go build -o bin/orchestrator-cli ./cmd/orchestrator-cli
+go build -o bin/switchboard-cli ./cmd/switchboard-cli
 ```
 
 Run the example training script:
 
 ```sh
-./bin/orchestrator-cli train --provider local --script examples/train.py
+./bin/switchboard-cli train --provider local --script examples/train.py
 ```
 
-Use a disposable Orchestrator home while developing:
+Use a disposable Switchboard home while developing:
 
 ```sh
-ORCHESTRATOR_CLI_HOME="$(mktemp -d)" ./bin/orchestrator-cli train --provider local --script examples/train.py
+SWITCHBOARD_CLI_HOME="$(mktemp -d)" ./bin/switchboard-cli train --provider local --script examples/train.py
 ```
 
 Inspect a run:
 
 ```sh
-./bin/orchestrator-cli status <run-id>
-./bin/orchestrator-cli logs <run-id>
-./bin/orchestrator-cli cancel <run-id>
-./bin/orchestrator-cli providers list --json
+./bin/switchboard-cli status <run-id>
+./bin/switchboard-cli logs <run-id>
+./bin/switchboard-cli cancel <run-id>
+./bin/switchboard-cli providers list --json
 ```
 
 Run the mock failover demo:
 
 ```sh
-./bin/orchestrator-cli train --provider auto --config examples/failover.yaml
+./bin/switchboard-cli train --provider auto --config examples/failover.yaml
 ```
 
 Expected output includes:
@@ -71,7 +71,7 @@ go test ./internal/provider/...
 
 ## Product Wedge
 
-Given a training script and hardware constraints, Orchestrator should choose a compatible provider, run the job, persist telemetry, and resume from the latest checkpoint if a provider fails.
+Given a training script and hardware constraints, Switchboard should choose a compatible provider, run the job, persist telemetry, and resume from the latest checkpoint if a provider fails.
 
 The first impressive demo is intentionally narrower than full multi-cloud support:
 
@@ -84,19 +84,19 @@ The first impressive demo is intentionally narrower than full multi-cloud suppor
 ## Target Commands
 
 ```sh
-orchestrator-cli train --provider local --script examples/train.py
-orchestrator-cli train --provider auto --config examples/failover.yaml
-orchestrator-cli status <run-id>
-orchestrator-cli logs <run-id> --follow
-orchestrator-cli cancel <run-id>
-orchestrator-cli providers list --json
+switchboard-cli train --provider local --script examples/train.py
+switchboard-cli train --provider auto --config examples/failover.yaml
+switchboard-cli status <run-id>
+switchboard-cli logs <run-id> --follow
+switchboard-cli cancel <run-id>
+switchboard-cli providers list --json
 ```
 
 Planned commands not implemented yet include explicit `resume` and real provider adapters.
 
 ## Data Inputs
 
-Orchestrator treats training and test data as declared job inputs. Local files or directories can be bundled with the job, while remote sources such as HTTP, S3, and GCS URIs are resolved at runtime. In both cases, training code reads from stable workspace paths.
+Switchboard treats training and test data as declared job inputs. Local files or directories can be bundled with the job, while remote sources such as HTTP, S3, and GCS URIs are resolved at runtime. In both cases, training code reads from stable workspace paths.
 
 ```yaml
 job:
@@ -157,16 +157,18 @@ For `provider=auto`, routing checks provider capabilities before ranking candida
 
 ## Artifacts
 
-By default Orchestrator writes to `~/.orchestrator-cli`. Set `ORCHESTRATOR_CLI_HOME` or pass `--home` to isolate runs.
+By default Switchboard writes to `~/.switchboard-cli`. Set `SWITCHBOARD_CLI_HOME` or pass `--home` to isolate runs.
 
 ```text
-~/.orchestrator-cli/orchestrator.db
-~/.orchestrator-cli/runs/<run-id>/events.jsonl
-~/.orchestrator-cli/runs/<run-id>/logs.txt
-~/.orchestrator-cli/runs/<run-id>/summary.json
-~/.orchestrator-cli/runs/<run-id>/checkpoints/
-~/.orchestrator-cli/runs/<run-id>/workspace/
+~/.switchboard-cli/switchboard.db
+~/.switchboard-cli/runs/<run-id>/events.jsonl
+~/.switchboard-cli/runs/<run-id>/logs.txt
+~/.switchboard-cli/runs/<run-id>/summary.json
+~/.switchboard-cli/runs/<run-id>/checkpoints/
+~/.switchboard-cli/runs/<run-id>/workspace/
 ```
+
+Compatibility aliases from the previous project name are still supported. Home resolution uses `--home`, then `SWITCHBOARD_CLI_HOME`, then deprecated `ORCHESTRATOR_CLI_HOME`, then an existing `~/.orchestrator-cli`, then the new default `~/.switchboard-cli`. State opens `switchboard.db` by default and falls back to `orchestrator.db` when only the legacy DB exists in the selected home. Runtime jobs receive both `SWITCHBOARD_*` and deprecated `ORCHESTRATOR_*` metadata variables with identical values for now.
 
 `summary.json` includes final metrics and direction-aware `best_metrics`: common loss/error/perplexity/latency/duration metrics are minimized, while other metrics are maximized. Provider attempts include resume checkpoint and estimate fields when available.
 
