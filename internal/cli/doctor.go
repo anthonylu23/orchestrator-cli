@@ -148,6 +148,9 @@ func addProviderChecks(ctx context.Context, add func(string, string, doctorStatu
 		return
 	}
 	add("Provider", "registered", doctorOK, string(adapter.Name()))
+	if isModalAlias(opts.Provider) {
+		addModalDiagnostics(ctx, add)
+	}
 	if err := adapter.ValidateAuth(ctx); err != nil {
 		add("Provider", "auth", doctorFail, err.Error())
 	} else {

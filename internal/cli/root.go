@@ -21,6 +21,7 @@ import (
 	"github.com/anthonylu23/switchboard-cli/internal/provider"
 	localprovider "github.com/anthonylu23/switchboard-cli/internal/provider/local"
 	mockprovider "github.com/anthonylu23/switchboard-cli/internal/provider/mock"
+	modalprovider "github.com/anthonylu23/switchboard-cli/internal/provider/modal"
 	"github.com/anthonylu23/switchboard-cli/internal/redact"
 	"github.com/anthonylu23/switchboard-cli/internal/routing"
 	"github.com/anthonylu23/switchboard-cli/internal/runtimeprep"
@@ -598,7 +599,7 @@ func cancelRun(ctx context.Context, opts Options, home string, runID string) err
 	if running.ProviderRef == "" {
 		return fmt.Errorf("run %s has no provider process reference yet", runID)
 	}
-	registry := provider.NewRegistry(localprovider.New(opts.Stdout, opts.Stderr))
+	registry := buildProviderRegistry(opts, config.MockConfig{})
 	adapter, err := registry.Get(running.Provider)
 	if err != nil {
 		return err
@@ -740,7 +741,10 @@ func newProvidersCommand(opts Options) *cobra.Command {
 }
 
 func buildProviderRegistry(opts Options, mockConfig config.MockConfig) *provider.Registry {
-	adapters := []app.ProviderAdapter{localprovider.New(opts.Stdout, opts.Stderr)}
+	adapters := []app.ProviderAdapter{
+		localprovider.New(opts.Stdout, opts.Stderr),
+		modalprovider.New(opts.Stdout, opts.Stderr),
+	}
 	for _, providerConfig := range mergedMockProviders(mockConfig) {
 		adapters = append(adapters, mockprovider.New(mockprovider.Config{
 			Name:        providerConfig.Name,

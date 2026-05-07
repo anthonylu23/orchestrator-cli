@@ -543,6 +543,9 @@ func TestProvidersListIncludesMocks(t *testing.T) {
 			t.Fatalf("%q missing from %s", name, stdout.String())
 		}
 	}
+	if !strings.Contains(stdout.String(), "modal-sandbox") {
+		t.Fatalf("modal-sandbox missing from %s", stdout.String())
+	}
 }
 
 func TestProvidersInspectShowsCapabilities(t *testing.T) {
@@ -620,23 +623,23 @@ outputs:
 	}
 }
 
-func TestDoctorModalSandboxReportsNotImplementedBeforeSubmission(t *testing.T) {
+func TestDoctorModalSandboxReportsProviderReadiness(t *testing.T) {
 	var stdout bytes.Buffer
 	cmd := NewRootCommand(Options{Stdout: &stdout, Stderr: &bytes.Buffer{}})
 	cmd.SetArgs([]string{"--home", t.TempDir(), "doctor", "--provider", "modal-sandbox", "--json"})
-	err := cmd.Execute()
-	if err == nil {
-		t.Fatal("expected modal-sandbox doctor to fail before provider exists")
-	}
+	_ = cmd.Execute()
 	var report doctorReport
 	if parseErr := json.Unmarshal(stdout.Bytes(), &report); parseErr != nil {
 		t.Fatalf("parse doctor output: %v\n%s", parseErr, stdout.String())
 	}
-	if report.Ready {
-		t.Fatalf("report should not be ready: %#v", report)
+	if report.Provider != "modal-sandbox" {
+		t.Fatalf("report = %#v", report)
 	}
-	if !doctorHasCheck(report, "Provider", "registered", doctorFail) {
-		t.Fatalf("missing provider registration failure: %#v", report.Checks)
+	if !doctorHasCheck(report, "Provider", "registered", doctorOK) {
+		t.Fatalf("missing provider registration check: %#v", report.Checks)
+	}
+	if !doctorHasCheck(report, "Provider", "capabilities", doctorOK) {
+		t.Fatalf("missing provider capability check: %#v", report.Checks)
 	}
 }
 

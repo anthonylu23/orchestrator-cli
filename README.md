@@ -21,13 +21,15 @@ Implemented now:
 11. run evidence capture in `workload.json`: config hash, git commit/dirty flag, working directory, entrypoint, dataset fingerprint, and provider job refs.
 12. run comparison through `cloudtune compare <run-id> <run-id>`.
 13. runtime diagnostics through `cloudtune doctor`.
+14. experimental `modal-sandbox` provider adapter, gated by Modal SDK/auth readiness.
 
 Not implemented in this branch:
 
-1. real GCP, RunPod, Modal, OpenAI, Anthropic, AWS, or Azure adapters.
+1. real GCP, RunPod, OpenAI, Anthropic, AWS, or Azure adapters.
 2. local script packaging into container images.
 3. hosted dashboard, SSO, approval workflow, or enterprise policy engine.
 4. real eval-gate enforcement beyond persisted workload/artifact metadata.
+5. live-verified Modal execution in this local environment; `modal-sandbox` is implemented but requires Modal CLI/Python SDK/auth.
 
 ## Quick Start
 
@@ -74,6 +76,7 @@ Inspect provider capability declarations:
 ./bin/cloudtune providers list
 ./bin/cloudtune providers inspect local
 ./bin/cloudtune providers inspect mock-cloud
+./bin/cloudtune providers inspect modal-sandbox
 ```
 
 Run local readiness checks:
@@ -83,7 +86,7 @@ Run local readiness checks:
 ./bin/cloudtune doctor --provider modal-sandbox
 ```
 
-`modal-sandbox` is expected to report not ready until that experimental provider exists and Modal CLI/SDK/auth are configured.
+`modal-sandbox` is expected to report not ready until Modal CLI/SDK/auth are configured.
 
 Run the controlled failure demo:
 
@@ -190,6 +193,8 @@ Cancel
 The orchestration core owns state transitions, retryability, failover, checkpoint discovery, telemetry ingestion, summaries, and artifact records. A provider should report facts and perform provider-specific operations; it should not own orchestration policy.
 
 Providers also declare capabilities before routing or explicit execution. The current schema includes workload types, log mode, artifact support, cancellation support, cost-estimate support, checkpoint-resume support, remote/local classification, URI schemes, and data-bundle support. Unsupported workload/provider combinations are rejected before submission.
+
+`modal-sandbox` is intentionally experimental. It uses an embedded Python runner around Modal Sandboxes, uploads the workload script plus local dataset path, runs the command remotely, stores the Modal sandbox ID as the provider job ref, preserves stdout/stderr in `logs.txt`, and fetches `outputs/` and `checkpoints/` back as a tar archive. It does not claim cost estimates, GPU routing, URI dataset fetching, or checkpoint resume.
 
 ## Artifact Layout
 

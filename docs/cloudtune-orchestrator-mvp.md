@@ -21,6 +21,7 @@ This branch starts that product direction without merging the separate GCP-provi
 11. `cloudtune compare <run-id> <run-id>` for local-vs-remote style run comparisons.
 12. Controlled failure eval example that preserves partial outputs and failure reason.
 13. `cloudtune doctor` diagnostics for core runtime, config, provider capabilities, and preliminary Modal readiness.
+14. Experimental `modal-sandbox` adapter that uses Modal Sandboxes through an embedded Python runner when Modal SDK/auth are available.
 
 ## Current Provider Reality
 
@@ -29,7 +30,9 @@ The branch supports:
 1. `local`: executes real local scripts.
 2. `mock-lambda`, `mock-gcp`, and `mock-cloud`: deterministic mock providers used to stress routing, retry, checkpoint discovery, capability inspection, and resume flow.
 
-The branch does not support real GCP, RunPod, Modal, OpenAI, Anthropic, AWS, Azure, Lambda Labs, or HPC execution yet. The mock providers are test infrastructure and demo infrastructure, not production cloud adapters.
+The branch does not support real GCP, RunPod, OpenAI, Anthropic, AWS, Azure, Lambda Labs, or HPC execution yet. The mock providers are test infrastructure and demo infrastructure, not production cloud adapters.
+
+`modal-sandbox` is present as an experimental real-provider spike. It is not live-verified in this environment because Modal CLI/Python SDK/auth are missing locally. Its capability declaration is intentionally narrow: evaluation and batch-inference style local scripts, artifact fetch, cancellation by sandbox ID, no cost estimate, no checkpoint resume, and no URI dataset fetching.
 
 ## Workload Contract
 
