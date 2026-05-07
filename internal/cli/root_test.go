@@ -110,6 +110,114 @@ data:
 	}
 }
 
+func TestCloudTuneRunCommandPersistsWorkloadArtifactsAndHistory(t *testing.T) {
+	dir := t.TempDir()
+	home := filepath.Join(dir, "home")
+	exportRoot := filepath.Join(dir, "exports")
+	script := filepath.Join(dir, "eval.py")
+	if err := os.WriteFile(script, []byte(`
+import json
+import os
+from pathlib import Path
+
+out = Path(os.environ["CLOUDTUNE_OUTPUT_DIR"])
+out.mkdir(parents=True, exist_ok=True)
+(out / "eval_result.json").write_text(json.dumps({
+    "workload_type": os.environ["CLOUDTUNE_WORKLOAD_TYPE"],
+    "model": os.environ["CLOUDTUNE_MODEL_NAME"],
+    "dataset": os.environ["CLOUDTUNE_DATASET_PATH"],
+    "accuracy": 0.91,
+}) + "\n")
+print(json.dumps({"type":"metric","step":1,"metrics":{"accuracy":0.91},"split":"eval"}))
+print(json.dumps({"type":"status","state":"verified"}))
+`), 0o600); err != nil {
+		t.Fatalf("write script: %v", err)
+	}
+	dataset := filepath.Join(dir, "eval.jsonl")
+	if err := os.WriteFile(dataset, []byte(`{"input":"hello","expected":"hello"}`+"\n"), 0o600); err != nil {
+		t.Fatalf("write dataset: %v", err)
+	}
+	configPath := filepath.Join(dir, "cloudtune.yaml")
+	config := `
+workload:
+  name: rag-eval-v1
+  type: evaluation
+  model:
+    provider: local
+    name: deterministic-evaluator
+  dataset:
+    name: customer-support-eval
+    path: "` + dataset + `"
+  tags: ["mvp", "eval"]
+job:
+  script: "` + script + `"
+routing:
+  provider: local
+  max_attempts: 1
+outputs:
+  save_to: "` + exportRoot + `"
+`
+	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	cmd := NewRootCommand(Options{Stdout: &stdout, Stderr: &stderr})
+	cmd.SetArgs([]string{"--home", home, "run", configPath})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("run returned error: %v\nstdout=%s\nstderr=%s", err, stdout.String(), stderr.String())
+	}
+	runID := extractRunID(t, stdout.String())
+	if !strings.Contains(stdout.String(), "Artifacts exported to") {
+		t.Fatalf("stdout missing export path: %s", stdout.String())
+	}
+	paths := artifact.ForRun(home, runID)
+	if _, err := os.Stat(filepath.Join(exportRoot, runID, "eval_result.json")); err != nil {
+		t.Fatalf("exported result missing: %v", err)
+	}
+	var manifest artifact.Manifest
+	content, err := os.ReadFile(paths.Manifest)
+	if err != nil {
+		t.Fatalf("read manifest: %v", err)
+	}
+	if err := json.Unmarshal(content, &manifest); err != nil {
+		t.Fatalf("parse manifest: %v", err)
+	}
+	if manifest.WorkloadType != app.WorkloadTypeEvaluation || !manifestHasPath(manifest, "outputs/eval_result.json") {
+		t.Fatalf("manifest = %#v", manifest)
+	}
+
+	var status bytes.Buffer
+	statusCmd := NewRootCommand(Options{Stdout: &status, Stderr: &bytes.Buffer{}})
+	statusCmd.SetArgs([]string{"--home", home, "status", runID, "--json"})
+	if err := statusCmd.Execute(); err != nil {
+		t.Fatalf("status returned error: %v", err)
+	}
+	if !strings.Contains(status.String(), `"workload_type":"evaluation"`) {
+		t.Fatalf("status = %s", status.String())
+	}
+
+	var artifactsOut bytes.Buffer
+	artifactsCmd := NewRootCommand(Options{Stdout: &artifactsOut, Stderr: &bytes.Buffer{}})
+	artifactsCmd.SetArgs([]string{"--home", home, "artifacts", runID})
+	if err := artifactsCmd.Execute(); err != nil {
+		t.Fatalf("artifacts returned error: %v", err)
+	}
+	if !strings.Contains(artifactsOut.String(), "eval_result.json") {
+		t.Fatalf("artifacts output = %s", artifactsOut.String())
+	}
+
+	var runsOut bytes.Buffer
+	runsCmd := NewRootCommand(Options{Stdout: &runsOut, Stderr: &bytes.Buffer{}})
+	runsCmd.SetArgs([]string{"--home", home, "runs", "--json"})
+	if err := runsCmd.Execute(); err != nil {
+		t.Fatalf("runs returned error: %v", err)
+	}
+	if !strings.Contains(runsOut.String(), `"job_name":"rag-eval-v1"`) || !strings.Contains(runsOut.String(), `"workload_type":"evaluation"`) {
+		t.Fatalf("runs output = %s", runsOut.String())
+	}
+}
+
 func TestCancelRunningLocalRun(t *testing.T) {
 	repo := repoRoot(t)
 	home := filepath.Join(t.TempDir(), "home")
@@ -138,7 +246,7 @@ func TestCancelRunningLocalRun(t *testing.T) {
 		_ = followCmd.Execute()
 	}()
 
-	waitForText(t, &trainStdout, "slow start")
+	waitForFileText(t, artifact.ForRun(home, runID).Logs, "slow start")
 	var cancelStdout bytes.Buffer
 	cancelCmd := NewRootCommand(Options{Stdout: &cancelStdout, Stderr: &bytes.Buffer{}})
 	cancelCmd.SetArgs([]string{"--home", home, "cancel", runID})
@@ -295,6 +403,11 @@ func TestLocalTrainInjectsSwitchboardAndLegacyRuntimeEnv(t *testing.T) {
 import os
 
 pairs = [
+    ("CLOUDTUNE_RUN_ID", "SWITCHBOARD_RUN_ID"),
+    ("CLOUDTUNE_ATTEMPT_ID", "SWITCHBOARD_ATTEMPT_ID"),
+    ("CLOUDTUNE_CHECKPOINT_DIR", "SWITCHBOARD_CHECKPOINT_DIR"),
+    ("CLOUDTUNE_RESUME_FROM", "SWITCHBOARD_RESUME_FROM"),
+    ("CLOUDTUNE_EVENTS_PATH", "SWITCHBOARD_EVENTS_PATH"),
     ("SWITCHBOARD_RUN_ID", "ORCHESTRATOR_RUN_ID"),
     ("SWITCHBOARD_ATTEMPT_ID", "ORCHESTRATOR_ATTEMPT_ID"),
     ("SWITCHBOARD_CHECKPOINT_DIR", "ORCHESTRATOR_CHECKPOINT_DIR"),
@@ -305,6 +418,8 @@ for current, legacy in pairs:
     assert current in os.environ, current
     assert legacy in os.environ, legacy
     assert os.environ[current] == os.environ[legacy], (current, legacy)
+assert os.environ["CLOUDTUNE_OUTPUT_DIR"]
+assert os.environ["CLOUDTUNE_ARTIFACTS_MANIFEST"]
 print("runtime env ok")
 `), 0o600); err != nil {
 		t.Fatalf("write script: %v", err)
@@ -439,6 +554,15 @@ func extractRunID(t *testing.T, output string) string {
 	return ""
 }
 
+func manifestHasPath(manifest artifact.Manifest, path string) bool {
+	for _, item := range manifest.Artifacts {
+		if item.Path == path {
+			return true
+		}
+	}
+	return false
+}
+
 func repoRoot(t *testing.T) string {
 	t.Helper()
 	dir, err := os.Getwd()
@@ -473,14 +597,20 @@ func waitForRunID(t *testing.T, home string) string {
 	return ""
 }
 
-func waitForText(t *testing.T, buf *bytes.Buffer, text string) {
+func waitForFileText(t *testing.T, path string, text string) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
+	var last string
 	for time.Now().Before(deadline) {
-		if strings.Contains(buf.String(), text) {
+		content, err := os.ReadFile(path)
+		if err != nil && !os.IsNotExist(err) {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		last = string(content)
+		if strings.Contains(last, text) {
 			return
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
-	t.Fatalf("%q not found in %q", text, buf.String())
+	t.Fatalf("%q not found in %q", text, last)
 }

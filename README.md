@@ -1,53 +1,60 @@
-# Switchboard CLI
+# CloudTune Orchestrator
 
-Switchboard CLI is a fault-tolerant ML job scheduler with provider adapters, local durable run state, structured telemetry, and cost-aware scheduling.
+CloudTune Orchestrator is a provider-agnostic control plane for AI/ML workloads. It manages workload lifecycle, provider routing, retries, checkpoint resume, telemetry, artifacts, and run history behind a small provider adapter contract.
 
-The project is designed as a systems engineering and ML infrastructure tool: the orchestration core owns lifecycle, retries, routing, failover, state, telemetry, and resume policy, while providers stay behind a small adapter contract.
+This branch intentionally does **not** include the separate GCP-provider branch. The current implementation is a local + deterministic mock-cloud MVP foundation: it can run real local Python workloads, simulate provider failover through mock providers, persist SQLite run state, collect logs/events/summaries, export workload outputs, and list run artifacts.
 
 ## Status
 
-Switchboard now has a local orchestration vertical slice plus deterministic mock-provider failover. The current implementation can run a local Python training script, persist SQLite run state, capture mixed logs and structured JSONL events, materialize local data bundles, cancel active local runs, route across mock providers, and resume from the latest checkpoint after a simulated provider failure.
+Implemented now:
 
-Run artifacts redact secret-like keys and known secret environment values before persistence. Attempt history also records resume checkpoint provenance and provider cost estimates so failover decisions remain explainable after completion.
+1. `cloudtune run <config>` for CloudTune workload YAML.
+2. `local` provider for real local scripts.
+3. deterministic mock providers for routing, retry, failover, and checkpoint-resume demos.
+4. SQLite run/attempt/routing state.
+5. structured JSONL telemetry from mixed stdout.
+6. artifact manifest generation through `artifacts.json`.
+7. output export through `outputs.save_to`.
+8. run history through `cloudtune runs`.
+9. runtime env aliases under `CLOUDTUNE_*`, while preserving `SWITCHBOARD_*` and legacy `ORCHESTRATOR_*`.
 
-Real cloud providers remain roadmap work.
+Not implemented in this branch:
+
+1. real GCP, RunPod, Modal, OpenAI, Anthropic, AWS, or Azure adapters.
+2. local script packaging into container images.
+3. hosted dashboard, SSO, approval workflow, or enterprise policy engine.
+4. real eval-gate enforcement beyond persisted workload/artifact metadata.
 
 ## Quick Start
 
-Build the CLI:
+Build:
 
 ```sh
-go build -o bin/switchboard-cli ./cmd/switchboard-cli
+go build -o bin/cloudtune ./cmd/switchboard-cli
 ```
 
-Run the example training script:
+Run the CloudTune eval MVP:
 
 ```sh
-./bin/switchboard-cli train --provider local --script examples/train.py
+CLOUDTUNE_HOME="$(mktemp -d)" ./bin/cloudtune run examples/eval.yaml
 ```
 
-Use a disposable Switchboard home while developing:
+Inspect the run:
 
 ```sh
-SWITCHBOARD_CLI_HOME="$(mktemp -d)" ./bin/switchboard-cli train --provider local --script examples/train.py
-```
-
-Inspect a run:
-
-```sh
-./bin/switchboard-cli status <run-id>
-./bin/switchboard-cli logs <run-id>
-./bin/switchboard-cli cancel <run-id>
-./bin/switchboard-cli providers list --json
+./bin/cloudtune --home "$CLOUDTUNE_HOME" runs
+./bin/cloudtune --home "$CLOUDTUNE_HOME" status <run-id>
+./bin/cloudtune --home "$CLOUDTUNE_HOME" logs <run-id>
+./bin/cloudtune --home "$CLOUDTUNE_HOME" artifacts <run-id>
 ```
 
 Run the mock failover demo:
 
 ```sh
-./bin/switchboard-cli train --provider auto --config examples/failover.yaml
+CLOUDTUNE_HOME="$(mktemp -d)" ./bin/cloudtune train --provider auto --config examples/failover.yaml
 ```
 
-Expected output includes:
+Expected failover output includes:
 
 ```text
 Selected mock-lambda
@@ -56,133 +63,111 @@ Selected mock-gcp
 Run <run-id> succeeded
 ```
 
-Run tests:
+Run checks:
 
 ```sh
 go test ./...
+go test -race ./...
 go vet ./...
 ```
 
-Provider adapters should also pass the shared contract checks:
+## Workload Config
 
-```sh
-go test ./internal/provider/...
-```
-
-## Product Wedge
-
-Given a training script and hardware constraints, Switchboard should choose a compatible provider, run the job, persist telemetry, and resume from the latest checkpoint if a provider fails.
-
-The first impressive demo is intentionally narrower than full multi-cloud support:
-
-1. Run an example ML training script through the `local` provider.
-2. Stream mixed logs and structured metric events.
-3. Persist run state, `events.jsonl`, and `summary.json`.
-4. Simulate a cloud provider failure with the `mock` provider.
-5. Discover the latest checkpoint and resume on another adapter without changing orchestration code.
-
-## Target Commands
-
-```sh
-switchboard-cli train --provider local --script examples/train.py
-switchboard-cli train --provider auto --config examples/failover.yaml
-switchboard-cli status <run-id>
-switchboard-cli logs <run-id> --follow
-switchboard-cli cancel <run-id>
-switchboard-cli providers list --json
-```
-
-Planned commands not implemented yet include explicit `resume` and real provider adapters.
-
-## Data Inputs
-
-Switchboard treats training and test data as declared job inputs. Local files or directories can be bundled with the job, while remote sources such as HTTP, S3, and GCS URIs are resolved at runtime. In both cases, training code reads from stable workspace paths.
+CloudTune workload configs add product-level metadata around the existing executable job contract:
 
 ```yaml
+workload:
+  name: rag-eval-v1
+  type: evaluation
+  model:
+    provider: local
+    name: deterministic-evaluator
+  dataset:
+    name: customer-support-sample
+    path: examples/evals/customer_support.jsonl
+  tags: ["mvp", "eval"]
+
 job:
-  script: "train.py"
-  args: ["--train-data", "/workspace/data/train", "--test-data", "/workspace/data/test.csv"]
+  script: examples/eval.py
 
-data:
-  inputs:
-    - name: "train"
-      source: "./data/train"
-      mount: "/workspace/data/train"
-      mode: "bundle"
+routing:
+  provider: local
+  max_attempts: 1
 
-    - name: "test"
-      source: "https://example.com/test.csv"
-      mount: "/workspace/data/test.csv"
-      mode: "uri"
-  bundle:
-    max_size_mb: 512
-    require_override_above_limit: true
+outputs:
+  save_to: ./artifacts
 ```
 
-Local paths default to bundled inputs. URI sources default to runtime-resolved inputs. Oversized local bundles fail preflight unless the user passes an explicit override such as `--allow-large-data-bundle`.
-
-For local runs, bundled files and directories are copied into each run workspace under `runs/<run-id>/workspace`. Mounts must be under `/workspace`; for example, `/workspace/data/train` maps to `runs/<run-id>/workspace/data/train`. Job arguments and environment values that reference declared mounts are rewritten to host paths before the local process starts.
-
-Example local data run:
-
-```yaml
-job:
-  script: "examples/read_data.py"
-  args: ["/workspace/data/train.txt"]
-
-data:
-  inputs:
-    - name: "train"
-      source: "./data/train.txt"
-      mount: "/workspace/data/train.txt"
-      mode: "bundle"
-```
-
-## Architecture Flow
+The local runtime injects:
 
 ```text
-CLI command
-  -> config loader
-  -> data preparation
-  -> orchestration service
-  -> routing engine
-  -> provider registry
-  -> provider adapter
-  -> run state + events + artifacts
+CLOUDTUNE_RUN_ID
+CLOUDTUNE_ATTEMPT_ID
+CLOUDTUNE_CHECKPOINT_DIR
+CLOUDTUNE_RESUME_FROM
+CLOUDTUNE_EVENTS_PATH
+CLOUDTUNE_OUTPUT_DIR
+CLOUDTUNE_ARTIFACTS_MANIFEST
+CLOUDTUNE_WORKLOAD_TYPE
+CLOUDTUNE_MODEL_PROVIDER
+CLOUDTUNE_MODEL_NAME
+CLOUDTUNE_DATASET_NAME
+CLOUDTUNE_DATASET_PATH
+CLOUDTUNE_DATASET_URI
 ```
 
-The core user-facing object is a run. Each provider execution is an attempt. This lets one run fail on one provider and resume on another provider while preserving a single user-facing run history.
+Scripts should write result files to `CLOUDTUNE_OUTPUT_DIR`. CloudTune records those files in `artifacts.json` and, when `outputs.save_to` is set, copies them into `<save_to>/<run-id>/`.
 
-For `provider=auto`, routing checks provider capabilities before ranking candidates. Providers that cannot satisfy bundled data inputs or declared URI schemes are rejected with persisted reasons.
+## Provider Contract
 
-## Artifacts
-
-By default Switchboard writes to `~/.switchboard-cli`. Set `SWITCHBOARD_CLI_HOME` or pass `--home` to isolate runs.
+Providers stay behind this core shape:
 
 ```text
-~/.switchboard-cli/switchboard.db
-~/.switchboard-cli/runs/<run-id>/events.jsonl
-~/.switchboard-cli/runs/<run-id>/logs.txt
-~/.switchboard-cli/runs/<run-id>/summary.json
-~/.switchboard-cli/runs/<run-id>/checkpoints/
-~/.switchboard-cli/runs/<run-id>/workspace/
+ValidateAuth
+Capabilities
+ValidateJob
+Estimate
+Submit
+GetStatus
+StreamLogs
+Cancel
 ```
 
-Compatibility aliases from the previous project name are still supported. Home resolution uses `--home`, then `SWITCHBOARD_CLI_HOME`, then deprecated `ORCHESTRATOR_CLI_HOME`, then an existing `~/.orchestrator-cli`, then the new default `~/.switchboard-cli`. State opens `switchboard.db` by default and falls back to `orchestrator.db` when only the legacy DB exists in the selected home. Runtime jobs receive both `SWITCHBOARD_*` and deprecated `ORCHESTRATOR_*` metadata variables with identical values for now.
+The orchestration core owns state transitions, retryability, failover, checkpoint discovery, telemetry ingestion, summaries, and artifact records. A provider should report facts and perform provider-specific operations; it should not own orchestration policy.
 
-`summary.json` includes final metrics and direction-aware `best_metrics`: common loss/error/perplexity/latency/duration metrics are minimized, while other metrics are maximized. Provider attempts include resume checkpoint and estimate fields when available.
+## Artifact Layout
 
-## Roadmap Summary
+By default, state still uses the existing local compatibility path unless `--home` or `CLOUDTUNE_HOME` is set:
 
-1. Spec and scaffold.
-2. Local orchestration vertical slice.
-3. Mock cloud provider and failure simulation.
-4. Provider extensibility hardening.
-5. GCP as the first real provider.
-6. Later: Lambda, Hyperbolic, container packaging, shared checkpoint backends, fan-out sweeps, richer terminal UI, and optional hosted control plane.
+```text
+<home>/switchboard.db
+<home>/runs/<run-id>/events.jsonl
+<home>/runs/<run-id>/logs.txt
+<home>/runs/<run-id>/summary.json
+<home>/runs/<run-id>/workload.json
+<home>/runs/<run-id>/artifacts.json
+<home>/runs/<run-id>/outputs/
+<home>/runs/<run-id>/checkpoints/
+<home>/runs/<run-id>/workspace/
+```
+
+Home resolution order is `--home`, `CLOUDTUNE_HOME`, `SWITCHBOARD_CLI_HOME`, deprecated `ORCHESTRATOR_CLI_HOME`, an existing `~/.orchestrator-cli`, then `~/.switchboard-cli`.
+
+## Roadmap
+
+The correct near-term wedge is reliable eval and batch workload orchestration across local + one real provider. This branch implements the local/mock foundation. The next real step is to add one production provider adapter, but only after the workload/artifact/run-history path remains stable under stress.
+
+Near-term phases:
+
+1. Reliable execution: local runner, lifecycle, logs, artifacts, run history.
+2. Multi-provider routing: one real provider plus health/cost/capability checks.
+3. Checkpoint/resume: checkpoint registry and provider migration.
+4. Eval/governance: eval gates, lineage, deployment blocking metadata.
+5. Enterprise control plane: dashboard, teams, RBAC, cost centers, audit export.
 
 ## Docs
 
+- [CloudTune MVP](docs/cloudtune-orchestrator-mvp.md)
 - [Overview](docs/overview.md)
 - [Architecture](docs/architecture.md)
 - [Roadmap](docs/roadmap.md)

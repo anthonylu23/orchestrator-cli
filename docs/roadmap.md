@@ -1,162 +1,87 @@
-# Switchboard CLI Roadmap
+# CloudTune Orchestrator Roadmap
 
 ## Strategy
 
-Build the orchestration system before chasing broad cloud coverage. Local and mock providers come first because they prove lifecycle, telemetry, routing, failure handling, and resume behavior quickly and repeatably.
+Build reliable execution before broad provider coverage. The first product should prove that CloudTune can run workloads, track state, preserve artifacts, expose history, retry intelligently, and explain provider choices. Real provider count matters only after those basics hold under stress.
 
-GCP is the first real provider target after the architecture is proven because it is well documented, conventional for ML infrastructure, and strong for systems credibility.
+## Phase 1 - Reliable Execution
 
-## Phase 0 - Spec and Scaffold
+Status: in progress and usable locally.
 
-Status: substantially complete. The repo now includes the Go module scaffold, docs, CLI entrypoint, package layout, test conventions, and the initial provider contract.
+Implemented:
 
-Goals:
-
-1. Finalize docs, architecture, package layout, CLI command list, and provider contract.
-2. Create the Go project scaffold.
-3. Establish test conventions and adapter contract test shape.
-
-Exit criteria:
-
-1. Docs clearly explain product scope, architecture, roadmap, and provider extensibility.
-2. Implementation can start without re-deciding stack, provider order, run model, or artifact strategy.
-
-## Phase 1 - Local Orchestration Vertical Slice
-
-Status: substantially complete. The local provider can execute real scripts from a per-run workspace, materialize bundled local data under stable `/workspace` mounts, persist SQLite run and attempt state, parse structured JSONL events from mixed output, follow logs for active runs with a final drain on completion/cancelation, cancel active local processes, redact secrets before persistence, and write `events.jsonl`, `logs.txt`, and `summary.json`.
-
-Next steps:
-
-1. Harden diagnostics and exit codes around provider and data preparation failures.
-2. Add broader provider adapter contract tests before the first real cloud adapter.
-3. Prepare GCP provider scaffolding.
-
-Goals:
-
-1. Implement CLI scaffold and config loading.
-2. Implement SQLite-backed run and attempt state.
-3. Implement the `local` provider for real local script execution.
-4. Add local bundled data inputs with preflight path validation and bundle size checks.
-5. Ingest mixed stdout with JSONL metric, checkpoint, status, and log events.
-6. Persist `events.jsonl`, `summary.json`, and logs.
-
-Target commands:
-
-```sh
-switchboard-cli train --provider local --script examples/train.py
-switchboard-cli status <run-id>
-switchboard-cli logs <run-id> --follow
-switchboard-cli cancel <run-id>
-```
+1. local runner for Python scripts.
+2. SQLite run and attempt state.
+3. logs, JSONL events, summaries, workload metadata, artifact manifests.
+4. `cloudtune run`, `status`, `logs`, `artifacts`, `runs`, and `cancel`.
+5. `CLOUDTUNE_*` runtime environment.
+6. output export to `<outputs.save_to>/<run-id>/`.
 
 Exit criteria:
 
-1. A user can run an example ML script locally through Switchboard.
-2. Switchboard stores run state and attempts in SQLite.
-3. Local training/test data is materialized at stable workspace paths.
-4. Oversized local data bundles require an explicit override.
-5. Logs and structured metrics are visible after the run.
-6. Success and failure both produce durable artifacts.
+1. local eval workload completes.
+2. result artifact is saved and listed.
+3. run history survives process restart.
+4. failure and cancellation produce durable summaries.
 
-## Phase 2 - Mock Cloud and Failure Simulation
+## Phase 2 - Multi-Provider Routing
 
-Status: substantially complete. The mock providers support configurable costs, scripted events, retryable failure modes, `provider=auto` routing, persisted routing decisions, checkpoint discovery from `events.jsonl`, and resume into a second attempt under one run with persisted resume and estimate provenance.
+Status: mock-provider foundation exists.
 
-Goals:
+Implemented:
 
-1. Implement a `mock` provider with configurable costs, capabilities, logs, and failure modes.
-2. Add routing over `local` and mock provider variants.
-3. Simulate capacity errors and runtime failures.
-4. Simulate URI data fetch success, auth failure, and unavailable remote data.
-5. Discover the latest checkpoint and resume a new attempt with `SubmitRequest.ResumeFrom`.
+1. deterministic mock providers with costs and failure modes.
+2. `provider=auto` routing.
+3. persisted routing decisions.
+4. retryable failure handling and provider exclusion.
 
-Target demo:
+Next:
 
-```sh
-switchboard-cli train --provider auto --config examples/failover.yaml
-```
+1. add one real provider adapter without merging unrelated branch work blindly.
+2. add provider health checks.
+3. add provider capability details for workload type, data location, GPU shape, and region.
+4. keep rejection reasons visible in run state.
 
-Expected behavior:
+## Phase 3 - Checkpoint And Resume
 
-```text
-Selected mock-lambda: compatible, estimated $1.10/hr
-Attempt a_1 failed: capacity interruption
-Found checkpoint: step 800
-Resuming on mock-gcp
-Run completed
-```
+Status: metadata path exists through mock checkpoint events.
 
-Exit criteria:
+Next:
 
-1. A forced provider failure resumes from the latest checkpoint on another adapter.
-2. The run history shows multiple attempts under one run.
-3. Mock URI data inputs are represented in the data manifest and runtime bundle.
-4. Routing decisions include selected, eligible, and rejected providers with reasons.
+1. introduce a checkpoint registry abstraction.
+2. validate provider-compatible checkpoint locations.
+3. distinguish same-provider resume from cross-provider migration.
+4. require human approval when resume would exceed budget.
 
-## Phase 3 - Provider Extensibility Hardening
+## Phase 4 - Eval And Governance
 
-Status: in progress. A shared provider contract harness now covers local and mock adapter identity, auth validation, capabilities, job validation, estimates, submit/status behavior, log streaming expectations, and cancel behavior. Routing tests cover capability and support-report rejection paths, and CLI tests pin key diagnostic exit categories.
+Status: workload/eval metadata is persisted; gate enforcement is not implemented.
 
-Goals:
+Next:
 
-1. Expand provider adapter contract tests as new provider capabilities are introduced.
-2. Keep provider error categories and retryability normalized through `ProviderError`.
-3. Keep adapter contract checks for bundled data and supported URI schemes current.
-4. Continue hardening capability matching and support reports after core routing rejection.
-5. Improve diagnostics for auth, invalid spec, data preparation, capacity, quota, network, runtime, and internal failures.
+1. define eval result schema.
+2. add deployment gate rules.
+3. persist dataset/model/config hashes.
+4. record approvals and policy decisions.
+5. export audit evidence for Axiom or a future governance ledger.
 
-Exit criteria:
+## Phase 5 - Enterprise Control Plane
 
-1. Adding a new provider does not require core orchestration changes.
-2. Adapter tests verify submit/status/logs/cancel behavior, data input handling, capability reporting, and error mapping.
-3. Routing, resume, and failure decisions are explainable from persisted state.
+Future:
 
-## Phase 4 - First Real Provider: GCP
-
-Goals:
-
-1. Implement GCP auth validation.
-2. Submit, status, logs, and cancel a real training job.
-3. Add basic GCP cost estimation and capability reporting.
-4. Define GCP staging behavior for bundled local data and URI-backed data.
-5. Document an end-to-end GCP example.
-
-Exit criteria:
-
-1. A single command can launch and track a real GCP training run.
-2. GCP can satisfy the documented data input contract or reject unsupported data modes clearly.
-3. GCP behavior passes the same adapter contract expectations as local/mock where applicable.
-4. Provider-specific errors are normalized before reaching orchestration code.
-
-## Later Phases
-
-1. Add Lambda and Hyperbolic adapters.
-2. Add explicit Docker image build/package workflow.
-3. Add GCS and S3 checkpoint backends.
-4. Add basic experiment fan-out.
-5. Add richer terminal attach views.
-6. Explore optional hosted run history and team visibility after CLI adoption.
-
-## Two-Week Success Target
-
-The initial two-week milestone is not three-provider cloud coverage. It is a polished systems demo:
-
-1. Run an example ML training script locally.
-2. Stream logs and metrics.
-3. Materialize bundled local training/test data at stable paths.
-4. Persist SQLite state and durable artifacts.
-5. Simulate cloud provider failure.
-6. Discover a checkpoint.
-7. Resume on another adapter.
-8. Prove provider extensibility through adapter contract tests.
+1. hosted API and dashboard.
+2. teams, RBAC, SSO.
+3. cost centers and budget policies.
+4. audit exports.
+5. provider usage analytics.
 
 ## Validation Matrix
 
-1. Local lifecycle: train, status, logs, cancel, success, and failure.
-2. Event ingestion: mixed stdout, JSONL metrics, checkpoints, statuses, and plain logs.
-3. Data handling: bundled files/directories, URI inputs, size limit override, mounted paths, and secret redaction.
-4. State persistence: runs, attempts, routing decisions, summaries, and exit reasons.
-5. Routing: cheapest eligible provider under fixed constraints and declared data requirements.
-6. Failure handling: retryable provider failures trigger alternate attempts.
-7. Resume: latest checkpoint is passed through `SubmitRequest.ResumeFrom`.
-8. Provider contract: local, mock, and future real providers satisfy the same core expectations.
+1. local lifecycle: run, status, logs, artifacts, history, cancel.
+2. event ingestion: metrics, checkpoints, statuses, plain logs.
+3. artifacts: summaries, workload metadata, outputs, checkpoints, manifest.
+4. state persistence: runs, attempts, routing decisions, exit reasons.
+5. routing: cheapest eligible provider under declared constraints.
+6. failure handling: retryable provider failures trigger alternate attempts.
+7. resume: latest checkpoint is passed through `SubmitRequest.ResumeFrom`.
+8. adapter contract: providers satisfy a stable core interface.

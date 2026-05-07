@@ -117,6 +117,7 @@ func (r Redactor) Run(run app.Run) app.Run {
 	run.JobName = r.String(run.JobName)
 	run.Script = r.String(run.Script)
 	run.Provider = r.String(run.Provider)
+	run.WorkloadType = app.WorkloadType(r.String(string(run.WorkloadType)))
 	run.Error = r.String(run.Error)
 	return run
 }

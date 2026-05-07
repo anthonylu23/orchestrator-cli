@@ -75,15 +75,17 @@ CREATE TABLE IF NOT EXISTS routing_decisions (
 		return err
 	}
 	for _, column := range []struct {
-		name string
-		def  string
+		table string
+		name  string
+		def   string
 	}{
-		{name: "resume_from_uri", def: "TEXT NOT NULL DEFAULT ''"},
-		{name: "resume_from_step", def: "INTEGER"},
-		{name: "estimated_hourly_usd", def: "REAL"},
-		{name: "estimate_currency", def: "TEXT NOT NULL DEFAULT ''"},
+		{table: "runs", name: "workload_type", def: "TEXT NOT NULL DEFAULT ''"},
+		{table: "attempts", name: "resume_from_uri", def: "TEXT NOT NULL DEFAULT ''"},
+		{table: "attempts", name: "resume_from_step", def: "INTEGER"},
+		{table: "attempts", name: "estimated_hourly_usd", def: "REAL"},
+		{table: "attempts", name: "estimate_currency", def: "TEXT NOT NULL DEFAULT ''"},
 	} {
-		if err := s.addColumnIfMissing(ctx, "attempts", column.name, column.def); err != nil {
+		if err := s.addColumnIfMissing(ctx, column.table, column.name, column.def); err != nil {
 			return err
 		}
 	}
@@ -118,9 +120,9 @@ func (s *Store) addColumnIfMissing(ctx context.Context, table string, column str
 
 func (s *Store) CreateRun(ctx context.Context, run app.Run) error {
 	_, err := s.db.ExecContext(ctx, `
-INSERT INTO runs (id, job_name, script, provider, state, started_at, exit_code, error)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		run.ID, run.JobName, run.Script, run.Provider, run.State, run.StartedAt.Format(time.RFC3339Nano), run.ExitCode, run.Error)
+	INSERT INTO runs (id, job_name, script, provider, workload_type, state, started_at, exit_code, error)
+	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		run.ID, run.JobName, run.Script, run.Provider, run.WorkloadType, run.State, run.StartedAt.Format(time.RFC3339Nano), run.ExitCode, run.Error)
 	return err
 }
 
@@ -205,11 +207,11 @@ FROM routing_decisions WHERE run_id = ?`, runID)
 
 func (s *Store) GetRun(ctx context.Context, runID string) (app.Run, error) {
 	row := s.db.QueryRowContext(ctx, `
-SELECT id, job_name, script, provider, state, started_at, COALESCE(ended_at, ''), exit_code, error
-FROM runs WHERE id = ?`, runID)
+	SELECT id, job_name, script, provider, workload_type, state, started_at, COALESCE(ended_at, ''), exit_code, error
+	FROM runs WHERE id = ?`, runID)
 	var run app.Run
 	var started, ended string
-	if err := row.Scan(&run.ID, &run.JobName, &run.Script, &run.Provider, &run.State, &started, &ended, &run.ExitCode, &run.Error); err != nil {
+	if err := row.Scan(&run.ID, &run.JobName, &run.Script, &run.Provider, &run.WorkloadType, &run.State, &started, &ended, &run.ExitCode, &run.Error); err != nil {
 		if err == sql.ErrNoRows {
 			return app.Run{}, fmt.Errorf("run %q not found", runID)
 		}
@@ -220,6 +222,33 @@ FROM runs WHERE id = ?`, runID)
 		run.EndedAt = mustParseTime(ended)
 	}
 	return run, nil
+}
+
+func (s *Store) ListRuns(ctx context.Context, limit int) ([]app.Run, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := s.db.QueryContext(ctx, `
+	SELECT id, job_name, script, provider, workload_type, state, started_at, COALESCE(ended_at, ''), exit_code, error
+	FROM runs ORDER BY started_at DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var runs []app.Run
+	for rows.Next() {
+		var run app.Run
+		var started, ended string
+		if err := rows.Scan(&run.ID, &run.JobName, &run.Script, &run.Provider, &run.WorkloadType, &run.State, &started, &ended, &run.ExitCode, &run.Error); err != nil {
+			return nil, err
+		}
+		run.StartedAt = mustParseTime(started)
+		if ended != "" {
+			run.EndedAt = mustParseTime(ended)
+		}
+		runs = append(runs, run)
+	}
+	return runs, rows.Err()
 }
 
 func (s *Store) AttemptsByRun(ctx context.Context, runID string) ([]app.Attempt, error) {

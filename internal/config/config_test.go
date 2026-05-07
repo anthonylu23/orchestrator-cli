@@ -42,6 +42,21 @@ func TestLoadTrainSwitchboardHomePrecedesLegacyHome(t *testing.T) {
 	}
 }
 
+func TestLoadTrainCloudTuneHomePrecedesSwitchboardHome(t *testing.T) {
+	cloudTuneHome := filepath.Join(t.TempDir(), "cloudtune-home")
+	switchboardHome := filepath.Join(t.TempDir(), "switchboard-home")
+	t.Setenv("CLOUDTUNE_HOME", cloudTuneHome)
+	t.Setenv("SWITCHBOARD_CLI_HOME", switchboardHome)
+
+	got, err := LoadTrain(TrainFlags{Script: "examples/train.py"})
+	if err != nil {
+		t.Fatalf("LoadTrain returned error: %v", err)
+	}
+	if got.SwitchboardHome != cloudTuneHome {
+		t.Fatalf("home = %q, want %q", got.SwitchboardHome, cloudTuneHome)
+	}
+}
+
 func TestLoadTrainUsesLegacyHomeEnvFallback(t *testing.T) {
 	legacyHome := filepath.Join(t.TempDir(), "orchestrator-home")
 	t.Setenv("SWITCHBOARD_CLI_HOME", "")
@@ -114,5 +129,55 @@ data:
 	}
 	if got.BundleMaxSizeBytes != 1024*1024 {
 		t.Fatalf("bundle max = %d", got.BundleMaxSizeBytes)
+	}
+}
+
+func TestLoadTrainSupportsCloudTuneWorkloadConfig(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "cloudtune.yaml")
+	content := []byte(`
+workload:
+  name: rag-eval-v1
+  type: evaluation
+  model:
+    provider: openai
+    name: gpt-4.1-mini
+  dataset:
+    name: support-eval
+    path: ./evals/customer_support.jsonl
+job:
+  script: eval.py
+routing:
+  provider: auto
+  max_attempts: 3
+outputs:
+  save_to: ./artifacts
+`)
+	if err := os.WriteFile(configPath, content, 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	got, err := LoadTrain(TrainFlags{
+		ConfigPath:      configPath,
+		SwitchboardHome: filepath.Join(dir, "home"),
+	})
+	if err != nil {
+		t.Fatalf("LoadTrain returned error: %v", err)
+	}
+	if got.Provider != "auto" || got.Routing.MaxAttempts != 3 {
+		t.Fatalf("routing = provider %q config %#v", got.Provider, got.Routing)
+	}
+	if got.Job.Name != "rag-eval-v1" || got.Job.Workload.Type != "evaluation" {
+		t.Fatalf("workload = %#v job=%#v", got.Job.Workload, got.Job)
+	}
+	wantDatasetPath, err := filepath.Abs("./evals/customer_support.jsonl")
+	if err != nil {
+		t.Fatalf("abs dataset path: %v", err)
+	}
+	if got.Job.Workload.Model.Name != "gpt-4.1-mini" || got.Job.Workload.Dataset.Path != wantDatasetPath {
+		t.Fatalf("workload refs = %#v", got.Job.Workload)
+	}
+	if got.Job.Outputs.SaveTo != "./artifacts" {
+		t.Fatalf("outputs = %#v", got.Job.Outputs)
 	}
 }

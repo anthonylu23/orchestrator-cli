@@ -14,10 +14,12 @@ import (
 const DefaultBundleMaxSizeMB = 512
 
 type Config struct {
-	Job     JobConfig     `yaml:"job"`
-	Data    DataConfig    `yaml:"data"`
-	Routing RoutingConfig `yaml:"routing"`
-	Mock    MockConfig    `yaml:"mock"`
+	Workload app.WorkloadSpec `yaml:"workload"`
+	Job      JobConfig        `yaml:"job"`
+	Data     DataConfig       `yaml:"data"`
+	Routing  RoutingConfig    `yaml:"routing"`
+	Mock     MockConfig       `yaml:"mock"`
+	Outputs  app.OutputSpec   `yaml:"outputs"`
 }
 
 type JobConfig struct {
@@ -41,6 +43,7 @@ type BundleConfig struct {
 type RoutingConfig struct {
 	Objective   string `yaml:"objective"`
 	MaxAttempts int    `yaml:"max_attempts"`
+	Provider    string `yaml:"provider"`
 }
 
 type MockConfig struct {
@@ -95,17 +98,16 @@ func LoadTrain(flags TrainFlags) (ResolvedTrainConfig, error) {
 	}
 
 	provider := cfgProviderDefault(flags.Provider)
-	if provider == "" {
-		provider = string(app.ProviderLocal)
-	}
 
 	job := app.JobSpec{
-		Name:    cfg.Job.Name,
-		Script:  cfg.Job.Script,
-		Args:    append([]string(nil), cfg.Job.Args...),
-		Env:     cloneMap(cfg.Job.Env),
-		Data:    append([]app.DataInput(nil), cfg.Data.Inputs...),
-		WorkDir: cfg.Job.WorkDir,
+		Name:     cfg.Job.Name,
+		Script:   cfg.Job.Script,
+		Args:     append([]string(nil), cfg.Job.Args...),
+		Env:      cloneMap(cfg.Job.Env),
+		Data:     append([]app.DataInput(nil), cfg.Data.Inputs...),
+		WorkDir:  cfg.Job.WorkDir,
+		Workload: normalizeWorkload(cfg.Workload),
+		Outputs:  cfg.Outputs,
 	}
 	if flags.Script != "" {
 		job.Script = flags.Script
@@ -117,7 +119,11 @@ func LoadTrain(flags TrainFlags) (ResolvedTrainConfig, error) {
 		return ResolvedTrainConfig{}, errors.New("script is required")
 	}
 	if job.Name == "" {
-		job.Name = filepath.Base(job.Script)
+		if job.Workload.Name != "" {
+			job.Name = job.Workload.Name
+		} else {
+			job.Name = filepath.Base(job.Script)
+		}
 	}
 	if job.Env == nil {
 		job.Env = map[string]string{}
@@ -140,10 +146,18 @@ func LoadTrain(flags TrainFlags) (ResolvedTrainConfig, error) {
 		return ResolvedTrainConfig{}, err
 	}
 
+	routing := resolveRouting(cfg.Routing)
+	if provider == "" {
+		provider = routing.Provider
+	}
+	if provider == "" {
+		provider = string(app.ProviderLocal)
+	}
+
 	return ResolvedTrainConfig{
 		Provider:                  provider,
 		Job:                       job,
-		Routing:                   resolveRouting(cfg.Routing),
+		Routing:                   routing,
 		Mock:                      cfg.Mock,
 		BundleMaxSizeBytes:        int64(maxSizeMB) * 1024 * 1024,
 		RequireOverrideAboveLimit: requireOverride,
@@ -160,6 +174,18 @@ func resolveRouting(routing RoutingConfig) RoutingConfig {
 		routing.MaxAttempts = 2
 	}
 	return routing
+}
+
+func normalizeWorkload(workload app.WorkloadSpec) app.WorkloadSpec {
+	if workload.Type == "" {
+		workload.Type = app.WorkloadTypeTraining
+	}
+	if workload.Dataset.Path != "" && !filepath.IsAbs(workload.Dataset.Path) {
+		if abs, err := filepath.Abs(workload.Dataset.Path); err == nil {
+			workload.Dataset.Path = abs
+		}
+	}
+	return workload
 }
 
 func LoadFile(path string) (Config, error) {

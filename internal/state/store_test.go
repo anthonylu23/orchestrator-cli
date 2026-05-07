@@ -20,7 +20,7 @@ func TestRunAttemptLifecycle(t *testing.T) {
 	defer store.Close()
 
 	started := time.Now().UTC()
-	run := app.Run{ID: "r_1", JobName: "train", Script: "train.py", Provider: "local", State: app.RunStateRunning, StartedAt: started}
+	run := app.Run{ID: "r_1", JobName: "train", Script: "train.py", Provider: "local", WorkloadType: app.WorkloadTypeTraining, State: app.RunStateRunning, StartedAt: started}
 	if err := store.CreateRun(ctx, run); err != nil {
 		t.Fatalf("CreateRun returned error: %v", err)
 	}
@@ -52,7 +52,7 @@ func TestRunAttemptLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetRun returned error: %v", err)
 	}
-	if gotRun.State != app.RunStateSucceeded || gotRun.ExitCode != 0 {
+	if gotRun.State != app.RunStateSucceeded || gotRun.ExitCode != 0 || gotRun.WorkloadType != app.WorkloadTypeTraining {
 		t.Fatalf("run = %#v", gotRun)
 	}
 	attempts, err := store.AttemptsByRun(ctx, "r_1")
@@ -70,6 +70,32 @@ func TestRunAttemptLifecycle(t *testing.T) {
 	}
 }
 
+func TestListRunsReturnsRecentRuns(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(filepath.Join(t.TempDir(), "switchboard.db"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	defer store.Close()
+	first := time.Now().UTC()
+	second := first.Add(time.Second)
+	for _, run := range []app.Run{
+		{ID: "r_old", JobName: "old", Script: "old.py", Provider: "local", WorkloadType: app.WorkloadTypeTraining, State: app.RunStateSucceeded, StartedAt: first},
+		{ID: "r_new", JobName: "new", Script: "new.py", Provider: "local", WorkloadType: app.WorkloadTypeEvaluation, State: app.RunStateRunning, StartedAt: second},
+	} {
+		if err := store.CreateRun(ctx, run); err != nil {
+			t.Fatalf("CreateRun(%s) returned error: %v", run.ID, err)
+		}
+	}
+	runs, err := store.ListRuns(ctx, 10)
+	if err != nil {
+		t.Fatalf("ListRuns returned error: %v", err)
+	}
+	if len(runs) != 2 || runs[0].ID != "r_new" || runs[0].WorkloadType != app.WorkloadTypeEvaluation {
+		t.Fatalf("runs = %#v", runs)
+	}
+}
+
 func TestRoutingDecisionLifecycle(t *testing.T) {
 	ctx := context.Background()
 	store, err := Open(filepath.Join(t.TempDir(), "switchboard.db"))
@@ -79,7 +105,7 @@ func TestRoutingDecisionLifecycle(t *testing.T) {
 	defer store.Close()
 
 	started := time.Now().UTC()
-	run := app.Run{ID: "r_1", JobName: "train", Script: "train.py", Provider: "auto", State: app.RunStateRunning, StartedAt: started}
+	run := app.Run{ID: "r_1", JobName: "train", Script: "train.py", Provider: "auto", WorkloadType: app.WorkloadTypeTraining, State: app.RunStateRunning, StartedAt: started}
 	if err := store.CreateRun(ctx, run); err != nil {
 		t.Fatalf("CreateRun returned error: %v", err)
 	}

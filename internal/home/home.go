@@ -7,15 +7,19 @@ import (
 )
 
 const (
-	EnvName       = "SWITCHBOARD_CLI_HOME"
-	LegacyEnvName = "ORCHESTRATOR_CLI_HOME"
-	DirName       = ".switchboard-cli"
-	LegacyDirName = ".orchestrator-cli"
+	CloudTuneEnvName = "CLOUDTUNE_HOME"
+	EnvName          = "SWITCHBOARD_CLI_HOME"
+	LegacyEnvName    = "ORCHESTRATOR_CLI_HOME"
+	DirName          = ".switchboard-cli"
+	LegacyDirName    = ".orchestrator-cli"
 )
 
 func Resolve(flag string) (string, error) {
 	if flag != "" {
 		return flag, nil
+	}
+	if env := os.Getenv(CloudTuneEnvName); env != "" {
+		return env, nil
 	}
 	if env := os.Getenv(EnvName); env != "" {
 		return env, nil

@@ -1,121 +1,80 @@
-# Switchboard CLI Overview
+# CloudTune Orchestrator Overview
 
 ## Vision
 
-Switchboard CLI is a local-first orchestration layer for ML and deep learning jobs. It should make training runs portable across execution backends without forcing users to learn each provider's job lifecycle, logging model, failure behavior, and resume workflow.
+CloudTune Orchestrator is a provider-agnostic control plane for AI/ML workloads. It should let teams run evaluation, batch inference, fine-tuning, training, embedding, and agent workloads through one lifecycle layer instead of hardcoding each workflow to one cloud, GPU rental provider, model API, local machine, or HPC cluster.
 
 ## Core Promise
 
-Run a training job through one CLI, materialize its data inputs consistently, observe it consistently, persist durable telemetry, and resume from the latest checkpoint when an execution backend fails.
+Submit a workload once, route it to a compatible provider, track state/logs/metrics/cost/artifacts, retry or resume when possible, and persist enough evidence to reproduce and govern the result.
+
+## MVP Wedge
+
+The best first wedge is reliable eval and batch workload orchestration across local + cloud providers. This branch implements the local and mock-cloud foundation:
+
+1. local workload execution.
+2. deterministic mock provider failover.
+3. durable run and attempt state.
+4. logs, structured events, summaries, and artifact manifests.
+5. workload metadata for model, dataset, type, and outputs.
+
+Real cloud providers are not part of this branch.
 
 ## Target Users
 
-1. Indie researchers who want cheaper or more reliable access to GPU execution without building provider-specific workflows.
-2. ML and systems engineers who want scriptable training orchestration with predictable state, logs, metrics, and failure behavior.
-3. AI startup teams later, after the open-source CLI proves repeat usage.
-
-## Product Wedge
-
-"Given my script and hardware constraints, run on the cheapest available compatible provider and resume if a provider fails."
-
-The first implementation should prove this through local and mock providers before integrating real cloud APIs. That keeps the early work focused on orchestration quality instead of provider setup friction.
+1. AI startups running evals and batch jobs across fragmented providers.
+2. ML engineers who need reproducible run history and artifacts.
+3. Platform engineers who need provider abstraction, retry policy, and observability.
+4. Enterprises that need lineage, approvals, and audit evidence before deployment.
 
 ## Differentiation
 
-1. Provider adapter architecture that makes new backends straightforward to add.
-2. Run/attempt lifecycle model built for failover and checkpoint resume.
-3. Cost-aware routing with explicit provider rejection reasons.
-4. Structured JSONL events and stable exit codes for automation.
-5. Minimal config for simple runs with optional YAML for advanced workflows.
+1. AI-workload state machine rather than generic task DAGs.
+2. Provider adapter contract rather than provider-specific workflow code.
+3. Checkpoint and artifact concepts built into the run model.
+4. Eval and governance metadata as first-class roadmap surfaces.
+5. Local-first CLI path before hosted control plane complexity.
 
-## V1 Scope
-
-1. Go CLI orchestration core.
-2. `local` provider for executing real local scripts.
-3. `mock` provider for simulated cloud behavior, costs, logs, capacity failures, runtime failures, and checkpoint resume.
-4. SQLite as canonical local run and attempt state.
-5. JSONL event ingestion from mixed stdout.
-6. First-class data inputs for bundled local files/directories and runtime-resolved URI sources.
-7. Durable artifacts under `~/.switchboard-cli/runs/<run-id>/`.
-8. Provider adapter contract tests.
-9. GCP as the first real provider after local/mock behavior is proven.
-
-## Deferred Scope
-
-1. Three real providers at once.
-2. Automatic container packaging.
-3. Hosted control plane.
-4. Unified billing or a single Switchboard API key.
-5. Kubernetes.
-6. Rich terminal UI.
-7. Distributed multi-node training.
-8. Complex sweeps or fan-out beyond basic future design notes.
-9. Enterprise governance and compliance features.
-10. Typed API connector framework for arbitrary dataset APIs.
-
-## Early Runtime Assumptions
-
-Early Switchboard versions accept either a local script path or an explicit image and command. Automatic Docker image construction can come later.
-
-Training and test data are declared as job inputs. Local files and directories may be bundled with the job. Remote sources use URI inputs such as `http://`, `https://`, `s3://`, and `gs://`. In both cases, Switchboard materializes data under stable workspace paths so training scripts do not need provider-specific fetch logic.
-
-Large bundled datasets are allowed only with an explicit override. Switchboard should compute bundle size during preflight, fail when a configured limit is exceeded, and recommend URI/object-store sources for large datasets.
-
-Private data access uses BYO environment authentication in early versions. Switchboard may pass through selected environment variables, but it must not persist raw data credentials in SQLite, run metadata, logs, `events.jsonl`, or `summary.json`. Provider-native identity can be added later for real cloud providers.
+## Workload Shape
 
 ```yaml
+workload:
+  name: rag-eval-v1
+  type: evaluation
+  model:
+    provider: local
+    name: deterministic-evaluator
+  dataset:
+    name: customer-support-sample
+    path: examples/evals/customer_support.jsonl
+
 job:
-  script: "train.py"
-  args: ["--train-data", "/workspace/data/train", "--test-data", "/workspace/data/test.csv"]
+  script: examples/eval.py
 
-data:
-  inputs:
-    - name: "train"
-      source: "./data/train"
-      mount: "/workspace/data/train"
-      mode: "bundle"
+routing:
+  provider: local
+  max_attempts: 1
 
-    - name: "test"
-      source: "https://example.com/test.csv"
-      mount: "/workspace/data/test.csv"
-      mode: "uri"
-
-    - name: "imagenet"
-      source: "s3://my-bucket/datasets/imagenet"
-      mount: "/workspace/data/imagenet"
-      mode: "uri"
-  bundle:
-    max_size_mb: 512
-    require_override_above_limit: true
+outputs:
+  save_to: ./artifacts
 ```
 
-Defaults:
+## Runtime Events
 
-1. Local paths default to `mode: bundle`.
-2. `http://`, `https://`, `s3://`, and `gs://` sources default to `mode: uri`.
-3. If `mount` is omitted, Switchboard assigns `/workspace/data/<name>`.
-4. Oversized local bundles require an explicit override such as `--allow-large-data-bundle`.
-
-Switchboard injects runtime metadata into the job environment:
-
-```text
-SWITCHBOARD_RUN_ID
-SWITCHBOARD_ATTEMPT_ID
-SWITCHBOARD_CHECKPOINT_DIR
-SWITCHBOARD_RESUME_FROM
-SWITCHBOARD_EVENTS_PATH
-```
-
-Deprecated `ORCHESTRATOR_*` aliases are also injected with the same values for compatibility with existing scripts. New scripts should read the `SWITCHBOARD_*` names.
-
-Training scripts may emit JSON lines to stdout for structured events. Plain logs remain valid and must be handled safely.
+Training and eval scripts can emit JSON lines:
 
 ```json
-{"type":"metric","step":1200,"metrics":{"loss":0.431,"accuracy":0.882},"split":"train"}
-{"type":"checkpoint","step":1200,"checkpoint_uri":"file:///tmp/switchboard-cli/runs/r_123/ckpt-1200"}
-{"type":"status","state":"running"}
+{"type":"metric","step":1,"metrics":{"accuracy":0.91},"split":"eval"}
+{"type":"checkpoint","step":800,"checkpoint_uri":"file:///run/checkpoints/ckpt-800"}
+{"type":"status","state":"verified"}
 ```
 
-## Acceptance Criteria
+Plain logs remain valid and are stored in `logs.txt`.
 
-The first implementation milestone is successful when a user can run an example ML script locally, stream logs and metrics, persist artifacts, simulate provider failure, discover a checkpoint, and resume on another adapter without changing orchestration code.
+## Acceptance Criteria For This Branch
+
+1. `cloudtune run examples/eval.yaml` completes locally.
+2. `cloudtune artifacts <run-id>` lists result artifacts.
+3. `cloudtune runs` shows persisted history.
+4. mock provider failover still resumes from checkpoint metadata.
+5. normal tests, race tests, vet, build, and repeated local stress runs pass.

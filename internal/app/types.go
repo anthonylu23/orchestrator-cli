@@ -35,13 +35,52 @@ type DataManifest struct {
 	LargeBundleOverridePermitted bool        `json:"large_bundle_override_permitted"`
 }
 
+type WorkloadType string
+
+const (
+	WorkloadTypeTraining       WorkloadType = "training"
+	WorkloadTypeEvaluation     WorkloadType = "evaluation"
+	WorkloadTypeBatchInference WorkloadType = "batch_inference"
+	WorkloadTypeFineTuning     WorkloadType = "fine_tuning"
+	WorkloadTypeEmbedding      WorkloadType = "embedding"
+	WorkloadTypeAgentWorkflow  WorkloadType = "agent_workflow"
+)
+
+type ModelRef struct {
+	Provider string `json:"provider,omitempty" yaml:"provider"`
+	Name     string `json:"name,omitempty" yaml:"name"`
+	Version  string `json:"version,omitempty" yaml:"version"`
+}
+
+type DatasetRef struct {
+	Name    string `json:"name,omitempty" yaml:"name"`
+	Path    string `json:"path,omitempty" yaml:"path"`
+	URI     string `json:"uri,omitempty" yaml:"uri"`
+	Version string `json:"version,omitempty" yaml:"version"`
+}
+
+type WorkloadSpec struct {
+	Name     string            `json:"name,omitempty" yaml:"name"`
+	Type     WorkloadType      `json:"type,omitempty" yaml:"type"`
+	Model    ModelRef          `json:"model,omitempty" yaml:"model"`
+	Dataset  DatasetRef        `json:"dataset,omitempty" yaml:"dataset"`
+	Tags     []string          `json:"tags,omitempty" yaml:"tags"`
+	Metadata map[string]string `json:"metadata,omitempty" yaml:"metadata"`
+}
+
+type OutputSpec struct {
+	SaveTo string `json:"save_to,omitempty" yaml:"save_to"`
+}
+
 type JobSpec struct {
-	Name    string            `json:"name" yaml:"name"`
-	Script  string            `json:"script" yaml:"script"`
-	Args    []string          `json:"args" yaml:"args"`
-	Env     map[string]string `json:"env" yaml:"env"`
-	Data    []DataInput       `json:"data" yaml:"data"`
-	WorkDir string            `json:"work_dir" yaml:"work_dir"`
+	Name     string            `json:"name" yaml:"name"`
+	Script   string            `json:"script" yaml:"script"`
+	Args     []string          `json:"args" yaml:"args"`
+	Env      map[string]string `json:"env" yaml:"env"`
+	Data     []DataInput       `json:"data" yaml:"data"`
+	WorkDir  string            `json:"work_dir" yaml:"work_dir"`
+	Workload WorkloadSpec      `json:"workload,omitempty" yaml:"workload"`
+	Outputs  OutputSpec        `json:"outputs,omitempty" yaml:"outputs"`
 }
 
 type RunState string
@@ -63,15 +102,16 @@ const (
 )
 
 type Run struct {
-	ID        string    `json:"id"`
-	JobName   string    `json:"job_name"`
-	Script    string    `json:"script"`
-	Provider  string    `json:"provider"`
-	State     RunState  `json:"state"`
-	StartedAt time.Time `json:"started_at"`
-	EndedAt   time.Time `json:"ended_at,omitempty"`
-	ExitCode  int       `json:"exit_code"`
-	Error     string    `json:"error,omitempty"`
+	ID           string       `json:"id"`
+	JobName      string       `json:"job_name"`
+	Script       string       `json:"script"`
+	Provider     string       `json:"provider"`
+	WorkloadType WorkloadType `json:"workload_type,omitempty"`
+	State        RunState     `json:"state"`
+	StartedAt    time.Time    `json:"started_at"`
+	EndedAt      time.Time    `json:"ended_at,omitempty"`
+	ExitCode     int          `json:"exit_code"`
+	Error        string       `json:"error,omitempty"`
 }
 
 type Attempt struct {

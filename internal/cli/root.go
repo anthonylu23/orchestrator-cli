@@ -50,15 +50,18 @@ func NewRootCommand(opts Options) *cobra.Command {
 
 	var home string
 	root := &cobra.Command{
-		Use:           "switchboard-cli",
-		Short:         "Local-first ML job orchestration",
+		Use:           "cloudtune",
+		Short:         "Provider-agnostic AI/ML workload orchestration",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
-	root.PersistentFlags().StringVar(&home, "home", "", "Switchboard home directory")
+	root.PersistentFlags().StringVar(&home, "home", "", "CloudTune home directory")
+	root.AddCommand(newRunCommand(opts, &home))
 	root.AddCommand(newTrainCommand(opts, &home))
+	root.AddCommand(newRunsCommand(opts, &home))
 	root.AddCommand(newStatusCommand(opts, &home))
 	root.AddCommand(newLogsCommand(opts, &home))
+	root.AddCommand(newArtifactsCommand(opts, &home))
 	root.AddCommand(newCancelCommand(opts, &home))
 	root.AddCommand(newProvidersCommand(opts))
 	return root
@@ -80,7 +83,7 @@ func newTrainCommand(opts Options, home *string) *cobra.Command {
 	var flags config.TrainFlags
 	cmd := &cobra.Command{
 		Use:   "train",
-		Short: "Run a training script",
+		Short: "Run a local training script",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			flags.SwitchboardHome = *home
 			resolved, err := config.LoadTrain(flags)
@@ -97,10 +100,39 @@ func newTrainCommand(opts Options, home *string) *cobra.Command {
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&flags.ConfigPath, "config", "", "Path to switchboard-cli YAML config")
-	cmd.Flags().StringVar(&flags.Provider, "provider", "local", "Provider to use")
+	cmd.Flags().StringVar(&flags.ConfigPath, "config", "", "Path to CloudTune YAML config")
+	cmd.Flags().StringVar(&flags.Provider, "provider", "", "Provider to use")
 	cmd.Flags().StringVar(&flags.Script, "script", "", "Training script path")
 	cmd.Flags().StringArrayVar(&flags.Args, "arg", nil, "Argument to pass to the script; repeat for multiple args")
+	cmd.Flags().BoolVar(&flags.AllowLargeDataBundle, "allow-large-data-bundle", false, "Allow local data bundles above configured limit")
+	return cmd
+}
+
+func newRunCommand(opts Options, home *string) *cobra.Command {
+	var flags config.TrainFlags
+	cmd := &cobra.Command{
+		Use:   "run <config>",
+		Short: "Run a CloudTune workload config",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			flags.SwitchboardHome = *home
+			flags.ConfigPath = args[0]
+			resolved, err := config.LoadTrain(flags)
+			if err != nil {
+				return err
+			}
+			code, err := runTrain(cmd.Context(), opts, resolved)
+			if err != nil {
+				return err
+			}
+			if code != 0 {
+				return exitCodeError{code: code}
+			}
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&flags.Provider, "provider", "", "Provider override")
+	cmd.Flags().StringArrayVar(&flags.Args, "arg", nil, "Argument override; repeat for multiple args")
 	cmd.Flags().BoolVar(&flags.AllowLargeDataBundle, "allow-large-data-bundle", false, "Allow local data bundles above configured limit")
 	return cmd
 }
@@ -128,13 +160,16 @@ func runTrain(ctx context.Context, opts Options, resolved config.ResolvedTrainCo
 	if err := artifact.EnsureRun(paths); err != nil {
 		return exitCodeInternal, err
 	}
+	if err := artifact.WriteWorkload(paths.WorkloadManifest, job.Workload); err != nil {
+		return exitCodeInternal, err
+	}
 	store, err := state.Open(paths.DB)
 	if err != nil {
 		return exitCodeInternal, err
 	}
 	defer store.Close()
 
-	run := app.Run{ID: runID, JobName: resolved.Job.Name, Script: resolved.Job.Script, Provider: resolved.Provider, State: app.RunStateRunning, StartedAt: now}
+	run := app.Run{ID: runID, JobName: resolved.Job.Name, Script: resolved.Job.Script, Provider: resolved.Provider, WorkloadType: resolved.Job.Workload.Type, State: app.RunStateRunning, StartedAt: now}
 	if err := store.CreateRun(ctx, run); err != nil {
 		return exitCodeInternal, err
 	}
@@ -238,16 +273,29 @@ func runAttempt(ctx context.Context, opts Options, store *state.Store, registry 
 		resumeValue = resumeFrom.URI
 	}
 	runtimeEnv := map[string]string{
-		"SWITCHBOARD_RUN_ID":          runID,
-		"SWITCHBOARD_ATTEMPT_ID":      attemptID,
-		"SWITCHBOARD_CHECKPOINT_DIR":  paths.Checkpoints,
-		"SWITCHBOARD_RESUME_FROM":     resumeValue,
-		"SWITCHBOARD_EVENTS_PATH":     paths.EventsJSONL,
-		"ORCHESTRATOR_RUN_ID":         runID,
-		"ORCHESTRATOR_ATTEMPT_ID":     attemptID,
-		"ORCHESTRATOR_CHECKPOINT_DIR": paths.Checkpoints,
-		"ORCHESTRATOR_RESUME_FROM":    resumeValue,
-		"ORCHESTRATOR_EVENTS_PATH":    paths.EventsJSONL,
+		"CLOUDTUNE_RUN_ID":             runID,
+		"CLOUDTUNE_ATTEMPT_ID":         attemptID,
+		"CLOUDTUNE_CHECKPOINT_DIR":     paths.Checkpoints,
+		"CLOUDTUNE_RESUME_FROM":        resumeValue,
+		"CLOUDTUNE_EVENTS_PATH":        paths.EventsJSONL,
+		"CLOUDTUNE_OUTPUT_DIR":         paths.Outputs,
+		"CLOUDTUNE_ARTIFACTS_MANIFEST": paths.Manifest,
+		"CLOUDTUNE_WORKLOAD_TYPE":      string(job.Workload.Type),
+		"CLOUDTUNE_MODEL_PROVIDER":     job.Workload.Model.Provider,
+		"CLOUDTUNE_MODEL_NAME":         job.Workload.Model.Name,
+		"CLOUDTUNE_DATASET_NAME":       job.Workload.Dataset.Name,
+		"CLOUDTUNE_DATASET_PATH":       job.Workload.Dataset.Path,
+		"CLOUDTUNE_DATASET_URI":        job.Workload.Dataset.URI,
+		"SWITCHBOARD_RUN_ID":           runID,
+		"SWITCHBOARD_ATTEMPT_ID":       attemptID,
+		"SWITCHBOARD_CHECKPOINT_DIR":   paths.Checkpoints,
+		"SWITCHBOARD_RESUME_FROM":      resumeValue,
+		"SWITCHBOARD_EVENTS_PATH":      paths.EventsJSONL,
+		"ORCHESTRATOR_RUN_ID":          runID,
+		"ORCHESTRATOR_ATTEMPT_ID":      attemptID,
+		"ORCHESTRATOR_CHECKPOINT_DIR":  paths.Checkpoints,
+		"ORCHESTRATOR_RESUME_FROM":     resumeValue,
+		"ORCHESTRATOR_EVENTS_PATH":     paths.EventsJSONL,
 	}
 	attemptRedactor := redact.FromEnvironment(attemptJob.Env, runtimeEnv)
 	estimate, err := adapter.Estimate(ctx, attemptJob)
@@ -317,6 +365,11 @@ func runAttempt(ctx context.Context, opts Options, store *state.Store, registry 
 	if err := writeSummary(ctx, store, paths, runID); err != nil {
 		return exitCodeInternal, false, err
 	}
+	if exported, err := artifact.ExportOutputs(paths.Outputs, job.Outputs.SaveTo, runID); err != nil {
+		return exitCodeInternal, false, err
+	} else if exported != "" {
+		fmt.Fprintf(opts.Stdout, "Artifacts exported to %s\n", exported)
+	}
 	fmt.Fprintf(opts.Stdout, "Run %s %s\n", runID, runState)
 	return result.ExitCode, false, nil
 }
@@ -335,7 +388,15 @@ func writeSummary(ctx context.Context, store *state.Store, paths artifact.Paths,
 		return err
 	}
 	built := summary.Build(run, attempts, events)
-	return artifact.WriteSummary(paths.Summary, redact.FromEnvironment().Summary(built))
+	redactor := redact.FromEnvironment()
+	if err := artifact.WriteSummary(paths.Summary, redactor.Summary(built)); err != nil {
+		return err
+	}
+	manifest, err := artifact.BuildManifest(paths, redactor.Run(run), time.Now().UTC())
+	if err != nil {
+		return err
+	}
+	return artifact.WriteManifest(paths.Manifest, manifest)
 }
 
 func newStatusCommand(opts Options, home *string) *cobra.Command {
@@ -361,11 +422,45 @@ func newStatusCommand(opts Options, home *string) *cobra.Command {
 			if asJSON {
 				return json.NewEncoder(opts.Stdout).Encode(run)
 			}
-			fmt.Fprintf(opts.Stdout, "%s\t%s\t%s\t%s\n", run.ID, run.State, run.Provider, run.Script)
+			fmt.Fprintf(opts.Stdout, "%s\t%s\t%s\t%s\t%s\n", run.ID, run.State, run.Provider, run.WorkloadType, run.Script)
 			return nil
 		},
 	}
 	cmd.Flags().BoolVar(&asJSON, "json", false, "Print JSON")
+	return cmd
+}
+
+func newRunsCommand(opts Options, home *string) *cobra.Command {
+	var asJSON bool
+	var limit int
+	cmd := &cobra.Command{
+		Use:   "runs",
+		Short: "List recent runs",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			resolvedHome, err := resolveHome(*home)
+			if err != nil {
+				return err
+			}
+			store, err := state.Open(artifact.DBPath(resolvedHome))
+			if err != nil {
+				return err
+			}
+			defer store.Close()
+			runs, err := store.ListRuns(cmd.Context(), limit)
+			if err != nil {
+				return err
+			}
+			if asJSON {
+				return json.NewEncoder(opts.Stdout).Encode(runs)
+			}
+			for _, run := range runs {
+				fmt.Fprintf(opts.Stdout, "%s\t%s\t%s\t%s\t%s\n", run.ID, run.State, run.Provider, run.WorkloadType, run.JobName)
+			}
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&asJSON, "json", false, "Print JSON")
+	cmd.Flags().IntVar(&limit, "limit", 50, "Maximum runs to list")
 	return cmd
 }
 
@@ -393,6 +488,35 @@ func newLogsCommand(opts Options, home *string) *cobra.Command {
 		},
 	}
 	cmd.Flags().BoolVar(&follow, "follow", false, "Follow logs")
+	return cmd
+}
+
+func newArtifactsCommand(opts Options, home *string) *cobra.Command {
+	var asJSON bool
+	cmd := &cobra.Command{
+		Use:   "artifacts <run-id>",
+		Short: "List run artifacts",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			resolvedHome, err := resolveHome(*home)
+			if err != nil {
+				return err
+			}
+			paths := artifact.ForRun(resolvedHome, args[0])
+			manifest, err := artifact.ReadManifest(paths.Manifest)
+			if err != nil {
+				return err
+			}
+			if asJSON {
+				return json.NewEncoder(opts.Stdout).Encode(manifest)
+			}
+			for _, item := range manifest.Artifacts {
+				fmt.Fprintf(opts.Stdout, "%s\t%s\t%d\t%s\n", item.Kind, item.Name, item.SizeBytes, item.Path)
+			}
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&asJSON, "json", false, "Print JSON")
 	return cmd
 }
 
@@ -504,6 +628,9 @@ func followLogs(ctx context.Context, w io.Writer, home string, runID string, pat
 func copyLogFromOffset(w io.Writer, path string, offset int64) (int64, error) {
 	file, err := os.Open(path)
 	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return offset, nil
+		}
 		return offset, err
 	}
 	defer file.Close()
