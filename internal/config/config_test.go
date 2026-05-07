@@ -180,4 +180,10 @@ outputs:
 	if got.Job.Outputs.SaveTo != "./artifacts" {
 		t.Fatalf("outputs = %#v", got.Job.Outputs)
 	}
+	if got.ConfigPath == "" || got.ConfigPath != configPath {
+		t.Fatalf("config path = %q, want %q", got.ConfigPath, configPath)
+	}
+	if got.ConfigHash == "" {
+		t.Fatal("expected config hash")
+	}
 }

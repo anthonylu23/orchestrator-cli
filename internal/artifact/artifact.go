@@ -108,6 +108,46 @@ func WriteWorkload(path string, workload app.WorkloadSpec) error {
 	return writeJSON(path, workload)
 }
 
+func WriteRunEvidence(path string, evidence app.RunEvidence) error {
+	return writeJSON(path, evidence)
+}
+
+func ReadRunEvidence(path string) (app.RunEvidence, error) {
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return app.RunEvidence{}, err
+	}
+	var evidence app.RunEvidence
+	if err := json.Unmarshal(content, &evidence); err != nil {
+		return app.RunEvidence{}, err
+	}
+	return evidence, nil
+}
+
+func UpdateRunEvidenceProviderRefs(path string, attempts []app.Attempt) error {
+	evidence, err := ReadRunEvidence(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	refs := make([]app.ProviderRunRef, 0, len(attempts))
+	for _, attempt := range attempts {
+		if attempt.ProviderRef == "" {
+			continue
+		}
+		refs = append(refs, app.ProviderRunRef{
+			AttemptID:     attempt.ID,
+			Provider:      attempt.Provider,
+			ProviderJobID: attempt.ProviderRef,
+			State:         attempt.State,
+		})
+	}
+	evidence.ProviderJobRefs = refs
+	return WriteRunEvidence(path, evidence)
+}
+
 func WriteManifest(path string, manifest Manifest) error {
 	return writeJSON(path, manifest)
 }

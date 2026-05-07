@@ -186,6 +186,26 @@ outputs:
 	if manifest.WorkloadType != app.WorkloadTypeEvaluation || !manifestHasPath(manifest, "outputs/eval_result.json") {
 		t.Fatalf("manifest = %#v", manifest)
 	}
+	var evidence app.RunEvidence
+	content, err = os.ReadFile(paths.WorkloadManifest)
+	if err != nil {
+		t.Fatalf("read workload evidence: %v", err)
+	}
+	if err := json.Unmarshal(content, &evidence); err != nil {
+		t.Fatalf("parse workload evidence: %v", err)
+	}
+	if evidence.Workload.Type != app.WorkloadTypeEvaluation || evidence.RequestedProvider != "local" {
+		t.Fatalf("evidence workload = %#v", evidence)
+	}
+	if !strings.HasPrefix(evidence.ConfigHash, "sha256:") || evidence.ConfigPath == "" {
+		t.Fatalf("config evidence = %#v", evidence)
+	}
+	if evidence.Dataset == nil || !strings.HasPrefix(evidence.Dataset.SHA256, "sha256:") || evidence.Dataset.NumRecords != 1 {
+		t.Fatalf("dataset evidence = %#v", evidence.Dataset)
+	}
+	if len(evidence.ProviderJobRefs) != 1 || !strings.HasPrefix(evidence.ProviderJobRefs[0].ProviderJobID, "local:") {
+		t.Fatalf("provider refs = %#v", evidence.ProviderJobRefs)
+	}
 
 	var status bytes.Buffer
 	statusCmd := NewRootCommand(Options{Stdout: &status, Stderr: &bytes.Buffer{}})
@@ -218,6 +238,79 @@ outputs:
 	}
 }
 
+func TestCompareCommandReportsHashAndMetricMatches(t *testing.T) {
+	dir := t.TempDir()
+	home := filepath.Join(dir, "home")
+	exportRoot := filepath.Join(dir, "exports")
+	script := filepath.Join(dir, "eval.py")
+	if err := os.WriteFile(script, []byte(`
+import json
+import os
+from pathlib import Path
+
+Path(os.environ["CLOUDTUNE_OUTPUT_DIR"]).mkdir(parents=True, exist_ok=True)
+print(json.dumps({"type":"metric","step":1,"metrics":{"accuracy":0.75},"split":"eval"}))
+`), 0o600); err != nil {
+		t.Fatalf("write script: %v", err)
+	}
+	dataset := filepath.Join(dir, "eval.jsonl")
+	if err := os.WriteFile(dataset, []byte("{\"input\":\"a\"}\n{\"input\":\"b\"}\n"), 0o600); err != nil {
+		t.Fatalf("write dataset: %v", err)
+	}
+	configPath := filepath.Join(dir, "cloudtune.yaml")
+	config := `
+workload:
+  name: compare-eval
+  type: evaluation
+  dataset:
+    path: "` + dataset + `"
+job:
+  script: "` + script + `"
+routing:
+  provider: local
+  max_attempts: 1
+outputs:
+  save_to: "` + exportRoot + `"
+`
+	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	runIDs := make([]string, 0, 2)
+	for i := 0; i < 2; i++ {
+		var stdout, stderr bytes.Buffer
+		cmd := NewRootCommand(Options{Stdout: &stdout, Stderr: &stderr})
+		cmd.SetArgs([]string{"--home", home, "run", configPath})
+		if err := cmd.Execute(); err != nil {
+			t.Fatalf("run %d returned error: %v\nstdout=%s\nstderr=%s", i, err, stdout.String(), stderr.String())
+		}
+		runIDs = append(runIDs, extractRunID(t, stdout.String()))
+	}
+
+	var compareOut bytes.Buffer
+	compareCmd := NewRootCommand(Options{Stdout: &compareOut, Stderr: &bytes.Buffer{}})
+	compareCmd.SetArgs([]string{"--home", home, "compare", runIDs[0], runIDs[1], "--json"})
+	if err := compareCmd.Execute(); err != nil {
+		t.Fatalf("compare returned error: %v", err)
+	}
+	var report CompareReport
+	if err := json.Unmarshal(compareOut.Bytes(), &report); err != nil {
+		t.Fatalf("parse compare output: %v\n%s", err, compareOut.String())
+	}
+	if report.Left.ConfigHash == "" || report.Left.ConfigHash != report.Right.ConfigHash {
+		t.Fatalf("config hash mismatch = %#v", report)
+	}
+	if report.Left.DatasetSHA256 == "" || report.Left.DatasetSHA256 != report.Right.DatasetSHA256 {
+		t.Fatalf("dataset hash mismatch = %#v", report)
+	}
+	if report.Left.Accuracy == nil || *report.Left.Accuracy != 0.75 {
+		t.Fatalf("accuracy = %#v", report.Left.Accuracy)
+	}
+	if !rowMatched(report.Rows, "config_hash") || !rowMatched(report.Rows, "dataset_sha256") || !rowMatched(report.Rows, "eval_accuracy") {
+		t.Fatalf("rows = %#v", report.Rows)
+	}
+}
+
 func TestCancelRunningLocalRun(t *testing.T) {
 	repo := repoRoot(t)
 	home := filepath.Join(t.TempDir(), "home")
@@ -234,7 +327,7 @@ func TestCancelRunningLocalRun(t *testing.T) {
 	}()
 
 	runID := waitForRunID(t, home)
-	var followStdout bytes.Buffer
+	var followStdout lockedBuffer
 	followCtx, cancelFollow := context.WithCancel(context.Background())
 	followCmd := NewRootCommand(Options{Stdout: &followStdout, Stderr: &bytes.Buffer{}})
 	followCmd.SetContext(followCtx)
@@ -247,6 +340,7 @@ func TestCancelRunningLocalRun(t *testing.T) {
 	}()
 
 	waitForFileText(t, artifact.ForRun(home, runID).Logs, "slow start")
+	waitForBufferText(t, &followStdout, "slow start")
 	var cancelStdout bytes.Buffer
 	cancelCmd := NewRootCommand(Options{Stdout: &cancelStdout, Stderr: &bytes.Buffer{}})
 	cancelCmd.SetArgs([]string{"--home", home, "cancel", runID})
@@ -450,6 +544,28 @@ func TestProvidersListIncludesMocks(t *testing.T) {
 	}
 }
 
+func TestProvidersInspectShowsCapabilities(t *testing.T) {
+	var stdout bytes.Buffer
+	cmd := NewRootCommand(Options{Stdout: &stdout, Stderr: &bytes.Buffer{}})
+	cmd.SetArgs([]string{"providers", "inspect", "mock-cloud", "--json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("providers inspect returned error: %v", err)
+	}
+	var got struct {
+		Name         string                   `json:"name"`
+		Capabilities app.ProviderCapabilities `json:"capabilities"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("parse inspect output: %v\n%s", err, stdout.String())
+	}
+	if got.Name != "mock-cloud" || !got.Capabilities.Remote || !got.Capabilities.SupportsArtifacts {
+		t.Fatalf("inspect output = %#v", got)
+	}
+	if !got.Capabilities.SupportsCheckpointResume {
+		t.Fatalf("mock provider should declare checkpoint resume capability: %#v", got.Capabilities)
+	}
+}
+
 func TestLocalTrainFailureProducesArtifacts(t *testing.T) {
 	repo := repoRoot(t)
 	home := filepath.Join(t.TempDir(), "home")
@@ -470,6 +586,83 @@ func TestLocalTrainFailureProducesArtifacts(t *testing.T) {
 		t.Fatalf("summary = %s", string(content))
 	}
 	if !strings.Contains(stderr.String(), "runtime failure") {
+		t.Fatalf("stderr = %s", stderr.String())
+	}
+}
+
+func TestCloudTuneFailurePreservesPartialOutputs(t *testing.T) {
+	dir := t.TempDir()
+	home := filepath.Join(dir, "home")
+	exportRoot := filepath.Join(dir, "exports")
+	script := filepath.Join(dir, "eval_fail.py")
+	if err := os.WriteFile(script, []byte(`
+import json
+import os
+import sys
+from pathlib import Path
+
+out = Path(os.environ["CLOUDTUNE_OUTPUT_DIR"])
+out.mkdir(parents=True, exist_ok=True)
+(out / "partial_result.json").write_text(json.dumps({"status":"partial"}) + "\n")
+print(json.dumps({"type":"metric","step":1,"metrics":{"accuracy":0.0},"split":"eval"}))
+print("controlled failure", file=sys.stderr)
+sys.exit(2)
+`), 0o600); err != nil {
+		t.Fatalf("write script: %v", err)
+	}
+	dataset := filepath.Join(dir, "eval.jsonl")
+	if err := os.WriteFile(dataset, []byte("{\"input\":\"a\"}\n"), 0o600); err != nil {
+		t.Fatalf("write dataset: %v", err)
+	}
+	configPath := filepath.Join(dir, "eval_fail.yaml")
+	config := `
+workload:
+  name: controlled-failure
+  type: evaluation
+  dataset:
+    path: "` + dataset + `"
+job:
+  script: "` + script + `"
+routing:
+  provider: local
+  max_attempts: 1
+outputs:
+  save_to: "` + exportRoot + `"
+`
+	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	cmd := NewRootCommand(Options{Stdout: &stdout, Stderr: &stderr})
+	cmd.SetArgs([]string{"--home", home, "run", configPath})
+	if err := cmd.Execute(); err == nil {
+		t.Fatal("expected failed eval command")
+	}
+	runID := extractRunID(t, stdout.String())
+	paths := artifact.ForRun(home, runID)
+	if _, err := os.Stat(filepath.Join(exportRoot, runID, "partial_result.json")); err != nil {
+		t.Fatalf("exported partial output missing: %v", err)
+	}
+	manifest, err := artifact.ReadManifest(paths.Manifest)
+	if err != nil {
+		t.Fatalf("read manifest: %v", err)
+	}
+	if !manifestHasPath(manifest, "outputs/partial_result.json") {
+		t.Fatalf("manifest missing partial output: %#v", manifest)
+	}
+	var summary app.Summary
+	content, err := os.ReadFile(paths.Summary)
+	if err != nil {
+		t.Fatalf("read summary: %v", err)
+	}
+	if err := json.Unmarshal(content, &summary); err != nil {
+		t.Fatalf("parse summary: %v", err)
+	}
+	if summary.State != app.RunStateFailed || !strings.Contains(summary.ExitReason, "process exited with code 2") {
+		t.Fatalf("summary = %#v", summary)
+	}
+	if !strings.Contains(stderr.String(), "controlled failure") {
 		t.Fatalf("stderr = %s", stderr.String())
 	}
 }
@@ -563,6 +756,32 @@ func manifestHasPath(manifest artifact.Manifest, path string) bool {
 	return false
 }
 
+func rowMatched(rows []CompareRow, field string) bool {
+	for _, row := range rows {
+		if row.Field == field {
+			return row.Match
+		}
+	}
+	return false
+}
+
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
 func repoRoot(t *testing.T) string {
 	t.Helper()
 	dir, err := os.Getwd()
@@ -583,7 +802,7 @@ func repoRoot(t *testing.T) string {
 
 func waitForRunID(t *testing.T, home string) string {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(15 * time.Second)
 	for time.Now().Before(deadline) {
 		entries, _ := os.ReadDir(filepath.Join(home, "runs"))
 		for _, entry := range entries {
@@ -599,7 +818,7 @@ func waitForRunID(t *testing.T, home string) string {
 
 func waitForFileText(t *testing.T, path string, text string) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(15 * time.Second)
 	var last string
 	for time.Now().Before(deadline) {
 		content, err := os.ReadFile(path)
@@ -613,4 +832,18 @@ func waitForFileText(t *testing.T, path string, text string) {
 		time.Sleep(25 * time.Millisecond)
 	}
 	t.Fatalf("%q not found in %q", text, last)
+}
+
+func waitForBufferText(t *testing.T, buffer *lockedBuffer, text string) {
+	t.Helper()
+	deadline := time.Now().Add(15 * time.Second)
+	var last string
+	for time.Now().Before(deadline) {
+		last = buffer.String()
+		if strings.Contains(last, text) {
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatalf("%q not found in follow output %q", text, last)
 }

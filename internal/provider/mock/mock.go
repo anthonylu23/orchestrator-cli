@@ -50,11 +50,18 @@ func (p *Provider) ValidateAuth(ctx context.Context) error {
 
 func (p *Provider) Capabilities(ctx context.Context) (app.ProviderCapabilities, error) {
 	return app.ProviderCapabilities{
-		SupportsOnDemand:        true,
-		SupportsLocalScript:     true,
-		SupportsDataBundle:      true,
-		SupportedURISchemes:     []string{"http", "https", "s3", "gs"},
-		SupportsObjectStorePull: true,
+		WorkloadTypes:            []string{string(app.WorkloadTypeTraining), string(app.WorkloadTypeEvaluation), string(app.WorkloadTypeBatchInference)},
+		LogMode:                  "artifact",
+		SupportsOnDemand:         true,
+		SupportsLocalScript:      true,
+		SupportsDataBundle:       true,
+		SupportsArtifacts:        true,
+		SupportsCancel:           true,
+		SupportsCostEstimate:     true,
+		SupportsCheckpointResume: true,
+		Remote:                   true,
+		SupportedURISchemes:      []string{"http", "https", "s3", "gs"},
+		SupportsObjectStorePull:  true,
 	}, nil
 }
 

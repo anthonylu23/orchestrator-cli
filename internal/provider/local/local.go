@@ -42,9 +42,15 @@ func (p *Provider) ValidateAuth(ctx context.Context) error {
 
 func (p *Provider) Capabilities(ctx context.Context) (app.ProviderCapabilities, error) {
 	return app.ProviderCapabilities{
-		SupportsOnDemand:    true,
-		SupportsLocalScript: true,
-		SupportsDataBundle:  true,
+		WorkloadTypes:        []string{string(app.WorkloadTypeTraining), string(app.WorkloadTypeEvaluation), string(app.WorkloadTypeBatchInference)},
+		LogMode:              "artifact",
+		SupportsOnDemand:     true,
+		SupportsLocalScript:  true,
+		SupportsDataBundle:   true,
+		SupportsArtifacts:    true,
+		SupportsCancel:       true,
+		SupportsCostEstimate: true,
+		Remote:               false,
 	}, nil
 }
 

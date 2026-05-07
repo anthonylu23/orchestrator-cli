@@ -16,13 +16,17 @@ This branch starts that product direction without merging the separate GCP-provi
 6. `outputs.save_to` export into `<save_to>/<run-id>/`.
 7. `workload.json` and `artifacts.json` persisted for every run.
 8. Backward-compatible `train`, `status`, `logs`, `cancel`, and provider commands.
+9. Provider capability inspection with `cloudtune providers inspect <provider>`.
+10. Reproducibility evidence: config hash, git commit/dirty flag, working directory, entrypoint, dataset fingerprint, and provider job refs.
+11. `cloudtune compare <run-id> <run-id>` for local-vs-remote style run comparisons.
+12. Controlled failure eval example that preserves partial outputs and failure reason.
 
 ## Current Provider Reality
 
 The branch supports:
 
 1. `local`: executes real local scripts.
-2. `mock-lambda` and `mock-gcp`: deterministic mock providers used to stress routing, retry, checkpoint discovery, and resume flow.
+2. `mock-lambda`, `mock-gcp`, and `mock-cloud`: deterministic mock providers used to stress routing, retry, checkpoint discovery, capability inspection, and resume flow.
 
 The branch does not support real GCP, RunPod, Modal, OpenAI, Anthropic, AWS, Azure, Lambda Labs, or HPC execution yet. The mock providers are test infrastructure and demo infrastructure, not production cloud adapters.
 
@@ -53,6 +57,32 @@ outputs:
 ```
 
 `workload` is product metadata. `job` is the executable surface. `routing` selects the provider and retry policy. `outputs` controls artifact export.
+
+`workload.json` stores run evidence, not just the original YAML fragment:
+
+```json
+{
+  "config_hash": "sha256:...",
+  "git_commit": "...",
+  "git_dirty": true,
+  "working_dir": "...",
+  "entrypoint": "examples/eval.py",
+  "dataset": {
+    "path": "...",
+    "sha256": "sha256:...",
+    "size_bytes": 123,
+    "num_records": 10
+  },
+  "provider_job_refs": [
+    {
+      "provider": "local",
+      "provider_job_id": "local:12345"
+    }
+  ]
+}
+```
+
+Providers declare capabilities before routing or explicit execution. The current schema covers supported workload types, log mode, artifacts, cancellation, cost estimates, checkpoint resume, remote/local classification, URI schemes, and data bundle support.
 
 ## Runtime Environment
 
@@ -109,8 +139,11 @@ Then exercise:
 1. local eval workload through `cloudtune run examples/eval.yaml`.
 2. artifact listing with `cloudtune artifacts <run-id>`.
 3. run history with `cloudtune runs`.
-4. mock failover through `train --provider auto --config examples/failover.yaml`.
-5. repeated local runs under a disposable `CLOUDTUNE_HOME`.
+4. provider capability inspection with `cloudtune providers inspect local` and `cloudtune providers inspect mock-cloud`.
+5. run comparison with `cloudtune compare <run-id> <run-id>`.
+6. controlled failure with `cloudtune run examples/eval_fail.yaml`.
+7. mock failover through `train --provider auto --config examples/failover.yaml`.
+8. repeated local runs under a disposable `CLOUDTUNE_HOME`.
 
 ## Next Engineering Step
 

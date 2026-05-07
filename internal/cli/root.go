@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/anthonylu23/switchboard-cli/internal/app"
@@ -15,6 +16,7 @@ import (
 	"github.com/anthonylu23/switchboard-cli/internal/config"
 	"github.com/anthonylu23/switchboard-cli/internal/data"
 	"github.com/anthonylu23/switchboard-cli/internal/event"
+	"github.com/anthonylu23/switchboard-cli/internal/evidence"
 	"github.com/anthonylu23/switchboard-cli/internal/home"
 	"github.com/anthonylu23/switchboard-cli/internal/provider"
 	localprovider "github.com/anthonylu23/switchboard-cli/internal/provider/local"
@@ -63,6 +65,7 @@ func NewRootCommand(opts Options) *cobra.Command {
 	root.AddCommand(newLogsCommand(opts, &home))
 	root.AddCommand(newArtifactsCommand(opts, &home))
 	root.AddCommand(newCancelCommand(opts, &home))
+	root.AddCommand(newCompareCommand(opts, &home))
 	root.AddCommand(newProvidersCommand(opts))
 	return root
 }
@@ -154,13 +157,23 @@ func runTrain(ctx context.Context, opts Options, resolved config.ResolvedTrainCo
 	job.Data = append([]app.DataInput(nil), manifest.Inputs...)
 	runRedactor := redact.FromEnvironment(job.Env)
 
+	runEvidence, err := evidence.Build(ctx, evidence.BuildOptions{
+		Job:               job,
+		RequestedProvider: resolved.Provider,
+		ConfigPath:        resolved.ConfigPath,
+		ConfigHash:        resolved.ConfigHash,
+	})
+	if err != nil {
+		return exitCodeInvalidSpec, err
+	}
+
 	now := time.Now().UTC()
 	runID := app.NewRunID()
 	paths := artifact.ForRun(resolved.SwitchboardHome, runID)
 	if err := artifact.EnsureRun(paths); err != nil {
 		return exitCodeInternal, err
 	}
-	if err := artifact.WriteWorkload(paths.WorkloadManifest, job.Workload); err != nil {
+	if err := artifact.WriteRunEvidence(paths.WorkloadManifest, runEvidence); err != nil {
 		return exitCodeInternal, err
 	}
 	store, err := state.Open(paths.DB)
@@ -258,6 +271,19 @@ func runAttempt(ctx context.Context, opts Options, store *state.Store, registry 
 			return exitCodeInvalidSpec, false, err
 		}
 		attemptJob = prepared.Job
+	}
+	capabilities, err := adapter.Capabilities(ctx)
+	if err != nil {
+		reason := baseRedactor.String(err.Error())
+		finishFailed(ctx, store, runID, attemptID, exitCodeRouting, reason, "")
+		_ = writeSummary(ctx, store, paths, runID)
+		return exitCodeRouting, false, err
+	}
+	if reasons := routing.ValidateCapabilities(attemptJob, capabilities); len(reasons) > 0 {
+		reason := baseRedactor.String(strings.Join(reasons, "; "))
+		finishFailed(ctx, store, runID, attemptID, exitCodeInvalidSpec, reason, "")
+		_ = writeSummary(ctx, store, paths, runID)
+		return exitCodeInvalidSpec, false, fmt.Errorf("%s", reason)
 	}
 	if report := adapter.ValidateJob(ctx, attemptJob); !report.Supported {
 		reason := "job is not supported"
@@ -390,6 +416,9 @@ func writeSummary(ctx context.Context, store *state.Store, paths artifact.Paths,
 	built := summary.Build(run, attempts, events)
 	redactor := redact.FromEnvironment()
 	if err := artifact.WriteSummary(paths.Summary, redactor.Summary(built)); err != nil {
+		return err
+	}
+	if err := artifact.UpdateRunEvidenceProviderRefs(paths.WorkloadManifest, built.ProviderAttempts); err != nil {
 		return err
 	}
 	manifest, err := artifact.BuildManifest(paths, redactor.Run(run), time.Now().UTC())
@@ -645,18 +674,18 @@ func copyLogFromOffset(w io.Writer, path string, offset int64) (int64, error) {
 }
 
 func newProvidersCommand(opts Options) *cobra.Command {
-	var asJSON bool
 	cmd := &cobra.Command{
 		Use:   "providers",
 		Short: "Manage providers",
 	}
+	var listJSON bool
 	list := &cobra.Command{
 		Use:   "list",
 		Short: "List providers",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			registry := buildProviderRegistry(opts, config.MockConfig{})
 			names := registry.List()
-			if asJSON {
+			if listJSON {
 				return json.NewEncoder(opts.Stdout).Encode(names)
 			}
 			for _, name := range names {
@@ -665,8 +694,47 @@ func newProvidersCommand(opts Options) *cobra.Command {
 			return nil
 		},
 	}
-	list.Flags().BoolVar(&asJSON, "json", false, "Print JSON")
+	list.Flags().BoolVar(&listJSON, "json", false, "Print JSON")
+	var inspectJSON bool
+	inspect := &cobra.Command{
+		Use:   "inspect <provider>",
+		Short: "Show provider capabilities",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			registry := buildProviderRegistry(opts, config.MockConfig{})
+			adapter, err := registry.Get(args[0])
+			if err != nil {
+				return err
+			}
+			capabilities, err := adapter.Capabilities(cmd.Context())
+			if err != nil {
+				return err
+			}
+			out := struct {
+				Name         string                   `json:"name"`
+				Capabilities app.ProviderCapabilities `json:"capabilities"`
+			}{
+				Name:         string(adapter.Name()),
+				Capabilities: capabilities,
+			}
+			if inspectJSON {
+				return json.NewEncoder(opts.Stdout).Encode(out)
+			}
+			fmt.Fprintf(opts.Stdout, "name\t%s\n", out.Name)
+			fmt.Fprintf(opts.Stdout, "remote\t%t\n", capabilities.Remote)
+			fmt.Fprintf(opts.Stdout, "workload_types\t%s\n", strings.Join(capabilities.WorkloadTypes, ","))
+			fmt.Fprintf(opts.Stdout, "log_mode\t%s\n", capabilities.LogMode)
+			fmt.Fprintf(opts.Stdout, "artifacts\t%t\n", capabilities.SupportsArtifacts)
+			fmt.Fprintf(opts.Stdout, "cancel\t%t\n", capabilities.SupportsCancel)
+			fmt.Fprintf(opts.Stdout, "cost_estimate\t%t\n", capabilities.SupportsCostEstimate)
+			fmt.Fprintf(opts.Stdout, "checkpoint_resume\t%t\n", capabilities.SupportsCheckpointResume)
+			fmt.Fprintf(opts.Stdout, "uri_schemes\t%s\n", strings.Join(capabilities.SupportedURISchemes, ","))
+			return nil
+		},
+	}
+	inspect.Flags().BoolVar(&inspectJSON, "json", false, "Print JSON")
 	cmd.AddCommand(list)
+	cmd.AddCommand(inspect)
 	return cmd
 }
 
@@ -687,6 +755,7 @@ func mergedMockProviders(mockConfig config.MockConfig) []config.MockProviderConf
 	defaults := []config.MockProviderConfig{
 		{Name: "mock-lambda", HourlyCost: 1.10, FailureMode: mockprovider.FailureCapacity},
 		{Name: "mock-gcp", HourlyCost: 1.30},
+		{Name: "mock-cloud", HourlyCost: 2.00},
 	}
 	if len(mockConfig.Providers) == 0 {
 		return defaults
@@ -699,7 +768,7 @@ func mergedMockProviders(mockConfig config.MockConfig) []config.MockProviderConf
 		byName[item.Name] = item
 	}
 	out := make([]config.MockProviderConfig, 0, len(byName))
-	for _, name := range []string{"mock-lambda", "mock-gcp"} {
+	for _, name := range []string{"mock-lambda", "mock-gcp", "mock-cloud"} {
 		if item, ok := byName[name]; ok {
 			out = append(out, item)
 			delete(byName, name)

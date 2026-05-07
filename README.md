@@ -17,6 +17,9 @@ Implemented now:
 7. output export through `outputs.save_to`.
 8. run history through `cloudtune runs`.
 9. runtime env aliases under `CLOUDTUNE_*`, while preserving `SWITCHBOARD_*` and legacy `ORCHESTRATOR_*`.
+10. provider capability inspection through `cloudtune providers inspect <provider>`.
+11. run evidence capture in `workload.json`: config hash, git commit/dirty flag, working directory, entrypoint, dataset fingerprint, and provider job refs.
+12. run comparison through `cloudtune compare <run-id> <run-id>`.
 
 Not implemented in this branch:
 
@@ -46,6 +49,7 @@ Inspect the run:
 ./bin/cloudtune --home "$CLOUDTUNE_HOME" status <run-id>
 ./bin/cloudtune --home "$CLOUDTUNE_HOME" logs <run-id>
 ./bin/cloudtune --home "$CLOUDTUNE_HOME" artifacts <run-id>
+./bin/cloudtune --home "$CLOUDTUNE_HOME" compare <run-id> <run-id>
 ```
 
 Run the mock failover demo:
@@ -62,6 +66,22 @@ Found checkpoint: step 800
 Selected mock-gcp
 Run <run-id> succeeded
 ```
+
+Inspect provider capability declarations:
+
+```sh
+./bin/cloudtune providers list
+./bin/cloudtune providers inspect local
+./bin/cloudtune providers inspect mock-cloud
+```
+
+Run the controlled failure demo:
+
+```sh
+CLOUDTUNE_HOME="$(mktemp -d)" ./bin/cloudtune run examples/eval_fail.yaml
+```
+
+Expected behavior is a failed run with preserved logs, summary, `workload.json`, artifact manifest, and partial output artifact.
 
 Run checks:
 
@@ -118,6 +138,30 @@ CLOUDTUNE_DATASET_URI
 
 Scripts should write result files to `CLOUDTUNE_OUTPUT_DIR`. CloudTune records those files in `artifacts.json` and, when `outputs.save_to` is set, copies them into `<save_to>/<run-id>/`.
 
+`workload.json` stores reproducibility evidence for each run. Current fields include:
+
+```json
+{
+  "config_hash": "sha256:...",
+  "git_commit": "...",
+  "git_dirty": true,
+  "working_dir": "...",
+  "entrypoint": "examples/eval.py",
+  "dataset": {
+    "path": "...",
+    "sha256": "sha256:...",
+    "size_bytes": 123,
+    "num_records": 10
+  },
+  "provider_job_refs": [
+    {
+      "provider": "local",
+      "provider_job_id": "local:12345"
+    }
+  ]
+}
+```
+
 ## Provider Contract
 
 Providers stay behind this core shape:
@@ -134,6 +178,8 @@ Cancel
 ```
 
 The orchestration core owns state transitions, retryability, failover, checkpoint discovery, telemetry ingestion, summaries, and artifact records. A provider should report facts and perform provider-specific operations; it should not own orchestration policy.
+
+Providers also declare capabilities before routing or explicit execution. The current schema includes workload types, log mode, artifact support, cancellation support, cost-estimate support, checkpoint-resume support, remote/local classification, URI schemes, and data-bundle support. Unsupported workload/provider combinations are rejected before submission.
 
 ## Artifact Layout
 

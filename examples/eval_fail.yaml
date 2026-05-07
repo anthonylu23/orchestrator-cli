@@ -1,0 +1,20 @@
+workload:
+  name: "rag-eval-controlled-failure"
+  type: evaluation
+  model:
+    provider: local
+    name: deterministic-evaluator
+  dataset:
+    name: customer-support-sample
+    path: "examples/evals/customer_support.jsonl"
+  tags: ["mvp", "eval", "failure-demo"]
+
+job:
+  script: "examples/eval_fail.py"
+
+routing:
+  provider: local
+  max_attempts: 1
+
+outputs:
+  save_to: "./artifacts"

@@ -39,7 +39,7 @@ func Select(ctx context.Context, registry *provider.Registry, spec app.JobSpec, 
 			rejected = append(rejected, app.RoutingCandidate{Provider: nameValue, Reasons: []string{err.Error()}})
 			continue
 		}
-		if reasons := capabilityRejections(spec, capabilities); len(reasons) > 0 {
+		if reasons := ValidateCapabilities(spec, capabilities); len(reasons) > 0 {
 			rejected = append(rejected, app.RoutingCandidate{Provider: nameValue, Reasons: reasons})
 			continue
 		}
@@ -74,8 +74,20 @@ func Select(ctx context.Context, registry *provider.Registry, spec app.JobSpec, 
 	}, nil
 }
 
-func capabilityRejections(spec app.JobSpec, capabilities app.ProviderCapabilities) []string {
+func ValidateCapabilities(spec app.JobSpec, capabilities app.ProviderCapabilities) []string {
 	var reasons []string
+	if spec.Workload.Type != "" && len(capabilities.WorkloadTypes) > 0 {
+		supported := false
+		for _, workloadType := range capabilities.WorkloadTypes {
+			if workloadType == string(spec.Workload.Type) {
+				supported = true
+				break
+			}
+		}
+		if !supported {
+			reasons = append(reasons, fmt.Sprintf("provider does not support workload type %q", spec.Workload.Type))
+		}
+	}
 	supportedURISchemes := map[string]bool{}
 	for _, scheme := range capabilities.SupportedURISchemes {
 		supportedURISchemes[strings.ToLower(scheme)] = true

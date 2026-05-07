@@ -72,6 +72,36 @@ type OutputSpec struct {
 	SaveTo string `json:"save_to,omitempty" yaml:"save_to"`
 }
 
+type DatasetFingerprint struct {
+	Path       string `json:"path,omitempty"`
+	SHA256     string `json:"sha256,omitempty"`
+	SizeBytes  int64  `json:"size_bytes,omitempty"`
+	NumRecords int64  `json:"num_records,omitempty"`
+}
+
+type ProviderRunRef struct {
+	AttemptID     string       `json:"attempt_id"`
+	Provider      string       `json:"provider"`
+	ProviderJobID string       `json:"provider_job_id"`
+	State         AttemptState `json:"state"`
+}
+
+type RunEvidence struct {
+	Workload          WorkloadSpec        `json:"workload"`
+	RequestedProvider string              `json:"requested_provider,omitempty"`
+	ConfigPath        string              `json:"config_path,omitempty"`
+	ConfigHash        string              `json:"config_hash,omitempty"`
+	GitCommit         string              `json:"git_commit,omitempty"`
+	GitDirty          bool                `json:"git_dirty"`
+	GitError          string              `json:"git_error,omitempty"`
+	WorkingDir        string              `json:"working_dir,omitempty"`
+	Entrypoint        string              `json:"entrypoint,omitempty"`
+	Dataset           *DatasetFingerprint `json:"dataset,omitempty"`
+	CloudTune         string              `json:"cloudtune_version,omitempty"`
+	ProviderJobRefs   []ProviderRunRef    `json:"provider_job_refs,omitempty"`
+	GeneratedAt       time.Time           `json:"generated_at"`
+}
+
 type JobSpec struct {
 	Name     string            `json:"name" yaml:"name"`
 	Script   string            `json:"script" yaml:"script"`
@@ -183,16 +213,23 @@ type RoutingDecision struct {
 }
 
 type ProviderCapabilities struct {
-	GPUFamilies             []string `json:"gpu_families"`
-	Regions                 []string `json:"regions"`
-	SupportsSpot            bool     `json:"supports_spot"`
-	SupportsOnDemand        bool     `json:"supports_on_demand"`
-	SupportsDockerImage     bool     `json:"supports_docker_image"`
-	SupportsLocalScript     bool     `json:"supports_local_script"`
-	SupportsDataBundle      bool     `json:"supports_data_bundle"`
-	SupportedURISchemes     []string `json:"supported_uri_schemes"`
-	SupportsObjectStorePull bool     `json:"supports_object_store_pull"`
-	MaxRuntimeHours         *int     `json:"max_runtime_hours,omitempty"`
+	GPUFamilies              []string `json:"gpu_families"`
+	Regions                  []string `json:"regions"`
+	WorkloadTypes            []string `json:"workload_types,omitempty"`
+	LogMode                  string   `json:"log_mode,omitempty"`
+	SupportsSpot             bool     `json:"supports_spot"`
+	SupportsOnDemand         bool     `json:"supports_on_demand"`
+	SupportsDockerImage      bool     `json:"supports_docker_image"`
+	SupportsLocalScript      bool     `json:"supports_local_script"`
+	SupportsDataBundle       bool     `json:"supports_data_bundle"`
+	SupportsArtifacts        bool     `json:"supports_artifacts"`
+	SupportsCancel           bool     `json:"supports_cancel"`
+	SupportsCostEstimate     bool     `json:"supports_cost_estimate"`
+	SupportsCheckpointResume bool     `json:"supports_checkpoint_resume"`
+	Remote                   bool     `json:"remote"`
+	SupportedURISchemes      []string `json:"supported_uri_schemes"`
+	SupportsObjectStorePull  bool     `json:"supports_object_store_pull"`
+	MaxRuntimeHours          *int     `json:"max_runtime_hours,omitempty"`
 }
 
 type ProviderErrorKind string

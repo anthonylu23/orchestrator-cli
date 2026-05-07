@@ -62,6 +62,26 @@ func TestSelectRejectsProviderWithoutBundleSupport(t *testing.T) {
 	}
 }
 
+func TestSelectRejectsUnsupportedWorkloadType(t *testing.T) {
+	registry := provider.NewRegistry(staticProvider{
+		name: "eval-only",
+		capabilities: app.ProviderCapabilities{
+			WorkloadTypes:       []string{string(app.WorkloadTypeEvaluation)},
+			SupportsLocalScript: true,
+		},
+	})
+	decision, err := Select(context.Background(), registry, app.JobSpec{
+		Script:   "train.py",
+		Workload: app.WorkloadSpec{Type: app.WorkloadTypeFineTuning},
+	}, Options{Objective: "min_cost"})
+	if err == nil {
+		t.Fatal("expected no eligible providers")
+	}
+	if len(decision.RejectedProviders) != 1 || decision.RejectedProviders[0].Reasons[0] != `provider does not support workload type "fine_tuning"` {
+		t.Fatalf("decision = %#v", decision)
+	}
+}
+
 func TestSelectRejectsUnsupportedURIScheme(t *testing.T) {
 	registry := provider.NewRegistry(staticProvider{
 		name: "http-only",

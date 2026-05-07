@@ -1,6 +1,8 @@
 package config
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -81,6 +83,8 @@ type ResolvedTrainConfig struct {
 	Job                       app.JobSpec
 	Routing                   RoutingConfig
 	Mock                      MockConfig
+	ConfigPath                string
+	ConfigHash                string
 	BundleMaxSizeBytes        int64
 	RequireOverrideAboveLimit bool
 	AllowLargeDataBundle      bool
@@ -89,12 +93,16 @@ type ResolvedTrainConfig struct {
 
 func LoadTrain(flags TrainFlags) (ResolvedTrainConfig, error) {
 	cfg := Config{}
+	configPath := ""
+	configHash := ""
 	if flags.ConfigPath != "" {
-		loaded, err := LoadFile(flags.ConfigPath)
+		loaded, absPath, hash, err := LoadFileWithMetadata(flags.ConfigPath)
 		if err != nil {
 			return ResolvedTrainConfig{}, err
 		}
 		cfg = loaded
+		configPath = absPath
+		configHash = hash
 	}
 
 	provider := cfgProviderDefault(flags.Provider)
@@ -159,6 +167,8 @@ func LoadTrain(flags TrainFlags) (ResolvedTrainConfig, error) {
 		Job:                       job,
 		Routing:                   routing,
 		Mock:                      cfg.Mock,
+		ConfigPath:                configPath,
+		ConfigHash:                configHash,
 		BundleMaxSizeBytes:        int64(maxSizeMB) * 1024 * 1024,
 		RequireOverrideAboveLimit: requireOverride,
 		AllowLargeDataBundle:      flags.AllowLargeDataBundle,
@@ -193,11 +203,36 @@ func LoadFile(path string) (Config, error) {
 	if err != nil {
 		return Config{}, fmt.Errorf("read config: %w", err)
 	}
+	return parseConfig(content)
+}
+
+func LoadFileWithMetadata(path string) (Config, string, string, error) {
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return Config{}, "", "", fmt.Errorf("resolve config path: %w", err)
+	}
+	content, err := os.ReadFile(absPath)
+	if err != nil {
+		return Config{}, "", "", fmt.Errorf("read config: %w", err)
+	}
+	cfg, err := parseConfig(content)
+	if err != nil {
+		return Config{}, "", "", err
+	}
+	return cfg, absPath, hashBytes(content), nil
+}
+
+func parseConfig(content []byte) (Config, error) {
 	var cfg Config
 	if err := yaml.Unmarshal(content, &cfg); err != nil {
 		return Config{}, fmt.Errorf("parse config: %w", err)
 	}
 	return cfg, nil
+}
+
+func hashBytes(content []byte) string {
+	sum := sha256.Sum256(content)
+	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
 func cfgProviderDefault(flagProvider string) string {
