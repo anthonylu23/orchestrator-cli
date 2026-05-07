@@ -2,10 +2,13 @@ package contract
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/anthonylu23/switchboard-cli/internal/app"
+	"github.com/anthonylu23/switchboard-cli/internal/routing"
 )
 
 type StreamLogsBehavior string
@@ -17,15 +20,17 @@ const (
 )
 
 type Subject struct {
-	Name               string
-	Adapter            app.ProviderAdapter
-	ValidJob           app.JobSpec
-	InvalidJob         app.JobSpec
-	SubmitRequest      app.SubmitRequest
-	ProviderRefPrefix  string
-	StreamLogs         StreamLogsBehavior
-	Cancel             func(t *testing.T, adapter app.ProviderAdapter)
-	AssertCapabilities func(t *testing.T, capabilities app.ProviderCapabilities)
+	Name                string
+	Adapter             app.ProviderAdapter
+	ValidJob            app.JobSpec
+	InvalidJob          app.JobSpec
+	SubmitRequest       app.SubmitRequest
+	ProviderRefPrefix   string
+	ExpectedLogText     string
+	UnsupportedWorkload app.WorkloadType
+	StreamLogs          StreamLogsBehavior
+	Cancel              func(t *testing.T, adapter app.ProviderAdapter)
+	AssertCapabilities  func(t *testing.T, capabilities app.ProviderCapabilities)
 }
 
 type Factory func(t *testing.T) Subject
@@ -61,11 +66,37 @@ func Run(t *testing.T, factory Factory) {
 		if !capabilities.SupportsLocalScript && !capabilities.SupportsDockerImage {
 			t.Fatalf("provider must support local scripts or docker images: %#v", capabilities)
 		}
+		if len(capabilities.WorkloadTypes) == 0 {
+			t.Fatalf("provider must declare supported workload types: %#v", capabilities)
+		}
+		if strings.TrimSpace(capabilities.LogMode) == "" {
+			t.Fatalf("provider must declare log mode: %#v", capabilities)
+		}
+		if capabilities.SupportsArtifacts && capabilities.LogMode == "" {
+			t.Fatalf("artifact-capable provider must report log mode: %#v", capabilities)
+		}
 		if capabilities.SupportsObjectStorePull && len(capabilities.SupportedURISchemes) == 0 {
 			t.Fatalf("object-store pull support requires URI schemes: %#v", capabilities)
 		}
 		if subject.AssertCapabilities != nil {
 			subject.AssertCapabilities(t, capabilities)
+		}
+	})
+
+	t.Run("unsupported workload capability", func(t *testing.T) {
+		subject := factory(t)
+		if subject.UnsupportedWorkload == "" {
+			t.Skip("unsupported workload behavior is intentionally skipped for this provider")
+		}
+		capabilities, err := subject.Adapter.Capabilities(context.Background())
+		if err != nil {
+			t.Fatalf("Capabilities returned error: %v", err)
+		}
+		job := subject.ValidJob
+		job.Workload.Type = subject.UnsupportedWorkload
+		reasons := routing.ValidateCapabilities(job, capabilities)
+		if len(reasons) == 0 {
+			t.Fatalf("expected unsupported workload %q to be rejected by capabilities %#v", subject.UnsupportedWorkload, capabilities)
 		}
 	})
 
@@ -123,6 +154,15 @@ func Run(t *testing.T, factory Factory) {
 		}
 		if subject.ProviderRefPrefix != "" && !strings.HasPrefix(result.ProviderJobRef, subject.ProviderRefPrefix) {
 			t.Fatalf("provider ref %q does not start with %q", result.ProviderJobRef, subject.ProviderRefPrefix)
+		}
+		if subject.ExpectedLogText != "" {
+			content, err := os.ReadFile(filepath.Join(req.RunDir, "logs.txt"))
+			if err != nil {
+				t.Fatalf("read persisted logs: %v", err)
+			}
+			if !strings.Contains(string(content), subject.ExpectedLogText) {
+				t.Fatalf("logs do not contain %q:\n%s", subject.ExpectedLogText, string(content))
+			}
 		}
 		status, err := subject.Adapter.GetStatus(context.Background(), app.ProviderJobRef{ID: result.ProviderJobRef})
 		if err != nil {

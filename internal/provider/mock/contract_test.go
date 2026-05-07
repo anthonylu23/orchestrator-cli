@@ -29,13 +29,15 @@ func TestProviderContract(t *testing.T) {
 			}},
 		}
 		return contract.Subject{
-			Name:              "mock-contract",
-			Adapter:           provider,
-			ValidJob:          validJob,
-			InvalidJob:        app.JobSpec{},
-			SubmitRequest:     app.SubmitRequest{JobSpec: validJob, RunID: "r_contract", AttemptID: "a_contract", RunDir: paths.RunDir},
-			ProviderRefPrefix: "mock:mock-contract:",
-			StreamLogs:        contract.StreamLogsUnsupported,
+			Name:                "mock-contract",
+			Adapter:             provider,
+			ValidJob:            validJob,
+			InvalidJob:          app.JobSpec{},
+			SubmitRequest:       app.SubmitRequest{JobSpec: validJob, RunID: "r_contract", AttemptID: "a_contract", RunDir: paths.RunDir},
+			ProviderRefPrefix:   "mock:mock-contract:",
+			ExpectedLogText:     "mock provider mock-contract completed",
+			UnsupportedWorkload: app.WorkloadTypeFineTuning,
+			StreamLogs:          contract.StreamLogsUnsupported,
 			AssertCapabilities: func(t *testing.T, capabilities app.ProviderCapabilities) {
 				t.Helper()
 				if !capabilities.SupportsObjectStorePull || len(capabilities.SupportedURISchemes) == 0 {

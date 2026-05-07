@@ -20,6 +20,7 @@ This branch starts that product direction without merging the separate GCP-provi
 10. Reproducibility evidence: config hash, git commit/dirty flag, working directory, entrypoint, dataset fingerprint, and provider job refs.
 11. `cloudtune compare <run-id> <run-id>` for local-vs-remote style run comparisons.
 12. Controlled failure eval example that preserves partial outputs and failure reason.
+13. `cloudtune doctor` diagnostics for core runtime, config, provider capabilities, and preliminary Modal readiness.
 
 ## Current Provider Reality
 
@@ -140,10 +141,12 @@ Then exercise:
 2. artifact listing with `cloudtune artifacts <run-id>`.
 3. run history with `cloudtune runs`.
 4. provider capability inspection with `cloudtune providers inspect local` and `cloudtune providers inspect mock-cloud`.
-5. run comparison with `cloudtune compare <run-id> <run-id>`.
-6. controlled failure with `cloudtune run examples/eval_fail.yaml`.
-7. mock failover through `train --provider auto --config examples/failover.yaml`.
-8. repeated local runs under a disposable `CLOUDTUNE_HOME`.
+5. readiness diagnostics with `cloudtune doctor --provider local --config examples/eval.yaml`.
+6. preliminary remote diagnostics with `cloudtune doctor --provider modal-sandbox`.
+7. run comparison with `cloudtune compare <run-id> <run-id>`.
+8. controlled failure with `cloudtune run examples/eval_fail.yaml`.
+9. mock failover through `train --provider auto --config examples/failover.yaml`.
+10. repeated local runs under a disposable `CLOUDTUNE_HOME`.
 
 ## Next Engineering Step
 

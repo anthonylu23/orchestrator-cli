@@ -327,6 +327,8 @@ func TestCancelRunningLocalRun(t *testing.T) {
 	}()
 
 	runID := waitForRunID(t, home)
+	waitForFileText(t, artifact.ForRun(home, runID).Logs, "slow start")
+
 	var followStdout lockedBuffer
 	followCtx, cancelFollow := context.WithCancel(context.Background())
 	followCmd := NewRootCommand(Options{Stdout: &followStdout, Stderr: &bytes.Buffer{}})
@@ -339,7 +341,6 @@ func TestCancelRunningLocalRun(t *testing.T) {
 		_ = followCmd.Execute()
 	}()
 
-	waitForFileText(t, artifact.ForRun(home, runID).Logs, "slow start")
 	waitForBufferText(t, &followStdout, "slow start")
 	var cancelStdout bytes.Buffer
 	cancelCmd := NewRootCommand(Options{Stdout: &cancelStdout, Stderr: &bytes.Buffer{}})
@@ -566,6 +567,79 @@ func TestProvidersInspectShowsCapabilities(t *testing.T) {
 	}
 }
 
+func TestDoctorLocalProviderReadyWithConfig(t *testing.T) {
+	dir := t.TempDir()
+	home := filepath.Join(dir, "home")
+	if err := os.MkdirAll(home, 0o755); err != nil {
+		t.Fatalf("create home: %v", err)
+	}
+	script := filepath.Join(dir, "eval.py")
+	if err := os.WriteFile(script, []byte("print('ok')\n"), 0o600); err != nil {
+		t.Fatalf("write script: %v", err)
+	}
+	dataset := filepath.Join(dir, "eval.jsonl")
+	if err := os.WriteFile(dataset, []byte("{\"input\":\"a\"}\n"), 0o600); err != nil {
+		t.Fatalf("write dataset: %v", err)
+	}
+	configPath := filepath.Join(dir, "eval.yaml")
+	config := `
+workload:
+  name: doctor-eval
+  type: evaluation
+  dataset:
+    path: "` + dataset + `"
+job:
+  script: "` + script + `"
+routing:
+  provider: local
+outputs:
+  save_to: "` + filepath.Join(dir, "exports") + `"
+`
+	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	var stdout bytes.Buffer
+	cmd := NewRootCommand(Options{Stdout: &stdout, Stderr: &bytes.Buffer{}})
+	cmd.SetArgs([]string{"--home", home, "doctor", "--provider", "local", "--config", configPath, "--json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("doctor returned error: %v\n%s", err, stdout.String())
+	}
+	var report doctorReport
+	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+		t.Fatalf("parse doctor output: %v\n%s", err, stdout.String())
+	}
+	if !report.Ready || report.Provider != "local" {
+		t.Fatalf("report = %#v", report)
+	}
+	if !doctorHasCheck(report, "Provider", "config_support", doctorOK) {
+		t.Fatalf("missing provider config support check: %#v", report.Checks)
+	}
+	if !doctorHasCheck(report, "Config", "dataset", doctorOK) {
+		t.Fatalf("missing dataset check: %#v", report.Checks)
+	}
+}
+
+func TestDoctorModalSandboxReportsNotImplementedBeforeSubmission(t *testing.T) {
+	var stdout bytes.Buffer
+	cmd := NewRootCommand(Options{Stdout: &stdout, Stderr: &bytes.Buffer{}})
+	cmd.SetArgs([]string{"--home", t.TempDir(), "doctor", "--provider", "modal-sandbox", "--json"})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected modal-sandbox doctor to fail before provider exists")
+	}
+	var report doctorReport
+	if parseErr := json.Unmarshal(stdout.Bytes(), &report); parseErr != nil {
+		t.Fatalf("parse doctor output: %v\n%s", parseErr, stdout.String())
+	}
+	if report.Ready {
+		t.Fatalf("report should not be ready: %#v", report)
+	}
+	if !doctorHasCheck(report, "Provider", "registered", doctorFail) {
+		t.Fatalf("missing provider registration failure: %#v", report.Checks)
+	}
+}
+
 func TestLocalTrainFailureProducesArtifacts(t *testing.T) {
 	repo := repoRoot(t)
 	home := filepath.Join(t.TempDir(), "home")
@@ -760,6 +834,15 @@ func rowMatched(rows []CompareRow, field string) bool {
 	for _, row := range rows {
 		if row.Field == field {
 			return row.Match
+		}
+	}
+	return false
+}
+
+func doctorHasCheck(report doctorReport, section string, name string, status doctorStatus) bool {
+	for _, check := range report.Checks {
+		if check.Section == section && check.Name == name && check.Status == status {
+			return true
 		}
 	}
 	return false

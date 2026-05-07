@@ -20,6 +20,7 @@ Implemented now:
 10. provider capability inspection through `cloudtune providers inspect <provider>`.
 11. run evidence capture in `workload.json`: config hash, git commit/dirty flag, working directory, entrypoint, dataset fingerprint, and provider job refs.
 12. run comparison through `cloudtune compare <run-id> <run-id>`.
+13. runtime diagnostics through `cloudtune doctor`.
 
 Not implemented in this branch:
 
@@ -74,6 +75,15 @@ Inspect provider capability declarations:
 ./bin/cloudtune providers inspect local
 ./bin/cloudtune providers inspect mock-cloud
 ```
+
+Run local readiness checks:
+
+```sh
+./bin/cloudtune doctor --provider local --config examples/eval.yaml
+./bin/cloudtune doctor --provider modal-sandbox
+```
+
+`modal-sandbox` is expected to report not ready until that experimental provider exists and Modal CLI/SDK/auth are configured.
 
 Run the controlled failure demo:
 

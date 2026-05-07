@@ -66,6 +66,7 @@ func NewRootCommand(opts Options) *cobra.Command {
 	root.AddCommand(newArtifactsCommand(opts, &home))
 	root.AddCommand(newCancelCommand(opts, &home))
 	root.AddCommand(newCompareCommand(opts, &home))
+	root.AddCommand(newDoctorCommand(opts, &home))
 	root.AddCommand(newProvidersCommand(opts))
 	return root
 }

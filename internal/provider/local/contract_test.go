@@ -27,13 +27,15 @@ func TestProviderContract(t *testing.T) {
 		provider := New(&bytes.Buffer{}, &bytes.Buffer{})
 		validJob := app.JobSpec{Script: script, WorkDir: paths.Workspace}
 		return contract.Subject{
-			Name:              string(app.ProviderLocal),
-			Adapter:           provider,
-			ValidJob:          validJob,
-			InvalidJob:        app.JobSpec{},
-			SubmitRequest:     app.SubmitRequest{JobSpec: validJob, RunID: "r_contract", AttemptID: "a_contract", RunDir: paths.RunDir},
-			ProviderRefPrefix: "local:",
-			StreamLogs:        contract.StreamLogsUnsupported,
+			Name:                string(app.ProviderLocal),
+			Adapter:             provider,
+			ValidJob:            validJob,
+			InvalidJob:          app.JobSpec{},
+			SubmitRequest:       app.SubmitRequest{JobSpec: validJob, RunID: "r_contract", AttemptID: "a_contract", RunDir: paths.RunDir},
+			ProviderRefPrefix:   "local:",
+			ExpectedLogText:     `"state":"ok"`,
+			UnsupportedWorkload: app.WorkloadTypeFineTuning,
+			StreamLogs:          contract.StreamLogsUnsupported,
 			AssertCapabilities: func(t *testing.T, capabilities app.ProviderCapabilities) {
 				t.Helper()
 				if !capabilities.SupportsDataBundle {
