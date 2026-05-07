@@ -1,0 +1,20 @@
+workload:
+  name: "modal-slow-cancel-demo"
+  type: evaluation
+  model:
+    provider: local
+    name: deterministic-evaluator
+  dataset:
+    name: customer-support-sample
+    path: "examples/evals/customer_support.jsonl"
+  tags: ["modal", "cancel", "integration"]
+
+job:
+  script: "examples/modal_slow.py"
+
+routing:
+  provider: modal-sandbox
+  max_attempts: 1
+
+outputs:
+  save_to: "./artifacts"

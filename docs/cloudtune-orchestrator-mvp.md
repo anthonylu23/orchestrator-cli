@@ -150,7 +150,8 @@ Then exercise:
 8. controlled failure with `cloudtune run examples/eval_fail.yaml`.
 9. mock failover through `train --provider auto --config examples/failover.yaml`.
 10. repeated local runs under a disposable `CLOUDTUNE_HOME`.
+11. opt-in Modal tests with `CLOUDTUNE_INTEGRATION=modal go test ./... -run ModalIntegration -count=1`.
 
 ## Next Engineering Step
 
-Add one real provider adapter only after this branch is merged cleanly and the local/mock stress path stays stable. The best next adapter for the product wedge is likely a batch/eval-friendly provider before distributed training.
+Live-verify `modal-sandbox` against an authenticated Modal account, then harden packaging, event history, artifact semantics, and normalized lifecycle around the real provider behavior.

@@ -287,6 +287,12 @@ func runAttempt(ctx context.Context, opts Options, store *state.Store, registry 
 		_ = writeSummary(ctx, store, paths, runID)
 		return exitCodeInvalidSpec, false, fmt.Errorf("%s", reason)
 	}
+	if err := adapter.ValidateAuth(ctx); err != nil {
+		reason := baseRedactor.String(err.Error())
+		finishFailed(ctx, store, runID, attemptID, exitCodeRouting, reason, "")
+		_ = writeSummary(ctx, store, paths, runID)
+		return exitCodeRouting, false, err
+	}
 	if report := adapter.ValidateJob(ctx, attemptJob); !report.Supported {
 		reason := "job is not supported"
 		if len(report.Reasons) > 0 {
@@ -348,6 +354,18 @@ func runAttempt(ctx context.Context, opts Options, store *state.Store, registry 
 		},
 	})
 	if err != nil {
+		currentRun, getErr := store.GetRun(ctx, runID)
+		if getErr != nil {
+			return exitCodeInternal, false, getErr
+		}
+		if currentRun.State == app.RunStateCanceled {
+			_ = store.FinishAttempt(ctx, attemptID, app.AttemptStateCanceled, exitCodeCanceled, "canceled", attemptRedactor.String(result.ProviderJobRef), time.Now().UTC())
+			if err := writeSummary(ctx, store, paths, runID); err != nil {
+				return exitCodeInternal, false, err
+			}
+			fmt.Fprintf(opts.Stdout, "Run %s %s\n", runID, app.RunStateCanceled)
+			return exitCodeCanceled, false, nil
+		}
 		retryable := app.IsRetryableProviderError(err)
 		endedAt := time.Now().UTC()
 		reason := attemptRedactor.String(err.Error())

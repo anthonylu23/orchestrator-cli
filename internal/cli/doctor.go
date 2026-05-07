@@ -174,7 +174,7 @@ func addProviderChecks(ctx context.Context, add func(string, string, doctorStatu
 func addModalDiagnostics(ctx context.Context, add func(string, string, doctorStatus, string)) {
 	modalPath, err := exec.LookPath("modal")
 	if err != nil {
-		add("Modal", "cli", doctorFail, "modal CLI not found on PATH")
+		add("Modal", "cli", doctorFail, "modal CLI not found on PATH; install with: python3 -m venv .venv && source .venv/bin/activate && pip install modal")
 	} else {
 		add("Modal", "cli", doctorOK, modalPath)
 		if err := runCommand(ctx, "modal", "token", "info"); err != nil {
@@ -187,7 +187,7 @@ func addModalDiagnostics(ctx context.Context, add func(string, string, doctorSta
 	if err != nil {
 		add("Modal", "python_sdk", doctorFail, "python3 not found on PATH")
 	} else if err := runCommand(ctx, python, "-c", "import modal"); err != nil {
-		add("Modal", "python_sdk", doctorFail, "Python modal package is not importable")
+		add("Modal", "python_sdk", doctorFail, "Python modal package is not importable; install with: pip install modal")
 	} else {
 		add("Modal", "python_sdk", doctorOK, "Python modal package import succeeded")
 	}

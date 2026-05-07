@@ -88,6 +88,22 @@ Run local readiness checks:
 
 `modal-sandbox` is expected to report not ready until Modal CLI/SDK/auth are configured.
 
+Modal setup for live verification:
+
+```sh
+python3 -m venv .venv
+source .venv/bin/activate
+pip install modal
+modal token set
+```
+
+Or use environment-based auth:
+
+```sh
+export MODAL_TOKEN_ID=...
+export MODAL_TOKEN_SECRET=...
+```
+
 Run the controlled failure demo:
 
 ```sh
@@ -103,6 +119,14 @@ go test ./...
 go test -race ./...
 go vet ./...
 ```
+
+Live Modal integration tests are opt-in:
+
+```sh
+CLOUDTUNE_INTEGRATION=modal go test ./... -run ModalIntegration -count=1
+```
+
+These tests run real Modal jobs and may create billable usage.
 
 ## Workload Config
 
@@ -229,6 +253,7 @@ Near-term phases:
 ## Docs
 
 - [CloudTune MVP](docs/cloudtune-orchestrator-mvp.md)
+- [Modal live verification](docs/modal-live-verification.md)
 - [Overview](docs/overview.md)
 - [Architecture](docs/architecture.md)
 - [Roadmap](docs/roadmap.md)
