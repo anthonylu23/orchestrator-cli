@@ -1,12 +1,16 @@
-# CloudTune Orchestrator
+# switchboard-cli
 
-CloudTune Orchestrator is a provider-agnostic control plane for AI/ML workloads. It manages workload lifecycle, provider routing, retries, checkpoint resume, telemetry, artifacts, and run history behind a small provider adapter contract.
+> Status: pre-alpha.
+>
+> `switchboard-cli` is an experimental CLI for CloudTune-style AI/ML workload orchestration. Local and mock execution work today. `modal-sandbox` is implemented but experimental and still requires live verification against a configured Modal account. Do not use this for production workloads or production credentials yet.
 
-This branch intentionally does **not** include the separate GCP-provider branch. The current implementation is a local + deterministic mock-cloud MVP foundation: it can run real local Python workloads, simulate provider failover through mock providers, persist SQLite run state, collect logs/events/summaries, export workload outputs, and list run artifacts.
+`switchboard-cli` runs eval-style AI/ML workloads from YAML, captures reproducibility evidence, preserves logs/artifacts, validates provider capabilities, and compares runs. The long-term CloudTune direction is a provider-agnostic execution and evidence layer across compute and model providers, but this repo is currently a local/mock-first pre-alpha.
 
-## Status
+This branch intentionally does **not** include the separate GCP-provider branch. The current implementation can run real local Python workloads, simulate provider failover through deterministic mock providers, persist SQLite run state, collect logs/events/summaries, export workload outputs, and list run artifacts.
 
-Implemented now:
+## What Works Today
+
+Today `switchboard-cli` can:
 
 1. `cloudtune run <config>` for CloudTune workload YAML.
 2. `local` provider for real local scripts.
@@ -23,13 +27,17 @@ Implemented now:
 13. runtime diagnostics through `cloudtune doctor`.
 14. experimental `modal-sandbox` provider adapter, gated by Modal SDK/auth readiness.
 
-Not implemented in this branch:
+## What Does Not Work Yet
+
+This branch does not provide:
 
 1. real GCP, RunPod, OpenAI, Anthropic, AWS, or Azure adapters.
 2. local script packaging into container images.
 3. hosted dashboard, SSO, approval workflow, or enterprise policy engine.
 4. real eval-gate enforcement beyond persisted workload/artifact metadata.
 5. live-verified Modal execution in this local environment; `modal-sandbox` is implemented but requires Modal CLI/Python SDK/auth.
+6. a stable YAML schema.
+7. production-grade sandboxing for local workload execution.
 
 ## Quick Start
 
@@ -39,10 +47,11 @@ Build:
 go build -o bin/cloudtune ./cmd/switchboard-cli
 ```
 
-Run the CloudTune eval MVP:
+Run the local eval MVP:
 
 ```sh
-CLOUDTUNE_HOME="$(mktemp -d)" ./bin/cloudtune run examples/eval.yaml
+export CLOUDTUNE_HOME="$(mktemp -d)"
+./bin/cloudtune run examples/eval.yaml --provider local
 ```
 
 Inspect the run:
@@ -55,10 +64,13 @@ Inspect the run:
 ./bin/cloudtune --home "$CLOUDTUNE_HOME" compare <run-id> <run-id>
 ```
 
+The repository and Go module are still named `switchboard-cli`. The built binary is named `cloudtune` in examples because the CLI command surface uses the CloudTune workload language.
+
 Run the mock failover demo:
 
 ```sh
-CLOUDTUNE_HOME="$(mktemp -d)" ./bin/cloudtune train --provider auto --config examples/failover.yaml
+export CLOUDTUNE_HOME="$(mktemp -d)"
+./bin/cloudtune train --provider auto --config examples/failover.yaml
 ```
 
 Expected failover output includes:
@@ -107,7 +119,8 @@ export MODAL_TOKEN_SECRET=...
 Run the controlled failure demo:
 
 ```sh
-CLOUDTUNE_HOME="$(mktemp -d)" ./bin/cloudtune run examples/eval_fail.yaml
+export CLOUDTUNE_HOME="$(mktemp -d)"
+./bin/cloudtune run examples/eval_fail.yaml
 ```
 
 Expected behavior is a failed run with preserved logs, summary, `workload.json`, artifact manifest, and partial output artifact.
@@ -115,9 +128,10 @@ Expected behavior is a failed run with preserved logs, summary, `workload.json`,
 Run checks:
 
 ```sh
-go test ./...
-go test -race ./...
+go test ./... -count=1
 go vet ./...
+go test -race ./... -count=1
+git diff --check
 ```
 
 Live Modal integration tests are opt-in:
@@ -252,8 +266,16 @@ Near-term phases:
 
 ## Docs
 
+- [Provider status](docs/provider-status.md)
 - [CloudTune MVP](docs/cloudtune-orchestrator-mvp.md)
 - [Modal live verification](docs/modal-live-verification.md)
 - [Overview](docs/overview.md)
 - [Architecture](docs/architecture.md)
 - [Roadmap](docs/roadmap.md)
+
+## Community And Security
+
+- [License](LICENSE)
+- [Contributing](CONTRIBUTING.md)
+- [Security policy](SECURITY.md)
+- [Code of conduct](CODE_OF_CONDUCT.md)

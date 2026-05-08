@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - "cloudtune-*"
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Go test, vet, race, build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Check whitespace
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            git fetch origin "${{ github.base_ref }}" --depth=1
+            git diff --check "origin/${{ github.base_ref }}...HEAD"
+          else
+            git diff-tree --check --no-commit-id --root -r HEAD
+          fi
+
+      - name: Download modules
+        run: go mod download
+
+      - name: Test
+        run: go test ./... -count=1
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Race test
+        run: go test -race ./... -count=1
+
+      - name: Build
+        run: go build -o bin/cloudtune ./cmd/switchboard-cli

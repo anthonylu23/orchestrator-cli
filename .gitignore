@@ -1,0 +1,26 @@
+.DS_Store
+
+# Local build outputs
+/bin/
+*.test
+coverage.out
+
+# Local runtime state and generated workload outputs
+/artifacts/
+/.runs/
+/.switchboard-cli/
+/.cloudtune/
+
+# Python local environments and caches
+/.venv/
+__pycache__/
+*.pyc
+
+# Local credentials and environment files
+.env
+.env.*
+!.env.example
+*.pem
+id_rsa
+id_ed25519
+credentials.json

@@ -1,0 +1,41 @@
+name: Modal Integration
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  modal:
+    name: Live Modal integration tests
+    runs-on: ubuntu-latest
+    env:
+      CLOUDTUNE_INTEGRATION: modal
+      MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+      MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Modal
+        run: python3 -m pip install --upgrade pip modal
+
+      - name: Verify Modal secrets are present
+        run: |
+          test -n "$MODAL_TOKEN_ID"
+          test -n "$MODAL_TOKEN_SECRET"
+
+      - name: Run live Modal integration tests
+        run: go test ./... -run ModalIntegration -count=1
