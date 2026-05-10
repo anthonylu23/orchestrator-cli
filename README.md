@@ -10,7 +10,7 @@ Orchestrator now has a local orchestration vertical slice, deterministic mock-pr
 
 Run artifacts redact secret-like keys and known secret environment values before persistence. Attempt history also records resume checkpoint provenance and provider cost estimates so failover decisions remain explainable after completion.
 
-GCP v1 is container-image-first. Local script packaging, image build/push, richer GCP data staging, and auto hardware routing remain roadmap work.
+GCP v1 is container-image-first. Live auth reached Vertex AI but is currently blocked by disabled project billing; the billable container submit smoke test has not run yet. Local script packaging, image build/push, richer GCP data staging, and auto hardware routing remain roadmap work.
 
 ## Quick Start
 
@@ -198,5 +198,6 @@ By default Orchestrator writes to `~/.orchestrator-cli`. Set `ORCHESTRATOR_CLI_H
 - [Overview](docs/overview.md)
 - [Architecture](docs/architecture.md)
 - [GCP Provider](docs/gcp-provider.md)
+- [GCP Live Smoke Test](docs/gcp-live-smoke.md)
 - [Auto Hardware Routing](docs/auto-hardware-routing.md)
 - [Roadmap](docs/roadmap.md)

@@ -5,6 +5,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -348,6 +349,53 @@ func TestLiveValidateAuth(t *testing.T) {
 	}
 }
 
+func TestLiveSubmitContainerJob(t *testing.T) {
+	if os.Getenv("ORCHESTRATOR_GCP_LIVE") != "1" {
+		t.Skip("set ORCHESTRATOR_GCP_LIVE=1 to run live GCP checks")
+	}
+	if os.Getenv("ORCHESTRATOR_GCP_LIVE_SUBMIT") != "1" {
+		t.Skip("set ORCHESTRATOR_GCP_LIVE_SUBMIT=1 to submit a billable Vertex AI CustomJob")
+	}
+	projectID := requireEnv(t, "ORCHESTRATOR_GCP_PROJECT_ID")
+	image := requireEnv(t, "ORCHESTRATOR_GCP_IMAGE")
+	outputURIPrefix := requireEnv(t, "ORCHESTRATOR_GCP_OUTPUT_URI_PREFIX")
+
+	ctx, cancel := context.WithTimeout(context.Background(), envDurationDefault("ORCHESTRATOR_GCP_TIMEOUT", 10*time.Minute))
+	defer cancel()
+
+	home := t.TempDir()
+	paths := artifact.ForRun(home, "r_live")
+	if err := artifact.EnsureRun(paths); err != nil {
+		t.Fatalf("ensure run: %v", err)
+	}
+	provider := New(Config{
+		ProjectID:           projectID,
+		Location:            envDefault("ORCHESTRATOR_GCP_LOCATION", "us-central1"),
+		OutputURIPrefix:     outputURIPrefix,
+		MachineType:         envDefault("ORCHESTRATOR_GCP_MACHINE_TYPE", "n1-standard-4"),
+		AcceleratorType:     os.Getenv("ORCHESTRATOR_GCP_ACCELERATOR_TYPE"),
+		AcceleratorCount:    envInt32Default("ORCHESTRATOR_GCP_ACCELERATOR_COUNT", 0),
+		BootDiskType:        envDefault("ORCHESTRATOR_GCP_BOOT_DISK_TYPE", "pd-ssd"),
+		BootDiskSizeGB:      envInt32Default("ORCHESTRATOR_GCP_BOOT_DISK_SIZE_GB", 100),
+		ServiceAccount:      os.Getenv("ORCHESTRATOR_GCP_SERVICE_ACCOUNT"),
+		Network:             os.Getenv("ORCHESTRATOR_GCP_NETWORK"),
+		PollIntervalSeconds: int(envInt32Default("ORCHESTRATOR_GCP_POLL_INTERVAL_SECONDS", 15)),
+	}, &bytes.Buffer{}, &bytes.Buffer{})
+
+	result, err := provider.Submit(ctx, app.SubmitRequest{
+		JobSpec:   app.JobSpec{Name: "gcp-live-smoke", Image: image},
+		RunID:     "r_live",
+		AttemptID: "a_live",
+		RunDir:    paths.RunDir,
+	})
+	if err != nil {
+		t.Fatalf("Submit returned error: %v", err)
+	}
+	if result.ExitCode != 0 || result.ProviderJobRef == "" {
+		t.Fatalf("result = %#v", result)
+	}
+}
+
 type fakeClient struct {
 	validateErr error
 	createName  string
@@ -437,4 +485,37 @@ func envDefault(key string, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+func requireEnv(t *testing.T, key string) string {
+	t.Helper()
+	value := os.Getenv(key)
+	if value == "" {
+		t.Fatalf("%s is required", key)
+	}
+	return value
+}
+
+func envInt32Default(key string, fallback int32) int32 {
+	value := os.Getenv(key)
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.ParseInt(value, 10, 32)
+	if err != nil {
+		return fallback
+	}
+	return int32(parsed)
+}
+
+func envDurationDefault(key string, fallback time.Duration) time.Duration {
+	value := os.Getenv(key)
+	if value == "" {
+		return fallback
+	}
+	parsed, err := time.ParseDuration(value)
+	if err != nil {
+		return fallback
+	}
+	return parsed
 }

@@ -17,6 +17,8 @@ gcloud config set project <project-id>
 
 The caller needs permissions to create, read, and cancel Vertex AI CustomJobs and to read Cloud Logging entries for the project. If `gcp.service_account` is set, the caller also needs permission to act as that service account.
 
+Billing must be enabled on the target project. A live auth check on 2026-05-10 reached Vertex AI for project `lfp-temporal-vit` but failed with `BILLING_DISABLED`, so the current live blocker is project setup rather than an implementation regression. See [GCP Live Smoke Test](gcp-live-smoke.md).
+
 ## Config
 
 ```yaml
@@ -66,7 +68,8 @@ Orchestrator creates one Vertex AI CustomJob with a single worker pool. The prov
 
 ## Next Steps
 
-1. Add a real end-to-end example once a project, artifact registry image, and GCS bucket are available.
-2. Add packaging or build/push support for local scripts after the container-only path is validated.
-3. Replace static `estimate_hourly_usd` with provider pricing lookup when hardware routing work begins.
-4. Expand data staging beyond `gs://` after GCS checkpoint and dataset behavior is stable.
+1. Enable billing and run the auth-only live check documented in [GCP Live Smoke Test](gcp-live-smoke.md).
+2. Run the gated billable container submit smoke test with a small image and GCS output prefix.
+3. Add packaging or build/push support for local scripts after the container-only path is validated.
+4. Replace static `estimate_hourly_usd` with provider pricing lookup when hardware routing work begins.
+5. Expand data staging beyond `gs://` after GCS checkpoint and dataset behavior is stable.

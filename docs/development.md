@@ -95,6 +95,7 @@ Before writing logs, `events.jsonl`, summaries, or provider failure reasons, pro
 
 ## Next Steps
 
-1. Run a live GCP smoke test with `ORCHESTRATOR_GCP_LIVE=1` after ADC, Vertex AI, Artifact Registry, and a GCS output bucket are configured.
-2. Add local script packaging or image build/push only after the container-image CustomJob path is validated.
-3. Replace static GCP hourly estimates with provider pricing data during auto hardware routing work.
+1. Enable billing on the configured GCP project, then rerun the auth-only check in [GCP Live Smoke Test](gcp-live-smoke.md).
+2. Run the gated billable container submit smoke test with `ORCHESTRATOR_GCP_LIVE=1` and `ORCHESTRATOR_GCP_LIVE_SUBMIT=1` after an Artifact Registry image and GCS output prefix are available.
+3. Add local script packaging or image build/push only after the container-image CustomJob path is validated.
+4. Replace static GCP hourly estimates with provider pricing data during auto hardware routing work.

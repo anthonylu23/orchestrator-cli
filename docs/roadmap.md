@@ -113,7 +113,7 @@ Exit criteria:
 
 ## Phase 4 - First Real Provider: GCP
 
-Status: in progress. The first GCP adapter submits prebuilt container images to Vertex AI CustomJob through the Google Cloud Go client, polls job status, records provider refs and estimates, reads Cloud Logging payloads into run artifacts, supports best-effort cancel, and rejects unsupported local bundles or non-GCS URI inputs before submit. Live project validation and packaging workflows are still pending.
+Status: in progress. The first GCP adapter submits prebuilt container images to Vertex AI CustomJob through the Google Cloud Go client, polls job status, records provider refs and estimates, reads Cloud Logging payloads into run artifacts, supports best-effort cancel, and rejects unsupported local bundles or non-GCS URI inputs before submit. Live auth validation reached Vertex AI on 2026-05-10 but is blocked by disabled project billing; billable container submit validation and packaging workflows are still pending.
 
 Goals:
 
@@ -132,9 +132,10 @@ Exit criteria:
 
 Next steps:
 
-1. Run a live GCP smoke test against a configured project, Artifact Registry image, and GCS bucket.
-2. Decide whether local script packaging should use Orchestrator-managed image build/push or a Vertex AI source package path.
-3. Add richer GCP pricing/capacity facts as part of auto hardware routing.
+1. Enable billing and complete the auth-only GCP live check.
+2. Run the gated billable container submit smoke test against a configured project, Artifact Registry image, and GCS bucket.
+3. Decide whether local script packaging should use Orchestrator-managed image build/push or a Vertex AI source package path.
+4. Add richer GCP pricing/capacity facts as part of auto hardware routing.
 
 ## Phase 5 - Auto Hardware Routing
 
