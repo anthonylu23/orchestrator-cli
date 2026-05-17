@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/anthonylu23/switchboard-cli/internal/app"
@@ -16,6 +15,7 @@ import (
 	"github.com/anthonylu23/switchboard-cli/internal/config"
 	"github.com/anthonylu23/switchboard-cli/internal/data"
 	"github.com/anthonylu23/switchboard-cli/internal/event"
+	"github.com/anthonylu23/switchboard-cli/internal/home"
 	"github.com/anthonylu23/switchboard-cli/internal/provider"
 	gcpprovider "github.com/anthonylu23/switchboard-cli/internal/provider/gcp"
 	localprovider "github.com/anthonylu23/switchboard-cli/internal/provider/local"
@@ -52,7 +52,7 @@ func NewRootCommand(opts Options) *cobra.Command {
 
 	var home string
 	root := &cobra.Command{
-		Use:           "switchboard",
+		Use:           "switchboard-cli",
 		Short:         "Local-first ML job orchestration",
 		SilenceUsage:  true,
 		SilenceErrors: true,
@@ -99,7 +99,7 @@ func newTrainCommand(opts Options, home *string) *cobra.Command {
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&flags.ConfigPath, "config", "", "Path to switchboard YAML config")
+	cmd.Flags().StringVar(&flags.ConfigPath, "config", "", "Path to switchboard-cli YAML config")
 	cmd.Flags().StringVar(&flags.Provider, "provider", "local", "Provider to use")
 	cmd.Flags().StringVar(&flags.Script, "script", "", "Training script path")
 	cmd.Flags().StringArrayVar(&flags.Args, "arg", nil, "Argument to pass to the script; repeat for multiple args")
@@ -362,7 +362,7 @@ func newStatusCommand(opts Options, home *string) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			store, err := state.Open(filepath.Join(resolvedHome, "switchboard.db"))
+			store, err := state.Open(artifact.DBPath(resolvedHome))
 			if err != nil {
 				return err
 			}
@@ -487,7 +487,7 @@ func cancelRun(ctx context.Context, opts Options, home string, runID string) err
 }
 
 func followLogs(ctx context.Context, w io.Writer, home string, runID string, path string) error {
-	store, err := state.Open(filepath.Join(home, "switchboard.db"))
+	store, err := state.Open(artifact.DBPath(home))
 	if err != nil {
 		return err
 	}
@@ -643,20 +643,7 @@ func mockEvents(configs []config.MockEventConfig) []app.Event {
 }
 
 func resolveHome(flag string) (string, error) {
-	if flag != "" {
-		return flag, nil
-	}
-	if env := os.Getenv("SWITCHBOARD_HOME"); env != "" {
-		return env, nil
-	}
-	if env := os.Getenv("ORCHESTRATOR_CLI_HOME"); env != "" {
-		return env, nil
-	}
-	userHome, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(userHome, ".switchboard"), nil
+	return home.Resolve(flag)
 }
 
 type exitCodeError struct {

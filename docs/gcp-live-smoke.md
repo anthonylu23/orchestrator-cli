@@ -114,8 +114,8 @@ gcp:
 Run:
 
 ```sh
-SWITCHBOARD_HOME="$(mktemp -d)" \
-go run ./cmd/switchboard train --provider gcp --config gcp-smoke.yaml
+SWITCHBOARD_CLI_HOME="$(mktemp -d)" \
+go run ./cmd/switchboard-cli train --provider gcp --config gcp-smoke.yaml
 ```
 
 Keep this as a container-image smoke test. Local script packaging remains deferred until this path succeeds against a billing-enabled project.

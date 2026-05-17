@@ -4,7 +4,7 @@
 
 The implementation is a Go CLI with a small internal package split:
 
-1. `cmd/switchboard`: binary entrypoint.
+1. `cmd/switchboard-cli`: binary entrypoint.
 2. `internal/cli`: Cobra command wiring and orchestration flow.
 3. `internal/app`: shared contracts for jobs, runs, attempts, events, summaries, providers, and normalized errors.
 4. `internal/config`: YAML and flag resolution.
@@ -23,19 +23,19 @@ The implementation is a Go CLI with a small internal package split:
 Build:
 
 ```sh
-go build -o bin/switchboard ./cmd/switchboard
+go build -o bin/switchboard-cli ./cmd/switchboard-cli
 ```
 
 Run the demo:
 
 ```sh
-SWITCHBOARD_HOME="$(mktemp -d)" ./bin/switchboard train --provider local --script examples/train.py
+SWITCHBOARD_CLI_HOME="$(mktemp -d)" ./bin/switchboard-cli train --provider local --script examples/train.py
 ```
 
 Run the PyTorch Iris demo:
 
 ```sh
-SWITCHBOARD_HOME="$(mktemp -d)" ./bin/switchboard train --provider local --config examples/iris-pytorch.yaml
+SWITCHBOARD_CLI_HOME="$(mktemp -d)" ./bin/switchboard-cli train --provider local --config examples/iris-pytorch.yaml
 ```
 
 The PyTorch Iris demo requires `python3` and `torch`. It uses a checked-in CC0 Kaggle Iris CSV so the local data bundle path is deterministic and does not require Kaggle credentials.
@@ -43,9 +43,9 @@ The PyTorch Iris demo requires `python3` and `torch`. It uses a checked-in CC0 K
 Inspect artifacts:
 
 ```sh
-./bin/switchboard --home "$SWITCHBOARD_HOME" status <run-id>
-./bin/switchboard --home "$SWITCHBOARD_HOME" logs <run-id>
-./bin/switchboard --home "$SWITCHBOARD_HOME" cancel <run-id>
+./bin/switchboard-cli --home "$SWITCHBOARD_CLI_HOME" status <run-id>
+./bin/switchboard-cli --home "$SWITCHBOARD_CLI_HOME" logs <run-id>
+./bin/switchboard-cli --home "$SWITCHBOARD_CLI_HOME" cancel <run-id>
 ```
 
 Run checks:
@@ -93,9 +93,9 @@ Each run gets a workspace at:
 
 Bundled local data inputs are copied into that workspace. Mounts must be under `/workspace`; `/workspace/data/train` becomes `<home>/runs/<run-id>/workspace/data/train`. The local runtime rewrites job arguments and job environment values that reference declared mounts to their host paths before executing the script.
 
-The local provider stores a `local:<pid>` provider reference on the running attempt. `switchboard cancel <run-id>` uses that reference to interrupt the process, then marks the run and attempt as `canceled` and rewrites `summary.json`.
+The local provider stores a `local:<pid>` provider reference on the running attempt. `switchboard-cli cancel <run-id>` uses that reference to interrupt the process, then marks the run and attempt as `canceled` and rewrites `summary.json`.
 
-The GCP provider stores the full Vertex AI CustomJob resource name as the provider reference. `switchboard cancel <run-id>` uses that reference to issue a best-effort CustomJob cancel request.
+The GCP provider stores the full Vertex AI CustomJob resource name as the provider reference. `switchboard-cli cancel <run-id>` uses that reference to issue a best-effort CustomJob cancel request.
 
 Run records include the script path for script jobs and the image URI for container jobs; human-readable `status` output shows whichever target is present. Attempt records include optional resume checkpoint and cost estimate provenance. Existing SQLite databases are migrated in place by adding missing run and attempt columns when opened.
 

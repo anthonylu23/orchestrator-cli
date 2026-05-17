@@ -45,7 +45,7 @@ Core entities:
 3. `Event`: structured metric, checkpoint, status, and log payloads linked to a run and attempt.
 4. `Summary`: derived final metrics, best metrics, runtime, checkpoint count, resume count, provider attempts, and exit reason.
 
-SQLite is the canonical state store for runs and attempts. Files under `~/.switchboard/runs/<run-id>/` are durable user-facing artifacts. Local attempts also use a per-run workspace at `runs/<run-id>/workspace`.
+SQLite is the canonical state store for runs and attempts. Files under `~/.switchboard-cli/runs/<run-id>/` are durable user-facing artifacts. Local attempts also use a per-run workspace at `runs/<run-id>/workspace`.
 
 ## Data Preparation
 
@@ -228,11 +228,11 @@ Summaries keep `best_metrics` as a directional view. Metrics whose names contain
 Artifacts:
 
 ```text
-~/.switchboard/switchboard.db
-~/.switchboard/runs/<run-id>/events.jsonl
-~/.switchboard/runs/<run-id>/summary.json
-~/.switchboard/runs/<run-id>/logs.txt
-~/.switchboard/runs/<run-id>/workspace/
+~/.switchboard-cli/switchboard.db
+~/.switchboard-cli/runs/<run-id>/events.jsonl
+~/.switchboard-cli/runs/<run-id>/summary.json
+~/.switchboard-cli/runs/<run-id>/logs.txt
+~/.switchboard-cli/runs/<run-id>/workspace/
 ```
 
 ## Data Failure Behavior

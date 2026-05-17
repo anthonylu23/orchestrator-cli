@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 
 	"github.com/anthonylu23/switchboard-cli/internal/app"
+	"github.com/anthonylu23/switchboard-cli/internal/home"
 	"gopkg.in/yaml.v3"
 )
 
@@ -159,19 +160,9 @@ func LoadTrain(flags TrainFlags) (ResolvedTrainConfig, error) {
 		requireOverride = true
 	}
 
-	home := flags.SwitchboardHome
-	if home == "" {
-		home = os.Getenv("SWITCHBOARD_HOME")
-	}
-	if home == "" {
-		home = os.Getenv("ORCHESTRATOR_CLI_HOME")
-	}
-	if home == "" {
-		userHome, err := os.UserHomeDir()
-		if err != nil {
-			return ResolvedTrainConfig{}, fmt.Errorf("resolve user home: %w", err)
-		}
-		home = filepath.Join(userHome, ".switchboard")
+	resolvedHome, err := home.Resolve(flags.SwitchboardHome)
+	if err != nil {
+		return ResolvedTrainConfig{}, err
 	}
 
 	return ResolvedTrainConfig{
@@ -183,7 +174,7 @@ func LoadTrain(flags TrainFlags) (ResolvedTrainConfig, error) {
 		BundleMaxSizeBytes:        int64(maxSizeMB) * 1024 * 1024,
 		RequireOverrideAboveLimit: requireOverride,
 		AllowLargeDataBundle:      flags.AllowLargeDataBundle,
-		SwitchboardHome:           home,
+		SwitchboardHome:           resolvedHome,
 	}, validateProviderConfig(provider, job, resolveGCP(cfg.GCP))
 }
 

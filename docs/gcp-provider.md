@@ -51,7 +51,7 @@ gcp:
 Run it with:
 
 ```sh
-switchboard train --provider gcp --config gcp.yaml
+switchboard-cli train --provider gcp --config gcp.yaml
 ```
 
 ## Supported Inputs
@@ -64,7 +64,7 @@ Data inputs must use `mode: uri` with `gs://` sources. Bundled local data, `s3:/
 
 Switchboard creates one Vertex AI CustomJob with a single worker pool. The provider stores the full CustomJob resource name as the attempt provider ref, writes provider lifecycle messages and Cloud Logging payloads into `logs.txt`, parses structured JSONL metric/checkpoint/status lines into `events.jsonl`, and records the configured hourly estimate on the attempt.
 
-`switchboard cancel <run-id>` can cancel a running GCP attempt by using the stored CustomJob resource name.
+`switchboard-cli cancel <run-id>` can cancel a running GCP attempt by using the stored CustomJob resource name.
 
 ## Next Steps
 

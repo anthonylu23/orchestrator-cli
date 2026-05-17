@@ -17,34 +17,34 @@ GCP v1 is container-image-first. Live auth and a billable CPU-only Vertex AI Cus
 Build the CLI:
 
 ```sh
-go build -o bin/switchboard ./cmd/switchboard
+go build -o bin/switchboard-cli ./cmd/switchboard-cli
 ```
 
 Run the example training script:
 
 ```sh
-./bin/switchboard train --provider local --script examples/train.py
+./bin/switchboard-cli train --provider local --script examples/train.py
 ```
 
 Use a disposable Switchboard home while developing:
 
 ```sh
-SWITCHBOARD_HOME="$(mktemp -d)" ./bin/switchboard train --provider local --script examples/train.py
+SWITCHBOARD_CLI_HOME="$(mktemp -d)" ./bin/switchboard-cli train --provider local --script examples/train.py
 ```
 
 Inspect a run:
 
 ```sh
-./bin/switchboard status <run-id>
-./bin/switchboard logs <run-id>
-./bin/switchboard cancel <run-id>
-./bin/switchboard providers list --json
+./bin/switchboard-cli status <run-id>
+./bin/switchboard-cli logs <run-id>
+./bin/switchboard-cli cancel <run-id>
+./bin/switchboard-cli providers list --json
 ```
 
 Run the mock failover demo:
 
 ```sh
-./bin/switchboard train --provider auto --config examples/failover.yaml
+./bin/switchboard-cli train --provider auto --config examples/failover.yaml
 ```
 
 Expected output includes:
@@ -66,7 +66,7 @@ go vet ./...
 Run the PyTorch Iris demo:
 
 ```sh
-SWITCHBOARD_HOME="$(mktemp -d)" ./bin/switchboard train --provider local --config examples/iris-pytorch.yaml
+SWITCHBOARD_CLI_HOME="$(mktemp -d)" ./bin/switchboard-cli train --provider local --config examples/iris-pytorch.yaml
 ```
 
 This demo trains a tiny PyTorch MLP on Kaggle's [Iris Species dataset](https://www.kaggle.com/datasets/uciml/iris), published as CC0/Public Domain and vendored at `examples/data/iris/Iris.csv` for deterministic local runs. It requires `python3` with `torch` installed and exercises bundled data materialization, metric events, checkpoint events, `summary.json`, and local checkpoint files.
@@ -80,7 +80,7 @@ go test ./internal/provider/...
 Run a Vertex AI CustomJob from a prebuilt container image:
 
 ```sh
-./bin/switchboard train --provider gcp --config examples/gcp-container.yaml
+./bin/switchboard-cli train --provider gcp --config examples/gcp-container.yaml
 ```
 
 ## Product Wedge
@@ -100,13 +100,13 @@ The broader product direction extends `provider=auto` into auto hardware routing
 ## Target Commands
 
 ```sh
-switchboard train --provider local --script examples/train.py
-switchboard train --provider auto --config examples/failover.yaml
-switchboard train --provider gcp --config examples/gcp-container.yaml
-switchboard status <run-id>
-switchboard logs <run-id> --follow
-switchboard cancel <run-id>
-switchboard providers list --json
+switchboard-cli train --provider local --script examples/train.py
+switchboard-cli train --provider auto --config examples/failover.yaml
+switchboard-cli train --provider gcp --config examples/gcp-container.yaml
+switchboard-cli status <run-id>
+switchboard-cli logs <run-id> --follow
+switchboard-cli cancel <run-id>
+switchboard-cli providers list --json
 ```
 
 Planned commands not implemented yet include explicit `resume`. Planned provider work includes local script packaging for GCP and additional cloud adapters.
@@ -178,15 +178,15 @@ Planned auto hardware routing will add GPU shape and GPU count selection on top 
 
 ## Artifacts
 
-By default Switchboard writes to `~/.switchboard`. Set `SWITCHBOARD_HOME` or pass `--home` to isolate runs.
+By default Switchboard writes to `~/.switchboard-cli`. Set `SWITCHBOARD_CLI_HOME` or pass `--home` to isolate runs.
 
 ```text
-~/.switchboard/switchboard.db
-~/.switchboard/runs/<run-id>/events.jsonl
-~/.switchboard/runs/<run-id>/logs.txt
-~/.switchboard/runs/<run-id>/summary.json
-~/.switchboard/runs/<run-id>/checkpoints/
-~/.switchboard/runs/<run-id>/workspace/
+~/.switchboard-cli/switchboard.db
+~/.switchboard-cli/runs/<run-id>/events.jsonl
+~/.switchboard-cli/runs/<run-id>/logs.txt
+~/.switchboard-cli/runs/<run-id>/summary.json
+~/.switchboard-cli/runs/<run-id>/checkpoints/
+~/.switchboard-cli/runs/<run-id>/workspace/
 ```
 
 `summary.json` includes final metrics and direction-aware `best_metrics`: common loss/error/perplexity/latency/duration metrics are minimized, while other metrics are maximized. Provider attempts include resume checkpoint and estimate fields when available.

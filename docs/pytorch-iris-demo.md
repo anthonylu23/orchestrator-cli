@@ -11,13 +11,13 @@ It uses Kaggle's [Iris Species dataset](https://www.kaggle.com/datasets/uciml/ir
 Build the CLI:
 
 ```sh
-go build -o bin/switchboard ./cmd/switchboard
+go build -o bin/switchboard-cli ./cmd/switchboard-cli
 ```
 
 Run the demo with an isolated Switchboard home:
 
 ```sh
-SWITCHBOARD_HOME="$(mktemp -d)" ./bin/switchboard train --provider local --config examples/iris-pytorch.yaml
+SWITCHBOARD_CLI_HOME="$(mktemp -d)" ./bin/switchboard-cli train --provider local --config examples/iris-pytorch.yaml
 ```
 
 The script requires `python3` and `torch` in the local Python environment. It trains a deterministic MLP with `Linear(4 -> 16)`, ReLU, and `Linear(16 -> 3)` layers against the mounted CSV at `/workspace/data/iris/Iris.csv`.

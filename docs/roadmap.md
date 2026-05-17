@@ -43,10 +43,10 @@ Goals:
 Target commands:
 
 ```sh
-switchboard train --provider local --script examples/train.py
-switchboard status <run-id>
-switchboard logs <run-id> --follow
-switchboard cancel <run-id>
+switchboard-cli train --provider local --script examples/train.py
+switchboard-cli status <run-id>
+switchboard-cli logs <run-id> --follow
+switchboard-cli cancel <run-id>
 ```
 
 Exit criteria:
@@ -73,7 +73,7 @@ Goals:
 Target demo:
 
 ```sh
-switchboard train --provider auto --config examples/failover.yaml
+switchboard-cli train --provider auto --config examples/failover.yaml
 ```
 
 Expected behavior:

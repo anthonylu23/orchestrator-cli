@@ -343,6 +343,40 @@ job:
 	}
 }
 
+func TestLocalTrainInjectsSwitchboardAndLegacyRuntimeEnv(t *testing.T) {
+	dir := t.TempDir()
+	home := filepath.Join(dir, "home")
+	script := filepath.Join(dir, "runtime_env.py")
+	if err := os.WriteFile(script, []byte(`
+import os
+
+pairs = [
+    ("SWITCHBOARD_RUN_ID", "ORCHESTRATOR_RUN_ID"),
+    ("SWITCHBOARD_ATTEMPT_ID", "ORCHESTRATOR_ATTEMPT_ID"),
+    ("SWITCHBOARD_CHECKPOINT_DIR", "ORCHESTRATOR_CHECKPOINT_DIR"),
+    ("SWITCHBOARD_RESUME_FROM", "ORCHESTRATOR_RESUME_FROM"),
+    ("SWITCHBOARD_EVENTS_PATH", "ORCHESTRATOR_EVENTS_PATH"),
+]
+for current, legacy in pairs:
+    assert current in os.environ, current
+    assert legacy in os.environ, legacy
+    assert os.environ[current] == os.environ[legacy], (current, legacy)
+print("runtime env ok")
+`), 0o600); err != nil {
+		t.Fatalf("write script: %v", err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	cmd := NewRootCommand(Options{Stdout: &stdout, Stderr: &stderr})
+	cmd.SetArgs([]string{"--home", home, "train", "--provider", "local", "--script", script})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("train returned error: %v\nstdout=%s\nstderr=%s", err, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "runtime env ok") {
+		t.Fatalf("stdout = %s", stdout.String())
+	}
+}
+
 func TestProvidersListIncludesMocks(t *testing.T) {
 	var stdout bytes.Buffer
 	cmd := NewRootCommand(Options{Stdout: &stdout, Stderr: &bytes.Buffer{}})

@@ -36,7 +36,7 @@ The first implementation proves the lifecycle through local and mock providers b
 4. SQLite as canonical local run and attempt state.
 5. JSONL event ingestion from mixed stdout.
 6. First-class data inputs for bundled local files/directories and runtime-resolved URI sources.
-7. Durable artifacts under `~/.switchboard/runs/<run-id>/`.
+7. Durable artifacts under `~/.switchboard-cli/runs/<run-id>/`.
 8. Provider adapter contract tests.
 9. GCP as the first real provider after local/mock behavior is proven.
 10. Planned auto hardware routing after provider/hardware capability reporting exists.
@@ -123,7 +123,7 @@ Training scripts may emit JSON lines to stdout for structured events. Plain logs
 
 ```json
 {"type":"metric","step":1200,"metrics":{"loss":0.431,"accuracy":0.882},"split":"train"}
-{"type":"checkpoint","step":1200,"checkpoint_uri":"file:///tmp/switchboard/runs/r_123/ckpt-1200"}
+{"type":"checkpoint","step":1200,"checkpoint_uri":"file:///tmp/switchboard-cli/runs/r_123/ckpt-1200"}
 {"type":"status","state":"running"}
 ```
 
