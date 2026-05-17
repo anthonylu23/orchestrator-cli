@@ -20,7 +20,7 @@ func TestRunAttemptLifecycle(t *testing.T) {
 	defer store.Close()
 
 	started := time.Now().UTC()
-	run := app.Run{ID: "r_1", JobName: "train", Script: "train.py", Provider: "local", State: app.RunStateRunning, StartedAt: started}
+	run := app.Run{ID: "r_1", JobName: "train", Script: "train.py", Image: "image:latest", Provider: "local", State: app.RunStateRunning, StartedAt: started}
 	if err := store.CreateRun(ctx, run); err != nil {
 		t.Fatalf("CreateRun returned error: %v", err)
 	}
@@ -52,7 +52,7 @@ func TestRunAttemptLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetRun returned error: %v", err)
 	}
-	if gotRun.State != app.RunStateSucceeded || gotRun.ExitCode != 0 {
+	if gotRun.State != app.RunStateSucceeded || gotRun.ExitCode != 0 || gotRun.Image != "image:latest" {
 		t.Fatalf("run = %#v", gotRun)
 	}
 	attempts, err := store.AttemptsByRun(ctx, "r_1")
@@ -143,6 +143,14 @@ CREATE TABLE attempts (
 	if err != nil {
 		t.Fatalf("create old schema: %v", err)
 	}
+	started := time.Now().UTC()
+	_, err = db.Exec(`
+INSERT INTO runs (id, job_name, script, provider, state, started_at)
+VALUES (?, ?, ?, ?, ?, ?)`,
+		"r_old", "old", "old.py", "local", app.RunStateRunning, started.Format(time.RFC3339Nano))
+	if err != nil {
+		t.Fatalf("insert old run: %v", err)
+	}
 	if err := db.Close(); err != nil {
 		t.Fatalf("close raw db: %v", err)
 	}
@@ -153,10 +161,24 @@ CREATE TABLE attempts (
 	}
 	defer store.Close()
 
-	started := time.Now().UTC()
-	run := app.Run{ID: "r_1", JobName: "train", Script: "train.py", Provider: "local", State: app.RunStateRunning, StartedAt: started}
+	oldRun, err := store.GetRun(context.Background(), "r_old")
+	if err != nil {
+		t.Fatalf("GetRun old row returned error: %v", err)
+	}
+	if oldRun.Image != "" {
+		t.Fatalf("old run image = %q, want empty", oldRun.Image)
+	}
+
+	run := app.Run{ID: "r_1", JobName: "train", Script: "train.py", Image: "image:latest", Provider: "local", State: app.RunStateRunning, StartedAt: started}
 	if err := store.CreateRun(context.Background(), run); err != nil {
 		t.Fatalf("CreateRun returned error: %v", err)
+	}
+	gotRun, err := store.GetRun(context.Background(), "r_1")
+	if err != nil {
+		t.Fatalf("GetRun returned error: %v", err)
+	}
+	if gotRun.Image != "image:latest" {
+		t.Fatalf("run image = %q", gotRun.Image)
 	}
 	hourlyUSD := 2.5
 	attempt := app.Attempt{

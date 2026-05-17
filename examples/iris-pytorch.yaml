@@ -1,0 +1,15 @@
+job:
+  name: "iris-pytorch-demo"
+  script: "examples/iris_pytorch.py"
+  args:
+    - "--data"
+    - "/workspace/data/iris/Iris.csv"
+    - "--epochs"
+    - "40"
+
+data:
+  inputs:
+    - name: "iris"
+      source: "examples/data/iris/Iris.csv"
+      mount: "/workspace/data/iris/Iris.csv"
+      mode: "bundle"

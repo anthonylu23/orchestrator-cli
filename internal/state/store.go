@@ -43,6 +43,7 @@ CREATE TABLE IF NOT EXISTS runs (
   id TEXT PRIMARY KEY,
   job_name TEXT NOT NULL,
   script TEXT NOT NULL,
+  image TEXT NOT NULL DEFAULT '',
   provider TEXT NOT NULL,
   state TEXT NOT NULL,
   started_at TEXT NOT NULL,
@@ -72,6 +73,9 @@ CREATE TABLE IF NOT EXISTS routing_decisions (
   FOREIGN KEY(run_id) REFERENCES runs(id)
 );
 `); err != nil {
+		return err
+	}
+	if err := s.addColumnIfMissing(ctx, "runs", "image", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
 	for _, column := range []struct {
@@ -118,9 +122,9 @@ func (s *Store) addColumnIfMissing(ctx context.Context, table string, column str
 
 func (s *Store) CreateRun(ctx context.Context, run app.Run) error {
 	_, err := s.db.ExecContext(ctx, `
-INSERT INTO runs (id, job_name, script, provider, state, started_at, exit_code, error)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		run.ID, run.JobName, run.Script, run.Provider, run.State, run.StartedAt.Format(time.RFC3339Nano), run.ExitCode, run.Error)
+INSERT INTO runs (id, job_name, script, image, provider, state, started_at, exit_code, error)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		run.ID, run.JobName, run.Script, run.Image, run.Provider, run.State, run.StartedAt.Format(time.RFC3339Nano), run.ExitCode, run.Error)
 	return err
 }
 
@@ -205,11 +209,11 @@ FROM routing_decisions WHERE run_id = ?`, runID)
 
 func (s *Store) GetRun(ctx context.Context, runID string) (app.Run, error) {
 	row := s.db.QueryRowContext(ctx, `
-SELECT id, job_name, script, provider, state, started_at, COALESCE(ended_at, ''), exit_code, error
+SELECT id, job_name, script, image, provider, state, started_at, COALESCE(ended_at, ''), exit_code, error
 FROM runs WHERE id = ?`, runID)
 	var run app.Run
 	var started, ended string
-	if err := row.Scan(&run.ID, &run.JobName, &run.Script, &run.Provider, &run.State, &started, &ended, &run.ExitCode, &run.Error); err != nil {
+	if err := row.Scan(&run.ID, &run.JobName, &run.Script, &run.Image, &run.Provider, &run.State, &started, &ended, &run.ExitCode, &run.Error); err != nil {
 		if err == sql.ErrNoRows {
 			return app.Run{}, fmt.Errorf("run %q not found", runID)
 		}

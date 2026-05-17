@@ -116,6 +116,7 @@ func (r Redactor) Run(run app.Run) app.Run {
 	run.ID = r.String(run.ID)
 	run.JobName = r.String(run.JobName)
 	run.Script = r.String(run.Script)
+	run.Image = r.String(run.Image)
 	run.Provider = r.String(run.Provider)
 	run.Error = r.String(run.Error)
 	return run
