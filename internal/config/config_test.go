@@ -7,7 +7,7 @@ import (
 )
 
 func TestLoadTrainDefaults(t *testing.T) {
-	t.Setenv("ORCHESTRATOR_CLI_HOME", filepath.Join(t.TempDir(), "home"))
+	t.Setenv("SWITCHBOARD_HOME", filepath.Join(t.TempDir(), "home"))
 
 	got, err := LoadTrain(TrainFlags{Script: "examples/train.py"})
 	if err != nil {
@@ -29,7 +29,7 @@ func TestLoadTrainDefaults(t *testing.T) {
 
 func TestLoadTrainFlagsOverrideYAML(t *testing.T) {
 	dir := t.TempDir()
-	configPath := filepath.Join(dir, "orchestrator.yaml")
+	configPath := filepath.Join(dir, "switchboard.yaml")
 	content := []byte(`
 job:
   name: yaml-name
@@ -46,11 +46,11 @@ data:
 	}
 
 	got, err := LoadTrain(TrainFlags{
-		ConfigPath:       configPath,
-		Provider:         "local",
-		Script:           "flag.py",
-		Args:             []string{"--from-flag"},
-		OrchestratorHome: filepath.Join(dir, "home"),
+		ConfigPath:      configPath,
+		Provider:        "local",
+		Script:          "flag.py",
+		Args:            []string{"--from-flag"},
+		SwitchboardHome: filepath.Join(dir, "home"),
 	})
 	if err != nil {
 		t.Fatalf("LoadTrain returned error: %v", err)
@@ -71,7 +71,7 @@ data:
 
 func TestLoadTrainAcceptsContainerImageJob(t *testing.T) {
 	dir := t.TempDir()
-	configPath := filepath.Join(dir, "orchestrator.yaml")
+	configPath := filepath.Join(dir, "switchboard.yaml")
 	content := []byte(`
 job:
   name: gcp-container
@@ -88,9 +88,9 @@ gcp:
 	}
 
 	got, err := LoadTrain(TrainFlags{
-		ConfigPath:       configPath,
-		Provider:         "gcp",
-		OrchestratorHome: filepath.Join(dir, "home"),
+		ConfigPath:      configPath,
+		Provider:        "gcp",
+		SwitchboardHome: filepath.Join(dir, "home"),
 	})
 	if err != nil {
 		t.Fatalf("LoadTrain returned error: %v", err)
@@ -105,7 +105,7 @@ gcp:
 
 func TestLoadTrainRequiresGCPImageAndFields(t *testing.T) {
 	dir := t.TempDir()
-	configPath := filepath.Join(dir, "orchestrator.yaml")
+	configPath := filepath.Join(dir, "switchboard.yaml")
 	content := []byte(`
 job:
   script: train.py
@@ -117,9 +117,9 @@ gcp:
 	}
 
 	_, err := LoadTrain(TrainFlags{
-		ConfigPath:       configPath,
-		Provider:         "gcp",
-		OrchestratorHome: filepath.Join(dir, "home"),
+		ConfigPath:      configPath,
+		Provider:        "gcp",
+		SwitchboardHome: filepath.Join(dir, "home"),
 	})
 	if err == nil {
 		t.Fatal("expected gcp validation error")

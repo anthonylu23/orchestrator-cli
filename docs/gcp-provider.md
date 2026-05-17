@@ -2,7 +2,7 @@
 
 ## Status
 
-The GCP provider is implemented as a Vertex AI CustomJob adapter using the Google Cloud Go client. The first version is container-image-first: Orchestrator submits a user-provided container image to one Vertex AI worker pool and polls the CustomJob until it reaches a terminal state.
+The GCP provider is implemented as a Vertex AI CustomJob adapter using the Google Cloud Go client. The first version is container-image-first: Switchboard submits a user-provided container image to one Vertex AI worker pool and polls the CustomJob until it reaches a terminal state.
 
 Local script packaging, Docker image builds, source distribution upload, non-GCS data fetching, and multi-worker distributed training are deferred.
 
@@ -17,7 +17,7 @@ gcloud config set project <project-id>
 
 The caller needs permissions to create, read, and cancel Vertex AI CustomJobs and to read Cloud Logging entries for the project. If `gcp.service_account` is set, the caller also needs permission to act as that service account.
 
-Billing must be enabled on the target project. A live auth check on 2026-05-10 reached Vertex AI for project `lfp-temporal-vit` but failed with `BILLING_DISABLED`, so the current live blocker is project setup rather than an implementation regression. See [GCP Live Smoke Test](gcp-live-smoke.md).
+Billing must be enabled on the target project. Live auth and a CPU-only Vertex AI CustomJob smoke test passed on 2026-05-17 for project `switchboard-496606`. See [GCP Live Smoke Test](gcp-live-smoke.md).
 
 ## Config
 
@@ -39,7 +39,7 @@ data:
 gcp:
   project_id: my-project
   location: us-central1
-  output_uri_prefix: gs://my-bucket/orchestrator-outputs
+  output_uri_prefix: gs://my-bucket/switchboard-outputs
   machine_type: n1-standard-8
   accelerator_type: NVIDIA_TESLA_T4
   accelerator_count: 1
@@ -51,7 +51,7 @@ gcp:
 Run it with:
 
 ```sh
-orchestrator-cli train --provider gcp --config gcp.yaml
+switchboard train --provider gcp --config gcp.yaml
 ```
 
 ## Supported Inputs
@@ -62,14 +62,14 @@ Data inputs must use `mode: uri` with `gs://` sources. Bundled local data, `s3:/
 
 ## Runtime Behavior
 
-Orchestrator creates one Vertex AI CustomJob with a single worker pool. The provider stores the full CustomJob resource name as the attempt provider ref, writes provider lifecycle messages and Cloud Logging payloads into `logs.txt`, parses structured JSONL metric/checkpoint/status lines into `events.jsonl`, and records the configured hourly estimate on the attempt.
+Switchboard creates one Vertex AI CustomJob with a single worker pool. The provider stores the full CustomJob resource name as the attempt provider ref, writes provider lifecycle messages and Cloud Logging payloads into `logs.txt`, parses structured JSONL metric/checkpoint/status lines into `events.jsonl`, and records the configured hourly estimate on the attempt.
 
-`orchestrator-cli cancel <run-id>` can cancel a running GCP attempt by using the stored CustomJob resource name.
+`switchboard cancel <run-id>` can cancel a running GCP attempt by using the stored CustomJob resource name.
 
 ## Next Steps
 
-1. Enable billing and run the auth-only live check documented in [GCP Live Smoke Test](gcp-live-smoke.md).
-2. Run the gated billable container submit smoke test with a small image and GCS output prefix.
-3. Add packaging or build/push support for local scripts after the container-only path is validated.
+1. Keep the live smoke path current with the `switchboard-496606` smoke bucket and a supported Vertex prebuilt image.
+2. Add packaging or build/push support for local scripts after the container-only path is validated.
+3. Containerize the PyTorch Iris demo as the first realistic GCP training workload.
 4. Replace static `estimate_hourly_usd` with provider pricing lookup when hardware routing work begins.
 5. Expand data staging beyond `gs://` after GCS checkpoint and dataset behavior is stable.

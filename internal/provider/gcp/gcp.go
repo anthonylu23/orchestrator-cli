@@ -14,10 +14,10 @@ import (
 	"cloud.google.com/go/aiplatform/apiv1/aiplatformpb"
 	logging "cloud.google.com/go/logging/apiv2"
 	"cloud.google.com/go/logging/apiv2/loggingpb"
-	"github.com/anthonylu23/orchestrator-cli/internal/app"
-	"github.com/anthonylu23/orchestrator-cli/internal/artifact"
-	"github.com/anthonylu23/orchestrator-cli/internal/event"
-	"github.com/anthonylu23/orchestrator-cli/internal/redact"
+	"github.com/anthonylu23/switchboard-cli/internal/app"
+	"github.com/anthonylu23/switchboard-cli/internal/artifact"
+	"github.com/anthonylu23/switchboard-cli/internal/event"
+	"github.com/anthonylu23/switchboard-cli/internal/redact"
 	"google.golang.org/api/iterator"
 	"google.golang.org/api/option"
 	"google.golang.org/grpc/codes"
@@ -257,9 +257,15 @@ func (p *Provider) Cancel(ctx context.Context, ref app.ProviderJobRef) error {
 func (p *Provider) createRequest(req app.SubmitRequest) *aiplatformpb.CreateCustomJobRequest {
 	env := make([]*aiplatformpb.EnvVar, 0, len(req.JobSpec.Env)+len(req.RuntimeEnv))
 	for k, v := range req.JobSpec.Env {
+		if v == "" {
+			continue
+		}
 		env = append(env, &aiplatformpb.EnvVar{Name: k, Value: v})
 	}
 	for k, v := range req.RuntimeEnv {
+		if v == "" {
+			continue
+		}
 		env = append(env, &aiplatformpb.EnvVar{Name: k, Value: v})
 	}
 	machine := &aiplatformpb.MachineSpec{
@@ -295,8 +301,8 @@ func (p *Provider) createRequest(req app.SubmitRequest) *aiplatformpb.CreateCust
 			DisplayName: safeDisplayName(req.JobSpec.Name, req.RunID),
 			JobSpec:     spec,
 			Labels: map[string]string{
-				"orchestrator_run_id":     labelValue(req.RunID),
-				"orchestrator_attempt_id": labelValue(req.AttemptID),
+				"switchboard_run_id":     labelValue(req.RunID),
+				"switchboard_attempt_id": labelValue(req.AttemptID),
 			},
 		},
 	}

@@ -1,4 +1,4 @@
-# Orchestrator CLI Roadmap
+# Switchboard CLI Roadmap
 
 ## Strategy
 
@@ -23,13 +23,13 @@ Exit criteria:
 
 ## Phase 1 - Local Orchestration Vertical Slice
 
-Status: substantially complete. The local provider can execute real scripts from a per-run workspace, materialize bundled local data under stable `/workspace` mounts, persist SQLite run and attempt state, parse structured JSONL events from mixed output, follow logs for active runs with a final drain on completion/cancelation, cancel active local processes, redact secrets before persistence, and write `events.jsonl`, `logs.txt`, and `summary.json`.
+Status: substantially complete. The local provider can execute real scripts from a per-run workspace, materialize bundled local data under stable `/workspace` mounts, persist SQLite run and attempt state, parse structured JSONL events from mixed output, follow logs for active runs with a final drain on completion/cancelation, cancel active local processes, redact secrets before persistence, and write `events.jsonl`, `logs.txt`, and `summary.json`. The PyTorch Iris demo now provides a small framework-backed local deep learning workload using a checked-in CC0 Kaggle CSV fixture.
 
 Next steps:
 
 1. Harden diagnostics and exit codes around provider and data preparation failures.
 2. Add broader provider adapter contract tests before the first real cloud adapter.
-3. Prepare GCP provider scaffolding.
+3. Containerize or package the PyTorch Iris demo after the GCP container-image path is validated.
 
 Goals:
 
@@ -43,16 +43,16 @@ Goals:
 Target commands:
 
 ```sh
-orchestrator-cli train --provider local --script examples/train.py
-orchestrator-cli status <run-id>
-orchestrator-cli logs <run-id> --follow
-orchestrator-cli cancel <run-id>
+switchboard train --provider local --script examples/train.py
+switchboard status <run-id>
+switchboard logs <run-id> --follow
+switchboard cancel <run-id>
 ```
 
 Exit criteria:
 
-1. A user can run an example ML script locally through Orchestrator.
-2. Orchestrator stores run state and attempts in SQLite.
+1. A user can run an example ML script locally through Switchboard.
+2. Switchboard stores run state and attempts in SQLite.
 3. Local training/test data is materialized at stable workspace paths.
 4. Oversized local data bundles require an explicit override.
 5. Logs and structured metrics are visible after the run.
@@ -73,7 +73,7 @@ Goals:
 Target demo:
 
 ```sh
-orchestrator-cli train --provider auto --config examples/failover.yaml
+switchboard train --provider auto --config examples/failover.yaml
 ```
 
 Expected behavior:
@@ -113,7 +113,7 @@ Exit criteria:
 
 ## Phase 4 - First Real Provider: GCP
 
-Status: in progress. The first GCP adapter submits prebuilt container images to Vertex AI CustomJob through the Google Cloud Go client, polls job status, records provider refs and estimates, reads Cloud Logging payloads into run artifacts, supports best-effort cancel, and rejects unsupported local bundles or non-GCS URI inputs before submit. Live auth validation reached Vertex AI on 2026-05-10 but is blocked by disabled project billing; billable container submit validation and packaging workflows are still pending.
+Status: in progress. The first GCP adapter submits prebuilt container images to Vertex AI CustomJob through the Google Cloud Go client, polls job status, records provider refs and estimates, reads Cloud Logging payloads into run artifacts, supports best-effort cancel, and rejects unsupported local bundles or non-GCS URI inputs before submit. Live auth and a billable CPU-only Vertex AI CustomJob smoke test passed on 2026-05-17 for project `switchboard-496606`; packaging workflows are still pending.
 
 Goals:
 
@@ -132,9 +132,9 @@ Exit criteria:
 
 Next steps:
 
-1. Enable billing and complete the auth-only GCP live check.
-2. Run the gated billable container submit smoke test against a configured project, Artifact Registry image, and GCS bucket.
-3. Decide whether local script packaging should use Orchestrator-managed image build/push or a Vertex AI source package path.
+1. Keep the GCP live smoke path repeatable against `switchboard-496606`.
+2. Decide whether local script packaging should use Switchboard-managed image build/push or a Vertex AI source package path.
+3. Containerize the PyTorch Iris demo as the first realistic GCP training workload.
 4. Add richer GCP pricing/capacity facts as part of auto hardware routing.
 
 ## Phase 5 - Auto Hardware Routing

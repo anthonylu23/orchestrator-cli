@@ -1,10 +1,10 @@
-# Orchestrator Development
+# Switchboard Development
 
 ## Package Layout
 
 The implementation is a Go CLI with a small internal package split:
 
-1. `cmd/orchestrator-cli`: binary entrypoint.
+1. `cmd/switchboard`: binary entrypoint.
 2. `internal/cli`: Cobra command wiring and orchestration flow.
 3. `internal/app`: shared contracts for jobs, runs, attempts, events, summaries, providers, and normalized errors.
 4. `internal/config`: YAML and flag resolution.
@@ -23,21 +23,29 @@ The implementation is a Go CLI with a small internal package split:
 Build:
 
 ```sh
-go build -o bin/orchestrator-cli ./cmd/orchestrator-cli
+go build -o bin/switchboard ./cmd/switchboard
 ```
 
 Run the demo:
 
 ```sh
-ORCHESTRATOR_CLI_HOME="$(mktemp -d)" ./bin/orchestrator-cli train --provider local --script examples/train.py
+SWITCHBOARD_HOME="$(mktemp -d)" ./bin/switchboard train --provider local --script examples/train.py
 ```
+
+Run the PyTorch Iris demo:
+
+```sh
+SWITCHBOARD_HOME="$(mktemp -d)" ./bin/switchboard train --provider local --config examples/iris-pytorch.yaml
+```
+
+The PyTorch Iris demo requires `python3` and `torch`. It uses a checked-in CC0 Kaggle Iris CSV so the local data bundle path is deterministic and does not require Kaggle credentials.
 
 Inspect artifacts:
 
 ```sh
-./bin/orchestrator-cli --home "$ORCHESTRATOR_CLI_HOME" status <run-id>
-./bin/orchestrator-cli --home "$ORCHESTRATOR_CLI_HOME" logs <run-id>
-./bin/orchestrator-cli --home "$ORCHESTRATOR_CLI_HOME" cancel <run-id>
+./bin/switchboard --home "$SWITCHBOARD_HOME" status <run-id>
+./bin/switchboard --home "$SWITCHBOARD_HOME" logs <run-id>
+./bin/switchboard --home "$SWITCHBOARD_HOME" cancel <run-id>
 ```
 
 Run checks:
@@ -85,9 +93,9 @@ Each run gets a workspace at:
 
 Bundled local data inputs are copied into that workspace. Mounts must be under `/workspace`; `/workspace/data/train` becomes `<home>/runs/<run-id>/workspace/data/train`. The local runtime rewrites job arguments and job environment values that reference declared mounts to their host paths before executing the script.
 
-The local provider stores a `local:<pid>` provider reference on the running attempt. `orchestrator-cli cancel <run-id>` uses that reference to interrupt the process, then marks the run and attempt as `canceled` and rewrites `summary.json`.
+The local provider stores a `local:<pid>` provider reference on the running attempt. `switchboard cancel <run-id>` uses that reference to interrupt the process, then marks the run and attempt as `canceled` and rewrites `summary.json`.
 
-The GCP provider stores the full Vertex AI CustomJob resource name as the provider reference. `orchestrator-cli cancel <run-id>` uses that reference to issue a best-effort CustomJob cancel request.
+The GCP provider stores the full Vertex AI CustomJob resource name as the provider reference. `switchboard cancel <run-id>` uses that reference to issue a best-effort CustomJob cancel request.
 
 Run records include the script path for script jobs and the image URI for container jobs; human-readable `status` output shows whichever target is present. Attempt records include optional resume checkpoint and cost estimate provenance. Existing SQLite databases are migrated in place by adding missing run and attempt columns when opened.
 
@@ -96,6 +104,6 @@ Before writing logs, `events.jsonl`, summaries, or provider failure reasons, pro
 ## Next Steps
 
 1. Enable billing on the configured GCP project, then rerun the auth-only check in [GCP Live Smoke Test](gcp-live-smoke.md).
-2. Run the gated billable container submit smoke test with `ORCHESTRATOR_GCP_LIVE=1` and `ORCHESTRATOR_GCP_LIVE_SUBMIT=1` after an Artifact Registry image and GCS output prefix are available.
-3. Add local script packaging or image build/push only after the container-image CustomJob path is validated.
+2. Keep the gated billable container submit smoke test current with `SWITCHBOARD_GCP_LIVE=1` and `SWITCHBOARD_GCP_LIVE_SUBMIT=1`.
+3. Add local script packaging or image build/push now that the container-image CustomJob path is validated; the PyTorch Iris demo is a good first candidate workload for that path.
 4. Replace static GCP hourly estimates with provider pricing data during auto hardware routing work.

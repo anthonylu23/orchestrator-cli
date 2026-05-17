@@ -6,10 +6,10 @@ Auto hardware routing is planned scope. The current implementation routes across
 
 ## Goal
 
-Orchestrator should let users choose how much control they want over infrastructure selection:
+Switchboard should let users choose how much control they want over infrastructure selection:
 
-1. `full_auto`: Orchestrator selects the provider, GPU shape, and single-node GPU count.
-2. `auto_provider`: The user selects hardware requirements, and Orchestrator selects the provider.
+1. `full_auto`: Switchboard selects the provider, GPU shape, and single-node GPU count.
+2. `auto_provider`: The user selects hardware requirements, and Switchboard selects the provider.
 3. `manual`: The user selects both provider and hardware.
 
 The default full-auto objective should be fastest compatible hardware within a user-specified max estimated run cost. This keeps the product focused on useful training outcomes instead of always choosing the cheapest hourly machine.
@@ -29,7 +29,7 @@ routing:
 sizing:
   probe:
     command: ["python", "train.py", "--profile-memory"]
-    output: "orchestrator-sizing.json"
+    output: "switchboard-sizing.json"
   hints:
     dataset_size_gb: 180
     model_parameters_b: 7

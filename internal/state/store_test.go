@@ -7,13 +7,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/anthonylu23/orchestrator-cli/internal/app"
+	"github.com/anthonylu23/switchboard-cli/internal/app"
 	_ "modernc.org/sqlite"
 )
 
 func TestRunAttemptLifecycle(t *testing.T) {
 	ctx := context.Background()
-	store, err := Open(filepath.Join(t.TempDir(), "orchestrator.db"))
+	store, err := Open(filepath.Join(t.TempDir(), "switchboard.db"))
 	if err != nil {
 		t.Fatalf("Open returned error: %v", err)
 	}
@@ -72,7 +72,7 @@ func TestRunAttemptLifecycle(t *testing.T) {
 
 func TestRoutingDecisionLifecycle(t *testing.T) {
 	ctx := context.Background()
-	store, err := Open(filepath.Join(t.TempDir(), "orchestrator.db"))
+	store, err := Open(filepath.Join(t.TempDir(), "switchboard.db"))
 	if err != nil {
 		t.Fatalf("Open returned error: %v", err)
 	}
@@ -110,7 +110,7 @@ func TestRoutingDecisionLifecycle(t *testing.T) {
 }
 
 func TestOpenMigratesOldAttemptSchema(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "orchestrator.db")
+	path := filepath.Join(t.TempDir(), "switchboard.db")
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		t.Fatalf("open raw db: %v", err)

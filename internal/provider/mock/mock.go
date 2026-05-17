@@ -8,10 +8,10 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/anthonylu23/orchestrator-cli/internal/app"
-	"github.com/anthonylu23/orchestrator-cli/internal/artifact"
-	"github.com/anthonylu23/orchestrator-cli/internal/event"
-	"github.com/anthonylu23/orchestrator-cli/internal/redact"
+	"github.com/anthonylu23/switchboard-cli/internal/app"
+	"github.com/anthonylu23/switchboard-cli/internal/artifact"
+	"github.com/anthonylu23/switchboard-cli/internal/event"
+	"github.com/anthonylu23/switchboard-cli/internal/redact"
 )
 
 const (

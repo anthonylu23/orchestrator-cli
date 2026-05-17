@@ -12,9 +12,9 @@ import (
 
 	"cloud.google.com/go/aiplatform/apiv1/aiplatformpb"
 	"cloud.google.com/go/logging/apiv2/loggingpb"
-	"github.com/anthonylu23/orchestrator-cli/internal/app"
-	"github.com/anthonylu23/orchestrator-cli/internal/artifact"
-	"github.com/anthonylu23/orchestrator-cli/internal/provider/contract"
+	"github.com/anthonylu23/switchboard-cli/internal/app"
+	"github.com/anthonylu23/switchboard-cli/internal/artifact"
+	"github.com/anthonylu23/switchboard-cli/internal/provider/contract"
 	"google.golang.org/genproto/googleapis/rpc/status"
 	"google.golang.org/grpc/codes"
 	grpcstatus "google.golang.org/grpc/status"
@@ -120,12 +120,13 @@ func TestCreateRequestBuildsVertexCustomJob(t *testing.T) {
 			Image:   "us-docker.pkg.dev/project/train:latest",
 			Command: []string{"python", "-m", "trainer"},
 			Args:    []string{"--epochs", "3"},
-			Env:     map[string]string{"USER_ENV": "value"},
+			Env:     map[string]string{"USER_ENV": "value", "EMPTY_USER_ENV": ""},
 		},
 		RunID:     "r_123",
 		AttemptID: "a_456",
 		RuntimeEnv: map[string]string{
-			"ORCHESTRATOR_RUN_ID": "r_123",
+			"ORCHESTRATOR_RUN_ID":      "r_123",
+			"ORCHESTRATOR_RESUME_FROM": "",
 		},
 	})
 	if req.Parent != "projects/test-project/locations/us-central1" {
@@ -152,6 +153,11 @@ func TestCreateRequestBuildsVertexCustomJob(t *testing.T) {
 	}
 	if len(container.GetEnv()) != 2 {
 		t.Fatalf("env = %#v", container.GetEnv())
+	}
+	for _, env := range container.GetEnv() {
+		if env.GetValue() == "" {
+			t.Fatalf("empty env values should be omitted for Vertex AI: %#v", container.GetEnv())
+		}
 	}
 }
 
@@ -332,16 +338,16 @@ func TestProviderContract(t *testing.T) {
 }
 
 func TestLiveValidateAuth(t *testing.T) {
-	if os.Getenv("ORCHESTRATOR_GCP_LIVE") != "1" {
-		t.Skip("set ORCHESTRATOR_GCP_LIVE=1 to run live GCP auth validation")
+	if envAny("SWITCHBOARD_GCP_LIVE", "ORCHESTRATOR_GCP_LIVE") != "1" {
+		t.Skip("set SWITCHBOARD_GCP_LIVE=1 to run live GCP auth validation")
 	}
-	projectID := os.Getenv("ORCHESTRATOR_GCP_PROJECT_ID")
+	projectID := envAny("SWITCHBOARD_GCP_PROJECT_ID", "ORCHESTRATOR_GCP_PROJECT_ID")
 	if projectID == "" {
-		t.Fatal("ORCHESTRATOR_GCP_PROJECT_ID is required")
+		t.Fatal("SWITCHBOARD_GCP_PROJECT_ID is required")
 	}
 	provider := New(Config{
 		ProjectID:       projectID,
-		Location:        envDefault("ORCHESTRATOR_GCP_LOCATION", "us-central1"),
+		Location:        envDefault("SWITCHBOARD_GCP_LOCATION", "ORCHESTRATOR_GCP_LOCATION", "us-central1"),
 		OutputURIPrefix: "gs://unused",
 	}, &bytes.Buffer{}, &bytes.Buffer{})
 	if err := provider.ValidateAuth(context.Background()); err != nil {
@@ -350,17 +356,17 @@ func TestLiveValidateAuth(t *testing.T) {
 }
 
 func TestLiveSubmitContainerJob(t *testing.T) {
-	if os.Getenv("ORCHESTRATOR_GCP_LIVE") != "1" {
-		t.Skip("set ORCHESTRATOR_GCP_LIVE=1 to run live GCP checks")
+	if envAny("SWITCHBOARD_GCP_LIVE", "ORCHESTRATOR_GCP_LIVE") != "1" {
+		t.Skip("set SWITCHBOARD_GCP_LIVE=1 to run live GCP checks")
 	}
-	if os.Getenv("ORCHESTRATOR_GCP_LIVE_SUBMIT") != "1" {
-		t.Skip("set ORCHESTRATOR_GCP_LIVE_SUBMIT=1 to submit a billable Vertex AI CustomJob")
+	if envAny("SWITCHBOARD_GCP_LIVE_SUBMIT", "ORCHESTRATOR_GCP_LIVE_SUBMIT") != "1" {
+		t.Skip("set SWITCHBOARD_GCP_LIVE_SUBMIT=1 to submit a billable Vertex AI CustomJob")
 	}
-	projectID := requireEnv(t, "ORCHESTRATOR_GCP_PROJECT_ID")
-	image := requireEnv(t, "ORCHESTRATOR_GCP_IMAGE")
-	outputURIPrefix := requireEnv(t, "ORCHESTRATOR_GCP_OUTPUT_URI_PREFIX")
+	projectID := requireEnv(t, "SWITCHBOARD_GCP_PROJECT_ID", "ORCHESTRATOR_GCP_PROJECT_ID")
+	image := requireEnv(t, "SWITCHBOARD_GCP_IMAGE", "ORCHESTRATOR_GCP_IMAGE")
+	outputURIPrefix := requireEnv(t, "SWITCHBOARD_GCP_OUTPUT_URI_PREFIX", "ORCHESTRATOR_GCP_OUTPUT_URI_PREFIX")
 
-	ctx, cancel := context.WithTimeout(context.Background(), envDurationDefault("ORCHESTRATOR_GCP_TIMEOUT", 10*time.Minute))
+	ctx, cancel := context.WithTimeout(context.Background(), envDurationDefault("SWITCHBOARD_GCP_TIMEOUT", "ORCHESTRATOR_GCP_TIMEOUT", 10*time.Minute))
 	defer cancel()
 
 	home := t.TempDir()
@@ -370,16 +376,16 @@ func TestLiveSubmitContainerJob(t *testing.T) {
 	}
 	provider := New(Config{
 		ProjectID:           projectID,
-		Location:            envDefault("ORCHESTRATOR_GCP_LOCATION", "us-central1"),
+		Location:            envDefault("SWITCHBOARD_GCP_LOCATION", "ORCHESTRATOR_GCP_LOCATION", "us-central1"),
 		OutputURIPrefix:     outputURIPrefix,
-		MachineType:         envDefault("ORCHESTRATOR_GCP_MACHINE_TYPE", "n1-standard-4"),
-		AcceleratorType:     os.Getenv("ORCHESTRATOR_GCP_ACCELERATOR_TYPE"),
-		AcceleratorCount:    envInt32Default("ORCHESTRATOR_GCP_ACCELERATOR_COUNT", 0),
-		BootDiskType:        envDefault("ORCHESTRATOR_GCP_BOOT_DISK_TYPE", "pd-ssd"),
-		BootDiskSizeGB:      envInt32Default("ORCHESTRATOR_GCP_BOOT_DISK_SIZE_GB", 100),
-		ServiceAccount:      os.Getenv("ORCHESTRATOR_GCP_SERVICE_ACCOUNT"),
-		Network:             os.Getenv("ORCHESTRATOR_GCP_NETWORK"),
-		PollIntervalSeconds: int(envInt32Default("ORCHESTRATOR_GCP_POLL_INTERVAL_SECONDS", 15)),
+		MachineType:         envDefault("SWITCHBOARD_GCP_MACHINE_TYPE", "ORCHESTRATOR_GCP_MACHINE_TYPE", "n1-standard-4"),
+		AcceleratorType:     envAny("SWITCHBOARD_GCP_ACCELERATOR_TYPE", "ORCHESTRATOR_GCP_ACCELERATOR_TYPE"),
+		AcceleratorCount:    envInt32Default("SWITCHBOARD_GCP_ACCELERATOR_COUNT", "ORCHESTRATOR_GCP_ACCELERATOR_COUNT", 0),
+		BootDiskType:        envDefault("SWITCHBOARD_GCP_BOOT_DISK_TYPE", "ORCHESTRATOR_GCP_BOOT_DISK_TYPE", "pd-ssd"),
+		BootDiskSizeGB:      envInt32Default("SWITCHBOARD_GCP_BOOT_DISK_SIZE_GB", "ORCHESTRATOR_GCP_BOOT_DISK_SIZE_GB", 100),
+		ServiceAccount:      envAny("SWITCHBOARD_GCP_SERVICE_ACCOUNT", "ORCHESTRATOR_GCP_SERVICE_ACCOUNT"),
+		Network:             envAny("SWITCHBOARD_GCP_NETWORK", "ORCHESTRATOR_GCP_NETWORK"),
+		PollIntervalSeconds: int(envInt32Default("SWITCHBOARD_GCP_POLL_INTERVAL_SECONDS", "ORCHESTRATOR_GCP_POLL_INTERVAL_SECONDS", 15)),
 	}, &bytes.Buffer{}, &bytes.Buffer{})
 
 	result, err := provider.Submit(ctx, app.SubmitRequest{
@@ -480,24 +486,33 @@ func containsReason(reasons []string, want string) bool {
 	return false
 }
 
-func envDefault(key string, fallback string) string {
-	if value := os.Getenv(key); value != "" {
+func envAny(keys ...string) string {
+	for _, key := range keys {
+		if value := os.Getenv(key); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func envDefault(primary string, legacy string, fallback string) string {
+	if value := envAny(primary, legacy); value != "" {
 		return value
 	}
 	return fallback
 }
 
-func requireEnv(t *testing.T, key string) string {
+func requireEnv(t *testing.T, primary string, legacy string) string {
 	t.Helper()
-	value := os.Getenv(key)
+	value := envAny(primary, legacy)
 	if value == "" {
-		t.Fatalf("%s is required", key)
+		t.Fatalf("%s is required", primary)
 	}
 	return value
 }
 
-func envInt32Default(key string, fallback int32) int32 {
-	value := os.Getenv(key)
+func envInt32Default(primary string, legacy string, fallback int32) int32 {
+	value := envAny(primary, legacy)
 	if value == "" {
 		return fallback
 	}
@@ -508,8 +523,8 @@ func envInt32Default(key string, fallback int32) int32 {
 	return int32(parsed)
 }
 
-func envDurationDefault(key string, fallback time.Duration) time.Duration {
-	value := os.Getenv(key)
+func envDurationDefault(primary string, legacy string, fallback time.Duration) time.Duration {
+	value := envAny(primary, legacy)
 	if value == "" {
 		return fallback
 	}

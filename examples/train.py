@@ -4,7 +4,7 @@ import pathlib
 import time
 
 
-checkpoint_dir = pathlib.Path(os.environ["ORCHESTRATOR_CHECKPOINT_DIR"])
+checkpoint_dir = pathlib.Path(os.environ.get("SWITCHBOARD_CHECKPOINT_DIR") or os.environ["ORCHESTRATOR_CHECKPOINT_DIR"])
 checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
 print("starting local training")

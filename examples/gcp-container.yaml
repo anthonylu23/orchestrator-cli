@@ -13,7 +13,7 @@ data:
 gcp:
   project_id: "my-project"
   location: "us-central1"
-  output_uri_prefix: "gs://my-bucket/orchestrator-outputs"
+  output_uri_prefix: "gs://my-bucket/switchboard-outputs"
   machine_type: "n1-standard-8"
   accelerator_type: "NVIDIA_TESLA_T4"
   accelerator_count: 1

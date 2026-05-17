@@ -1,4 +1,4 @@
-# Orchestrator CLI Architecture
+# Switchboard CLI Architecture
 
 ## Core Principle
 
@@ -45,11 +45,11 @@ Core entities:
 3. `Event`: structured metric, checkpoint, status, and log payloads linked to a run and attempt.
 4. `Summary`: derived final metrics, best metrics, runtime, checkpoint count, resume count, provider attempts, and exit reason.
 
-SQLite is the canonical state store for runs and attempts. Files under `~/.orchestrator-cli/runs/<run-id>/` are durable user-facing artifacts. Local attempts also use a per-run workspace at `runs/<run-id>/workspace`.
+SQLite is the canonical state store for runs and attempts. Files under `~/.switchboard/runs/<run-id>/` are durable user-facing artifacts. Local attempts also use a per-run workspace at `runs/<run-id>/workspace`.
 
 ## Data Preparation
 
-Orchestrator has a provider-independent data preparation layer between config loading and provider submit. It validates declared training/test data inputs, estimates bundled data size, creates a data manifest, and adds provider-ready data instructions to the runtime bundle.
+Switchboard has a provider-independent data preparation layer between config loading and provider submit. It validates declared training/test data inputs, estimates bundled data size, creates a data manifest, and adds provider-ready data instructions to the runtime bundle.
 
 Initial data input modes:
 
@@ -75,7 +75,7 @@ type DataManifest struct {
 
 Bundled local data is guarded by a configured size limit. If the bundle exceeds the limit, preflight fails unless the user passes an explicit override such as `--allow-large-data-bundle`.
 
-Private data access uses BYO environment authentication early. Orchestrator may pass selected environment variables to data fetch steps, but raw credentials must be redacted from logs and omitted from SQLite, run metadata, `events.jsonl`, and `summary.json`. Redaction covers secret-like structured keys and known secret values from job, runtime, and inherited environment variables.
+Private data access uses BYO environment authentication early. Switchboard may pass selected environment variables to data fetch steps, but raw credentials must be redacted from logs and omitted from SQLite, run metadata, `events.jsonl`, and `summary.json`. Redaction covers secret-like structured keys and known secret values from job, runtime, and inherited environment variables.
 
 ## Provider Adapter Contract
 
@@ -163,7 +163,7 @@ selection reason
 
 Routing decisions are stored in SQLite with JSON snapshots of eligible and rejected providers. This makes the final provider selection explainable after the run completes.
 
-For `provider=auto`, Orchestrator filters incompatible providers, ranks eligible providers by objective, and selects the best candidate. On resumable provider failure, the core discovers the latest checkpoint, excludes providers according to failure policy, and submits a new attempt with resume metadata. Attempts persist resume checkpoint and estimate provenance for later inspection through summaries and state.
+For `provider=auto`, Switchboard filters incompatible providers, ranks eligible providers by objective, and selects the best candidate. On resumable provider failure, the core discovers the latest checkpoint, excludes providers according to failure policy, and submits a new attempt with resume metadata. Attempts persist resume checkpoint and estimate provenance for later inspection through summaries and state.
 
 ## Planned Hardware Routing
 
@@ -228,11 +228,11 @@ Summaries keep `best_metrics` as a directional view. Metrics whose names contain
 Artifacts:
 
 ```text
-~/.orchestrator-cli/orchestrator.db
-~/.orchestrator-cli/runs/<run-id>/events.jsonl
-~/.orchestrator-cli/runs/<run-id>/summary.json
-~/.orchestrator-cli/runs/<run-id>/logs.txt
-~/.orchestrator-cli/runs/<run-id>/workspace/
+~/.switchboard/switchboard.db
+~/.switchboard/runs/<run-id>/events.jsonl
+~/.switchboard/runs/<run-id>/summary.json
+~/.switchboard/runs/<run-id>/logs.txt
+~/.switchboard/runs/<run-id>/workspace/
 ```
 
 ## Data Failure Behavior

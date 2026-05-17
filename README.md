@@ -1,50 +1,50 @@
-# Orchestrator CLI
+# Switchboard CLI
 
-Orchestrator CLI is a fault-tolerant ML job orchestrator with provider adapters, local durable run state, structured telemetry, and cost-aware scheduling.
+Switchboard CLI is a fault-tolerant ML job orchestrator with provider adapters, local durable run state, structured telemetry, and cost-aware scheduling.
 
 The project is designed as a systems engineering and ML infrastructure tool: the orchestration core owns lifecycle, retries, routing, failover, state, telemetry, resume policy, and eventually hardware selection, while providers stay behind a small adapter contract.
 
 ## Status
 
-Orchestrator now has a local orchestration vertical slice, deterministic mock-provider failover, and a first real GCP provider. The current implementation can run a local Python training script, persist SQLite run state, capture mixed logs and structured JSONL events, materialize local data bundles, cancel active local runs, route across mock providers, resume from the latest checkpoint after a simulated provider failure, and submit container-image jobs to Vertex AI CustomJob.
+Switchboard now has a local orchestration vertical slice, deterministic mock-provider failover, and a first real GCP provider. The current implementation can run a local Python training script, persist SQLite run state, capture mixed logs and structured JSONL events, materialize local data bundles, cancel active local runs, route across mock providers, resume from the latest checkpoint after a simulated provider failure, and submit container-image jobs to Vertex AI CustomJob.
 
 Run artifacts redact secret-like keys and known secret environment values before persistence. Attempt history also records resume checkpoint provenance and provider cost estimates so failover decisions remain explainable after completion.
 
-GCP v1 is container-image-first. Live auth reached Vertex AI but is currently blocked by disabled project billing; the billable container submit smoke test has not run yet. Local script packaging, image build/push, richer GCP data staging, and auto hardware routing remain roadmap work.
+GCP v1 is container-image-first. Live auth and a billable CPU-only Vertex AI CustomJob smoke test have passed on the `switchboard-496606` project. Local script packaging, image build/push, richer GCP data staging, and auto hardware routing remain roadmap work.
 
 ## Quick Start
 
 Build the CLI:
 
 ```sh
-go build -o bin/orchestrator-cli ./cmd/orchestrator-cli
+go build -o bin/switchboard ./cmd/switchboard
 ```
 
 Run the example training script:
 
 ```sh
-./bin/orchestrator-cli train --provider local --script examples/train.py
+./bin/switchboard train --provider local --script examples/train.py
 ```
 
-Use a disposable Orchestrator home while developing:
+Use a disposable Switchboard home while developing:
 
 ```sh
-ORCHESTRATOR_CLI_HOME="$(mktemp -d)" ./bin/orchestrator-cli train --provider local --script examples/train.py
+SWITCHBOARD_HOME="$(mktemp -d)" ./bin/switchboard train --provider local --script examples/train.py
 ```
 
 Inspect a run:
 
 ```sh
-./bin/orchestrator-cli status <run-id>
-./bin/orchestrator-cli logs <run-id>
-./bin/orchestrator-cli cancel <run-id>
-./bin/orchestrator-cli providers list --json
+./bin/switchboard status <run-id>
+./bin/switchboard logs <run-id>
+./bin/switchboard cancel <run-id>
+./bin/switchboard providers list --json
 ```
 
 Run the mock failover demo:
 
 ```sh
-./bin/orchestrator-cli train --provider auto --config examples/failover.yaml
+./bin/switchboard train --provider auto --config examples/failover.yaml
 ```
 
 Expected output includes:
@@ -63,6 +63,14 @@ go test ./...
 go vet ./...
 ```
 
+Run the PyTorch Iris demo:
+
+```sh
+SWITCHBOARD_HOME="$(mktemp -d)" ./bin/switchboard train --provider local --config examples/iris-pytorch.yaml
+```
+
+This demo trains a tiny PyTorch MLP on Kaggle's [Iris Species dataset](https://www.kaggle.com/datasets/uciml/iris), published as CC0/Public Domain and vendored at `examples/data/iris/Iris.csv` for deterministic local runs. It requires `python3` with `torch` installed and exercises bundled data materialization, metric events, checkpoint events, `summary.json`, and local checkpoint files.
+
 Provider adapters should also pass the shared contract checks:
 
 ```sh
@@ -72,12 +80,12 @@ go test ./internal/provider/...
 Run a Vertex AI CustomJob from a prebuilt container image:
 
 ```sh
-./bin/orchestrator-cli train --provider gcp --config examples/gcp-container.yaml
+./bin/switchboard train --provider gcp --config examples/gcp-container.yaml
 ```
 
 ## Product Wedge
 
-Given a training script, data inputs, sizing profile, and budget, Orchestrator should choose compatible execution infrastructure, run the job, persist telemetry, and resume from the latest checkpoint if a provider fails.
+Given a training script, data inputs, sizing profile, and budget, Switchboard should choose compatible execution infrastructure, run the job, persist telemetry, and resume from the latest checkpoint if a provider fails.
 
 The first impressive demo is intentionally narrower than full multi-cloud support:
 
@@ -92,20 +100,20 @@ The broader product direction extends `provider=auto` into auto hardware routing
 ## Target Commands
 
 ```sh
-orchestrator-cli train --provider local --script examples/train.py
-orchestrator-cli train --provider auto --config examples/failover.yaml
-orchestrator-cli train --provider gcp --config examples/gcp-container.yaml
-orchestrator-cli status <run-id>
-orchestrator-cli logs <run-id> --follow
-orchestrator-cli cancel <run-id>
-orchestrator-cli providers list --json
+switchboard train --provider local --script examples/train.py
+switchboard train --provider auto --config examples/failover.yaml
+switchboard train --provider gcp --config examples/gcp-container.yaml
+switchboard status <run-id>
+switchboard logs <run-id> --follow
+switchboard cancel <run-id>
+switchboard providers list --json
 ```
 
 Planned commands not implemented yet include explicit `resume`. Planned provider work includes local script packaging for GCP and additional cloud adapters.
 
 ## Data Inputs
 
-Orchestrator treats training and test data as declared job inputs. Local files or directories can be bundled with the job, while remote sources such as HTTP, S3, and GCS URIs are resolved at runtime. In both cases, training code reads from stable workspace paths.
+Switchboard treats training and test data as declared job inputs. Local files or directories can be bundled with the job, while remote sources such as HTTP, S3, and GCS URIs are resolved at runtime. In both cases, training code reads from stable workspace paths.
 
 ```yaml
 job:
@@ -170,15 +178,15 @@ Planned auto hardware routing will add GPU shape and GPU count selection on top 
 
 ## Artifacts
 
-By default Orchestrator writes to `~/.orchestrator-cli`. Set `ORCHESTRATOR_CLI_HOME` or pass `--home` to isolate runs.
+By default Switchboard writes to `~/.switchboard`. Set `SWITCHBOARD_HOME` or pass `--home` to isolate runs.
 
 ```text
-~/.orchestrator-cli/orchestrator.db
-~/.orchestrator-cli/runs/<run-id>/events.jsonl
-~/.orchestrator-cli/runs/<run-id>/logs.txt
-~/.orchestrator-cli/runs/<run-id>/summary.json
-~/.orchestrator-cli/runs/<run-id>/checkpoints/
-~/.orchestrator-cli/runs/<run-id>/workspace/
+~/.switchboard/switchboard.db
+~/.switchboard/runs/<run-id>/events.jsonl
+~/.switchboard/runs/<run-id>/logs.txt
+~/.switchboard/runs/<run-id>/summary.json
+~/.switchboard/runs/<run-id>/checkpoints/
+~/.switchboard/runs/<run-id>/workspace/
 ```
 
 `summary.json` includes final metrics and direction-aware `best_metrics`: common loss/error/perplexity/latency/duration metrics are minimized, while other metrics are maximized. Provider attempts include resume checkpoint and estimate fields when available.
@@ -197,6 +205,7 @@ By default Orchestrator writes to `~/.orchestrator-cli`. Set `ORCHESTRATOR_CLI_H
 
 - [Overview](docs/overview.md)
 - [Architecture](docs/architecture.md)
+- [PyTorch Iris Demo](docs/pytorch-iris-demo.md)
 - [GCP Provider](docs/gcp-provider.md)
 - [GCP Live Smoke Test](docs/gcp-live-smoke.md)
 - [Auto Hardware Routing](docs/auto-hardware-routing.md)

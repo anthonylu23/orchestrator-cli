@@ -10,21 +10,21 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/anthonylu23/orchestrator-cli/internal/app"
-	"github.com/anthonylu23/orchestrator-cli/internal/artifact"
-	"github.com/anthonylu23/orchestrator-cli/internal/checkpoint"
-	"github.com/anthonylu23/orchestrator-cli/internal/config"
-	"github.com/anthonylu23/orchestrator-cli/internal/data"
-	"github.com/anthonylu23/orchestrator-cli/internal/event"
-	"github.com/anthonylu23/orchestrator-cli/internal/provider"
-	gcpprovider "github.com/anthonylu23/orchestrator-cli/internal/provider/gcp"
-	localprovider "github.com/anthonylu23/orchestrator-cli/internal/provider/local"
-	mockprovider "github.com/anthonylu23/orchestrator-cli/internal/provider/mock"
-	"github.com/anthonylu23/orchestrator-cli/internal/redact"
-	"github.com/anthonylu23/orchestrator-cli/internal/routing"
-	"github.com/anthonylu23/orchestrator-cli/internal/runtimeprep"
-	"github.com/anthonylu23/orchestrator-cli/internal/state"
-	"github.com/anthonylu23/orchestrator-cli/internal/summary"
+	"github.com/anthonylu23/switchboard-cli/internal/app"
+	"github.com/anthonylu23/switchboard-cli/internal/artifact"
+	"github.com/anthonylu23/switchboard-cli/internal/checkpoint"
+	"github.com/anthonylu23/switchboard-cli/internal/config"
+	"github.com/anthonylu23/switchboard-cli/internal/data"
+	"github.com/anthonylu23/switchboard-cli/internal/event"
+	"github.com/anthonylu23/switchboard-cli/internal/provider"
+	gcpprovider "github.com/anthonylu23/switchboard-cli/internal/provider/gcp"
+	localprovider "github.com/anthonylu23/switchboard-cli/internal/provider/local"
+	mockprovider "github.com/anthonylu23/switchboard-cli/internal/provider/mock"
+	"github.com/anthonylu23/switchboard-cli/internal/redact"
+	"github.com/anthonylu23/switchboard-cli/internal/routing"
+	"github.com/anthonylu23/switchboard-cli/internal/runtimeprep"
+	"github.com/anthonylu23/switchboard-cli/internal/state"
+	"github.com/anthonylu23/switchboard-cli/internal/summary"
 	"github.com/spf13/cobra"
 )
 
@@ -52,12 +52,12 @@ func NewRootCommand(opts Options) *cobra.Command {
 
 	var home string
 	root := &cobra.Command{
-		Use:           "orchestrator-cli",
+		Use:           "switchboard",
 		Short:         "Local-first ML job orchestration",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
-	root.PersistentFlags().StringVar(&home, "home", "", "Orchestrator home directory")
+	root.PersistentFlags().StringVar(&home, "home", "", "Switchboard home directory")
 	root.AddCommand(newTrainCommand(opts, &home))
 	root.AddCommand(newStatusCommand(opts, &home))
 	root.AddCommand(newLogsCommand(opts, &home))
@@ -84,7 +84,7 @@ func newTrainCommand(opts Options, home *string) *cobra.Command {
 		Use:   "train",
 		Short: "Run a training script",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			flags.OrchestratorHome = *home
+			flags.SwitchboardHome = *home
 			resolved, err := config.LoadTrain(flags)
 			if err != nil {
 				return err
@@ -99,7 +99,7 @@ func newTrainCommand(opts Options, home *string) *cobra.Command {
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&flags.ConfigPath, "config", "", "Path to orchestrator-cli YAML config")
+	cmd.Flags().StringVar(&flags.ConfigPath, "config", "", "Path to switchboard YAML config")
 	cmd.Flags().StringVar(&flags.Provider, "provider", "local", "Provider to use")
 	cmd.Flags().StringVar(&flags.Script, "script", "", "Training script path")
 	cmd.Flags().StringArrayVar(&flags.Args, "arg", nil, "Argument to pass to the script; repeat for multiple args")
@@ -108,7 +108,7 @@ func newTrainCommand(opts Options, home *string) *cobra.Command {
 }
 
 func runTrain(ctx context.Context, opts Options, resolved config.ResolvedTrainConfig) (int, error) {
-	if err := artifact.EnsureHome(resolved.OrchestratorHome); err != nil {
+	if err := artifact.EnsureHome(resolved.SwitchboardHome); err != nil {
 		return exitCodeInternal, err
 	}
 
@@ -126,7 +126,7 @@ func runTrain(ctx context.Context, opts Options, resolved config.ResolvedTrainCo
 
 	now := time.Now().UTC()
 	runID := app.NewRunID()
-	paths := artifact.ForRun(resolved.OrchestratorHome, runID)
+	paths := artifact.ForRun(resolved.SwitchboardHome, runID)
 	if err := artifact.EnsureRun(paths); err != nil {
 		return exitCodeInternal, err
 	}
@@ -176,7 +176,7 @@ func runTrain(ctx context.Context, opts Options, resolved config.ResolvedTrainCo
 			return code, err
 		}
 		excluded[selectedProvider] = true
-		checkpointRef, checkpointErr := (checkpoint.Resolver{Home: resolved.OrchestratorHome}).Latest(ctx, runID)
+		checkpointRef, checkpointErr := (checkpoint.Resolver{Home: resolved.SwitchboardHome}).Latest(ctx, runID)
 		if checkpointErr != nil || checkpointRef == nil {
 			message := "retryable provider failure but no checkpoint was found"
 			finishRunOnly(ctx, store, runID, exitCodeMissingResume, message)
@@ -240,6 +240,11 @@ func runAttempt(ctx context.Context, opts Options, store *state.Store, registry 
 		resumeValue = resumeFrom.URI
 	}
 	runtimeEnv := map[string]string{
+		"SWITCHBOARD_RUN_ID":          runID,
+		"SWITCHBOARD_ATTEMPT_ID":      attemptID,
+		"SWITCHBOARD_CHECKPOINT_DIR":  paths.Checkpoints,
+		"SWITCHBOARD_RESUME_FROM":     resumeValue,
+		"SWITCHBOARD_EVENTS_PATH":     paths.EventsJSONL,
 		"ORCHESTRATOR_RUN_ID":         runID,
 		"ORCHESTRATOR_ATTEMPT_ID":     attemptID,
 		"ORCHESTRATOR_CHECKPOINT_DIR": paths.Checkpoints,
@@ -357,7 +362,7 @@ func newStatusCommand(opts Options, home *string) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			store, err := state.Open(filepath.Join(resolvedHome, "orchestrator.db"))
+			store, err := state.Open(filepath.Join(resolvedHome, "switchboard.db"))
 			if err != nil {
 				return err
 			}
@@ -482,7 +487,7 @@ func cancelRun(ctx context.Context, opts Options, home string, runID string) err
 }
 
 func followLogs(ctx context.Context, w io.Writer, home string, runID string, path string) error {
-	store, err := state.Open(filepath.Join(home, "orchestrator.db"))
+	store, err := state.Open(filepath.Join(home, "switchboard.db"))
 	if err != nil {
 		return err
 	}
@@ -641,6 +646,9 @@ func resolveHome(flag string) (string, error) {
 	if flag != "" {
 		return flag, nil
 	}
+	if env := os.Getenv("SWITCHBOARD_HOME"); env != "" {
+		return env, nil
+	}
 	if env := os.Getenv("ORCHESTRATOR_CLI_HOME"); env != "" {
 		return env, nil
 	}
@@ -648,7 +656,7 @@ func resolveHome(flag string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(userHome, ".orchestrator-cli"), nil
+	return filepath.Join(userHome, ".switchboard"), nil
 }
 
 type exitCodeError struct {

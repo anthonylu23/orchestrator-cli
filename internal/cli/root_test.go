@@ -7,17 +7,18 @@ import (
 	"errors"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/anthonylu23/orchestrator-cli/internal/app"
-	"github.com/anthonylu23/orchestrator-cli/internal/artifact"
-	"github.com/anthonylu23/orchestrator-cli/internal/config"
-	mockprovider "github.com/anthonylu23/orchestrator-cli/internal/provider/mock"
-	"github.com/anthonylu23/orchestrator-cli/internal/state"
+	"github.com/anthonylu23/switchboard-cli/internal/app"
+	"github.com/anthonylu23/switchboard-cli/internal/artifact"
+	"github.com/anthonylu23/switchboard-cli/internal/config"
+	mockprovider "github.com/anthonylu23/switchboard-cli/internal/provider/mock"
+	"github.com/anthonylu23/switchboard-cli/internal/state"
 )
 
 func TestLocalTrainStatusLogsIntegration(t *testing.T) {
@@ -82,7 +83,7 @@ func TestLocalTrainMaterializesBundledData(t *testing.T) {
 	if err := os.WriteFile(dataPath, []byte("materialized-data\n"), 0o600); err != nil {
 		t.Fatalf("write data: %v", err)
 	}
-	configPath := filepath.Join(dir, "orchestrator.yaml")
+	configPath := filepath.Join(dir, "switchboard.yaml")
 	config := `
 job:
   script: "` + filepath.Join(repo, "examples", "read_data.py") + `"
@@ -109,6 +110,59 @@ data:
 	}
 	if _, err := os.Stat(filepath.Join(home, "runs", runID, "workspace", "data", "train.txt")); err != nil {
 		t.Fatalf("materialized file missing: %v", err)
+	}
+}
+
+func TestLocalTrainRunsPyTorchIrisDemo(t *testing.T) {
+	requirePythonTorch(t)
+
+	repo := repoRoot(t)
+	t.Chdir(repo)
+	home := filepath.Join(t.TempDir(), "home")
+	var stdout, stderr bytes.Buffer
+
+	cmd := NewRootCommand(Options{Stdout: &stdout, Stderr: &stderr})
+	cmd.SetArgs([]string{"--home", home, "train", "--provider", "local", "--config", filepath.Join(repo, "examples", "iris-pytorch.yaml")})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("train returned error: %v\nstdout=%s\nstderr=%s", err, stdout.String(), stderr.String())
+	}
+	runID := extractRunID(t, stdout.String())
+	paths := artifact.ForRun(home, runID)
+
+	events, err := os.ReadFile(paths.EventsJSONL)
+	if err != nil {
+		t.Fatalf("read events: %v", err)
+	}
+	if !strings.Contains(string(events), `"type":"metric"`) || !strings.Contains(string(events), `"val_accuracy"`) {
+		t.Fatalf("events missing expected PyTorch metrics:\n%s", string(events))
+	}
+
+	var summary app.Summary
+	content, err := os.ReadFile(paths.Summary)
+	if err != nil {
+		t.Fatalf("read summary: %v", err)
+	}
+	if err := json.Unmarshal(content, &summary); err != nil {
+		t.Fatalf("parse summary: %v", err)
+	}
+	if summary.State != app.RunStateSucceeded {
+		t.Fatalf("summary state = %s, want %s: %#v", summary.State, app.RunStateSucceeded, summary)
+	}
+	if summary.CheckpointCount == 0 {
+		t.Fatalf("expected checkpoint events: %#v", summary)
+	}
+	if summary.FinalMetrics["val_accuracy"] == 0 || summary.BestMetrics["val_accuracy"] == 0 {
+		t.Fatalf("expected validation accuracy in summary: %#v", summary)
+	}
+	if _, err := os.Stat(filepath.Join(paths.Workspace, "data", "iris", "Iris.csv")); err != nil {
+		t.Fatalf("materialized Iris CSV missing: %v", err)
+	}
+	matches, err := filepath.Glob(filepath.Join(paths.Checkpoints, "iris-epoch-*.pt"))
+	if err != nil {
+		t.Fatalf("glob checkpoints: %v", err)
+	}
+	if len(matches) == 0 {
+		t.Fatal("expected at least one PyTorch checkpoint file")
 	}
 }
 
@@ -246,7 +300,7 @@ print(json.dumps({
 `), 0o600); err != nil {
 		t.Fatalf("write script: %v", err)
 	}
-	configPath := filepath.Join(dir, "orchestrator.yaml")
+	configPath := filepath.Join(dir, "switchboard.yaml")
 	config := `
 job:
   script: "` + script + `"
@@ -306,7 +360,7 @@ func TestProvidersListIncludesMocks(t *testing.T) {
 func TestGCPTrainIntegrationUsesConfiguredProvider(t *testing.T) {
 	dir := t.TempDir()
 	home := filepath.Join(dir, "home")
-	configPath := filepath.Join(dir, "orchestrator.yaml")
+	configPath := filepath.Join(dir, "switchboard.yaml")
 	configContent := `
 job:
   name: gcp-test
@@ -394,7 +448,7 @@ gcp:
 
 func TestGCPProviderFailureUsesStableRoutingExit(t *testing.T) {
 	dir := t.TempDir()
-	configPath := filepath.Join(dir, "orchestrator.yaml")
+	configPath := filepath.Join(dir, "switchboard.yaml")
 	configContent := `
 job:
   name: gcp-test
@@ -414,9 +468,9 @@ gcp:
 			return &fakeGCPAdapter{submitErr: &app.ProviderError{Kind: app.ProviderErrorQuota, Message: "quota exceeded"}, submitExitCode: exitCodeRouting}
 		},
 	}, config.ResolvedTrainConfig{
-		Provider:         "gcp",
-		OrchestratorHome: filepath.Join(dir, "home"),
-		Job:              app.JobSpec{Name: "gcp-test", Image: "image"},
+		Provider:        "gcp",
+		SwitchboardHome: filepath.Join(dir, "home"),
+		Job:             app.JobSpec{Name: "gcp-test", Image: "image"},
 		GCP: config.GCPConfig{
 			ProjectID:       "test-project",
 			Location:        "us-central1",
@@ -455,9 +509,9 @@ func TestGCPCancelStateIsNotOverwrittenBySubmitError(t *testing.T) {
 	done := make(chan trainResult, 1)
 	go func() {
 		code, err := runTrain(context.Background(), opts, config.ResolvedTrainConfig{
-			Provider:         "gcp",
-			OrchestratorHome: home,
-			Job:              app.JobSpec{Name: "gcp-test", Image: "image"},
+			Provider:        "gcp",
+			SwitchboardHome: home,
+			Job:             app.JobSpec{Name: "gcp-test", Image: "image"},
 			GCP: config.GCPConfig{
 				ProjectID:       "test-project",
 				Location:        "us-central1",
@@ -542,8 +596,8 @@ func TestLocalTrainFailureProducesArtifacts(t *testing.T) {
 
 func TestRunTrainMissingDataReturnsInvalidSpecExit(t *testing.T) {
 	code, err := runTrain(context.Background(), Options{Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}, config.ResolvedTrainConfig{
-		Provider:         string(app.ProviderLocal),
-		OrchestratorHome: filepath.Join(t.TempDir(), "home"),
+		Provider:        string(app.ProviderLocal),
+		SwitchboardHome: filepath.Join(t.TempDir(), "home"),
 		Job: app.JobSpec{
 			Script: filepath.Join(repoRoot(t), "examples", "train.py"),
 			Data: []app.DataInput{{
@@ -564,10 +618,10 @@ func TestRunTrainMissingDataReturnsInvalidSpecExit(t *testing.T) {
 func TestRunTrainRetryableFailureWithoutCheckpointReturnsMissingResumeExit(t *testing.T) {
 	var stdout bytes.Buffer
 	code, err := runTrain(context.Background(), Options{Stdout: &stdout, Stderr: &bytes.Buffer{}}, config.ResolvedTrainConfig{
-		Provider:         string(app.ProviderAuto),
-		OrchestratorHome: filepath.Join(t.TempDir(), "home"),
-		Job:              app.JobSpec{Script: "train.py"},
-		Routing:          config.RoutingConfig{Objective: "min_cost", MaxAttempts: 2},
+		Provider:        string(app.ProviderAuto),
+		SwitchboardHome: filepath.Join(t.TempDir(), "home"),
+		Job:             app.JobSpec{Script: "train.py"},
+		Routing:         config.RoutingConfig{Objective: "min_cost", MaxAttempts: 2},
 		Mock: config.MockConfig{Providers: []config.MockProviderConfig{{
 			Name:        "mock-lambda",
 			HourlyCost:  1.10,
@@ -588,10 +642,10 @@ func TestRunTrainRetryableFailureWithoutCheckpointReturnsMissingResumeExit(t *te
 func TestRunTrainTerminalProviderFailureDoesNotFailOver(t *testing.T) {
 	var stdout bytes.Buffer
 	code, err := runTrain(context.Background(), Options{Stdout: &stdout, Stderr: &bytes.Buffer{}}, config.ResolvedTrainConfig{
-		Provider:         string(app.ProviderAuto),
-		OrchestratorHome: filepath.Join(t.TempDir(), "home"),
-		Job:              app.JobSpec{Script: "train.py"},
-		Routing:          config.RoutingConfig{Objective: "min_cost", MaxAttempts: 2},
+		Provider:        string(app.ProviderAuto),
+		SwitchboardHome: filepath.Join(t.TempDir(), "home"),
+		Job:             app.JobSpec{Script: "train.py"},
+		Routing:         config.RoutingConfig{Objective: "min_cost", MaxAttempts: 2},
 		Mock: config.MockConfig{Providers: []config.MockProviderConfig{{
 			Name:        "mock-lambda",
 			HourlyCost:  1.10,
@@ -664,6 +718,14 @@ func waitForText(t *testing.T, buf *bytes.Buffer, text string) {
 		time.Sleep(25 * time.Millisecond)
 	}
 	t.Fatalf("%q not found in %q", text, buf.String())
+}
+
+func requirePythonTorch(t *testing.T) {
+	t.Helper()
+	cmd := exec.Command("python3", "-c", "import torch")
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Skipf("python3 with torch is required for PyTorch Iris demo: %v\n%s", err, string(output))
+	}
 }
 
 type fakeGCPAdapter struct {
