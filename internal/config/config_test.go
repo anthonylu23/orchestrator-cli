@@ -176,3 +176,87 @@ gcp:
 		t.Fatalf("error = %v", err)
 	}
 }
+
+func TestLoadTrainParsesHardwareRoutingSchema(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "switchboard.yaml")
+	content := []byte(`
+job:
+  script: train.py
+routing:
+  mode: full_auto
+  objective: fastest_within_budget
+  budget:
+    max_run_cost_usd: 75
+  max_attempts: 3
+sizing:
+  probe:
+    command: ["python", "train.py", "--profile-memory"]
+    output: switchboard-sizing.json
+  hints:
+    dataset_size_gb: 180
+    model_parameters_b: 7
+    batch_size: 8
+    gradient_accumulation_steps: 2
+    precision: bf16
+    optimizer: adamw
+    sequence_length: 4096
+hardware:
+  constraints:
+    max_gpus: 8
+    allowed_gpu_families: ["nvidia-a100", "nvidia-h100"]
+    min_vram_gb_per_gpu: 40
+    regions: ["us-central1", "us-east4"]
+    allow_spot: true
+  manual:
+    provider: gcp
+    shape_id: gcp-us-central1-a100-1
+mock:
+  providers:
+    - name: mock-a100
+      hourly_cost: 4.25
+      hardware_shapes:
+        - id: mock-a100-1
+          provider: mock-a100
+          region: us-central1
+          machine_type: a2-highgpu-1g
+          accelerator_type: NVIDIA_TESLA_A100
+          accelerator_count: 1
+          gpu_family: nvidia-a100
+          vram_gb_per_gpu: 40
+          total_vram_gb: 40
+          on_demand_hourly_usd: 4.25
+          supports_on_demand: true
+`)
+	if err := os.WriteFile(configPath, content, 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	got, err := LoadTrain(TrainFlags{
+		ConfigPath:      configPath,
+		Provider:        "auto",
+		SwitchboardHome: filepath.Join(dir, "home"),
+	})
+	if err != nil {
+		t.Fatalf("LoadTrain returned error: %v", err)
+	}
+	if got.Routing.Mode != "full_auto" || got.Routing.Objective != "fastest_within_budget" || got.Routing.MaxAttempts != 3 {
+		t.Fatalf("routing = %#v", got.Routing)
+	}
+	if got.Routing.Budget.MaxRunCostUSD != 75 {
+		t.Fatalf("budget = %#v", got.Routing.Budget)
+	}
+	if got.Sizing.Probe.Output != "switchboard-sizing.json" || got.Sizing.Hints.Precision != "bf16" {
+		t.Fatalf("sizing = %#v", got.Sizing)
+	}
+	if got.Hardware.Constraints.MaxGPUs != 8 || len(got.Hardware.Constraints.AllowedGPUFamilies) != 2 {
+		t.Fatalf("hardware = %#v", got.Hardware)
+	}
+	if len(got.Mock.Providers) != 1 || len(got.Mock.Providers[0].HardwareShapes) != 1 {
+		t.Fatalf("mock providers = %#v", got.Mock.Providers)
+	}
+	shape := got.Mock.Providers[0].HardwareShapes[0]
+	if shape.ID != "mock-a100-1" || shape.TotalVRAMGB != 40 || !shape.SupportsOnDemand {
+		t.Fatalf("shape = %#v", shape)
+	}
+}

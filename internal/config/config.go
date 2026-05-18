@@ -14,11 +14,13 @@ import (
 const DefaultBundleMaxSizeMB = 512
 
 type Config struct {
-	Job     JobConfig     `yaml:"job"`
-	Data    DataConfig    `yaml:"data"`
-	Routing RoutingConfig `yaml:"routing"`
-	Mock    MockConfig    `yaml:"mock"`
-	GCP     GCPConfig     `yaml:"gcp"`
+	Job      JobConfig      `yaml:"job"`
+	Data     DataConfig     `yaml:"data"`
+	Routing  RoutingConfig  `yaml:"routing"`
+	Sizing   SizingConfig   `yaml:"sizing"`
+	Hardware HardwareConfig `yaml:"hardware"`
+	Mock     MockConfig     `yaml:"mock"`
+	GCP      GCPConfig      `yaml:"gcp"`
 }
 
 type JobConfig struct {
@@ -42,8 +44,59 @@ type BundleConfig struct {
 }
 
 type RoutingConfig struct {
-	Objective   string `yaml:"objective"`
-	MaxAttempts int    `yaml:"max_attempts"`
+	Mode        string       `yaml:"mode"`
+	Objective   string       `yaml:"objective"`
+	Budget      BudgetConfig `yaml:"budget"`
+	MaxAttempts int          `yaml:"max_attempts"`
+}
+
+type BudgetConfig struct {
+	MaxRunCostUSD float64 `yaml:"max_run_cost_usd"`
+}
+
+type SizingConfig struct {
+	Probe SizingProbeConfig `yaml:"probe"`
+	Hints SizingHintsConfig `yaml:"hints"`
+}
+
+type SizingProbeConfig struct {
+	Command []string `yaml:"command"`
+	Output  string   `yaml:"output"`
+}
+
+type SizingHintsConfig struct {
+	DatasetSizeGB             float64 `yaml:"dataset_size_gb"`
+	ModelParametersB          float64 `yaml:"model_parameters_b"`
+	ModelArtifactGB           float64 `yaml:"model_artifact_gb"`
+	BatchSize                 int     `yaml:"batch_size"`
+	GradientAccumulationSteps int     `yaml:"gradient_accumulation_steps"`
+	Precision                 string  `yaml:"precision"`
+	Optimizer                 string  `yaml:"optimizer"`
+	SequenceLength            int     `yaml:"sequence_length"`
+	ImageWidth                int     `yaml:"image_width"`
+	ImageHeight               int     `yaml:"image_height"`
+	ExpectedSteps             int     `yaml:"expected_steps"`
+}
+
+type HardwareConfig struct {
+	Constraints HardwareConstraintsConfig `yaml:"constraints"`
+	Manual      ManualHardwareConfig      `yaml:"manual"`
+}
+
+type HardwareConstraintsConfig struct {
+	MaxGPUs            int      `yaml:"max_gpus"`
+	AllowedGPUFamilies []string `yaml:"allowed_gpu_families"`
+	MinVRAMGBPerGPU    int      `yaml:"min_vram_gb_per_gpu"`
+	Regions            []string `yaml:"regions"`
+	AllowSpot          bool     `yaml:"allow_spot"`
+	RequireOnDemand    bool     `yaml:"require_on_demand"`
+}
+
+type ManualHardwareConfig struct {
+	Provider    string `yaml:"provider"`
+	ShapeID     string `yaml:"shape_id"`
+	MachineType string `yaml:"machine_type"`
+	Region      string `yaml:"region"`
 }
 
 type MockConfig struct {
@@ -66,10 +119,11 @@ type GCPConfig struct {
 }
 
 type MockProviderConfig struct {
-	Name        string            `yaml:"name"`
-	HourlyCost  float64           `yaml:"hourly_cost"`
-	FailureMode string            `yaml:"failure_mode"`
-	Events      []MockEventConfig `yaml:"events"`
+	Name           string              `yaml:"name"`
+	HourlyCost     float64             `yaml:"hourly_cost"`
+	FailureMode    string              `yaml:"failure_mode"`
+	HardwareShapes []app.HardwareShape `yaml:"hardware_shapes"`
+	Events         []MockEventConfig   `yaml:"events"`
 }
 
 type MockEventConfig struct {
@@ -95,6 +149,8 @@ type ResolvedTrainConfig struct {
 	Provider                  string
 	Job                       app.JobSpec
 	Routing                   RoutingConfig
+	Sizing                    SizingConfig
+	Hardware                  HardwareConfig
 	Mock                      MockConfig
 	GCP                       GCPConfig
 	BundleMaxSizeBytes        int64
@@ -169,6 +225,8 @@ func LoadTrain(flags TrainFlags) (ResolvedTrainConfig, error) {
 		Provider:                  provider,
 		Job:                       job,
 		Routing:                   resolveRouting(cfg.Routing),
+		Sizing:                    cfg.Sizing,
+		Hardware:                  cfg.Hardware,
 		Mock:                      cfg.Mock,
 		GCP:                       resolveGCP(cfg.GCP),
 		BundleMaxSizeBytes:        int64(maxSizeMB) * 1024 * 1024,

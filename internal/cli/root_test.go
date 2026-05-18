@@ -458,6 +458,12 @@ gcp:
 	if attempts[0].EstimatedHourlyUSD == nil || *attempts[0].EstimatedHourlyUSD != 2.5 {
 		t.Fatalf("estimate = %#v", attempts[0])
 	}
+	if fake.lastSubmit.RuntimeEnv["SWITCHBOARD_CHECKPOINT_DIR"] != "/tmp/switchboard/checkpoints" {
+		t.Fatalf("gcp checkpoint env = %#v", fake.lastSubmit.RuntimeEnv)
+	}
+	if strings.Contains(fake.lastSubmit.RuntimeEnv["SWITCHBOARD_EVENTS_PATH"], home) {
+		t.Fatalf("gcp events path should not point at local artifact path: %#v", fake.lastSubmit.RuntimeEnv)
+	}
 
 	stdout.Reset()
 	statusCmd := NewRootCommand(Options{Stdout: &stdout, Stderr: &stderr})
@@ -768,6 +774,7 @@ type fakeGCPAdapter struct {
 	submitStarted  chan struct{}
 	releaseSubmit  chan struct{}
 	cancelCalled   chan struct{}
+	lastSubmit     app.SubmitRequest
 }
 
 func (a *fakeGCPAdapter) Name() app.ProviderName {
@@ -798,6 +805,7 @@ func (a *fakeGCPAdapter) Estimate(ctx context.Context, spec app.JobSpec) (app.Co
 }
 
 func (a *fakeGCPAdapter) Submit(ctx context.Context, req app.SubmitRequest) (app.SubmitResult, error) {
+	a.lastSubmit = req
 	ref := "projects/test-project/locations/us-central1/customJobs/fake"
 	if req.OnStarted != nil {
 		if err := req.OnStarted(app.ProviderJobRef{ID: ref}); err != nil {

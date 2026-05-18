@@ -6,6 +6,8 @@ The GCP provider is implemented as a Vertex AI CustomJob adapter using the Googl
 
 Local script packaging, Docker image builds, source distribution upload, non-GCS data fetching, and multi-worker distributed training are deferred.
 
+The current packaging decision is to keep GCP image-first while the provider stabilizes, then add Switchboard-managed Docker build/push as the next packaging feature. See [GCP Packaging Decision](gcp-packaging-decision.md).
+
 ## Authentication
 
 The provider uses Application Default Credentials. Configure ADC before running:
@@ -66,10 +68,36 @@ Switchboard creates one Vertex AI CustomJob with a single worker pool. The provi
 
 `switchboard-cli cancel <run-id>` can cancel a running GCP attempt by using the stored CustomJob resource name.
 
+GCP containers receive remote-safe runtime environment paths such as `/tmp/switchboard/checkpoints` and `/tmp/switchboard/events.jsonl`. Structured events should still be printed to stdout so Cloud Logging can mirror them back into local Switchboard artifacts. GCP v1 validates `gs://` data inputs but does not mount them into the container; the image should read or download those URIs itself.
+
+## PyTorch Iris Container Demo
+
+The first realistic GCP workload is the same PyTorch Iris model used by the local demo, wrapped in a container entrypoint that downloads the CSV from GCS:
+
+```sh
+gcloud storage cp examples/data/iris/Iris.csv gs://<bucket>/switchboard-demo/iris/Iris.csv
+
+gcloud artifacts repositories create switchboard \
+  --repository-format=docker \
+  --location=us-central1
+
+gcloud auth configure-docker us-central1-docker.pkg.dev
+docker build -f examples/gcp/iris/Dockerfile \
+  -t us-central1-docker.pkg.dev/<project>/switchboard/iris-pytorch:latest .
+docker push us-central1-docker.pkg.dev/<project>/switchboard/iris-pytorch:latest
+```
+
+Make sure the Vertex AI runtime service account can read the GCS object and Artifact Registry image. Then update `examples/gcp-iris.yaml` with the project, bucket, and image URI and run:
+
+```sh
+SWITCHBOARD_CLI_HOME="$(mktemp -d)" \
+switchboard-cli train --provider gcp --config examples/gcp-iris.yaml
+```
+
 ## Next Steps
 
 1. Keep the live smoke path current with the `switchboard-496606` smoke bucket and a supported Vertex prebuilt image.
-2. Add packaging or build/push support for local scripts after the container-only path is validated.
-3. Containerize the PyTorch Iris demo as the first realistic GCP training workload.
+2. Run the containerized PyTorch Iris demo as the first realistic GCP training workload.
+3. Add Switchboard-managed Docker build/push support for local scripts after the Iris container path is repeatable.
 4. Replace static `estimate_hourly_usd` with provider pricing lookup when hardware routing work begins.
 5. Expand data staging beyond `gs://` after GCS checkpoint and dataset behavior is stable.

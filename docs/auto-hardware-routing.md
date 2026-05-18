@@ -2,7 +2,7 @@
 
 ## Status
 
-Auto hardware routing is planned scope. The current implementation routes across providers and mock provider variants, but it does not yet model GPU shapes, GPU counts, memory fit, runtime prediction, or total run cost.
+Auto hardware routing is planned scope. The config loader now accepts the concrete `routing`, `sizing`, and `hardware` schema below, and provider capabilities can expose concrete hardware shapes. Mock and GCP providers can report those shape facts, but the orchestration router still makes provider-level decisions only. Memory fit, runtime prediction, total run cost, selected hardware persistence, and manual hardware enforcement remain implementation work.
 
 ## Goal
 
@@ -96,8 +96,8 @@ The same run/attempt model still applies. If an attempt fails for a retryable pr
 
 ## Next Steps
 
-1. Define the concrete YAML schema for `routing.mode`, `sizing`, `hardware`, and budget fields.
-2. Extend provider capabilities to report concrete GPU shapes, VRAM, pricing, regions, and supported GPU counts.
-3. Add a sizing profile artifact contract that scripts can emit during probe runs.
-4. Add routing tests for memory fit, fastest-within-budget ranking, confidence failures, and manual override behavior.
-5. Add mock providers with multiple hardware shapes before implementing the first real cloud provider integration.
+1. Add a sizing profile artifact contract that scripts can emit during probe runs.
+2. Add routing tests and implementation for memory fit, fastest-within-budget ranking, confidence failures, and manual override behavior.
+3. Persist selected hardware, estimated VRAM, estimated runtime, estimated total cost, confidence, and rejected shape reasons.
+4. Replace static GCP hourly estimates with pricing/capacity inventory behind provider capabilities.
+5. Add shared checkpoint storage rules before allowing cross-provider resume from GCP file checkpoints.

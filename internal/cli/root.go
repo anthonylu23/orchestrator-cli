@@ -239,18 +239,7 @@ func runAttempt(ctx context.Context, opts Options, store *state.Store, registry 
 	if resumeFrom != nil {
 		resumeValue = resumeFrom.URI
 	}
-	runtimeEnv := map[string]string{
-		"SWITCHBOARD_RUN_ID":          runID,
-		"SWITCHBOARD_ATTEMPT_ID":      attemptID,
-		"SWITCHBOARD_CHECKPOINT_DIR":  paths.Checkpoints,
-		"SWITCHBOARD_RESUME_FROM":     resumeValue,
-		"SWITCHBOARD_EVENTS_PATH":     paths.EventsJSONL,
-		"ORCHESTRATOR_RUN_ID":         runID,
-		"ORCHESTRATOR_ATTEMPT_ID":     attemptID,
-		"ORCHESTRATOR_CHECKPOINT_DIR": paths.Checkpoints,
-		"ORCHESTRATOR_RESUME_FROM":    resumeValue,
-		"ORCHESTRATOR_EVENTS_PATH":    paths.EventsJSONL,
-	}
+	runtimeEnv := runtimeEnvForProvider(selectedProvider, runID, attemptID, resumeValue, paths)
 	attemptRedactor := redact.FromEnvironment(attemptJob.Env, runtimeEnv)
 	estimate, err := adapter.Estimate(ctx, attemptJob)
 	if err != nil {
@@ -332,6 +321,27 @@ func runAttempt(ctx context.Context, opts Options, store *state.Store, registry 
 	}
 	fmt.Fprintf(opts.Stdout, "Run %s %s\n", runID, runState)
 	return result.ExitCode, false, nil
+}
+
+func runtimeEnvForProvider(selectedProvider string, runID string, attemptID string, resumeValue string, paths artifact.Paths) map[string]string {
+	checkpointDir := paths.Checkpoints
+	eventsPath := paths.EventsJSONL
+	if selectedProvider == gcpprovider.ProviderName {
+		checkpointDir = "/tmp/switchboard/checkpoints"
+		eventsPath = "/tmp/switchboard/events.jsonl"
+	}
+	return map[string]string{
+		"SWITCHBOARD_RUN_ID":          runID,
+		"SWITCHBOARD_ATTEMPT_ID":      attemptID,
+		"SWITCHBOARD_CHECKPOINT_DIR":  checkpointDir,
+		"SWITCHBOARD_RESUME_FROM":     resumeValue,
+		"SWITCHBOARD_EVENTS_PATH":     eventsPath,
+		"ORCHESTRATOR_RUN_ID":         runID,
+		"ORCHESTRATOR_ATTEMPT_ID":     attemptID,
+		"ORCHESTRATOR_CHECKPOINT_DIR": checkpointDir,
+		"ORCHESTRATOR_RESUME_FROM":    resumeValue,
+		"ORCHESTRATOR_EVENTS_PATH":    eventsPath,
+	}
 }
 
 func writeSummary(ctx context.Context, store *state.Store, paths artifact.Paths, runID string) error {
@@ -567,10 +577,11 @@ func buildProviderRegistry(opts Options, mockConfig config.MockConfig, gcpConfig
 	adapters := []app.ProviderAdapter{localprovider.New(opts.Stdout, opts.Stderr)}
 	for _, providerConfig := range mergedMockProviders(mockConfig) {
 		adapters = append(adapters, mockprovider.New(mockprovider.Config{
-			Name:        providerConfig.Name,
-			HourlyCost:  providerConfig.HourlyCost,
-			FailureMode: providerConfig.FailureMode,
-			Events:      mockEvents(providerConfig.Events),
+			Name:           providerConfig.Name,
+			HourlyCost:     providerConfig.HourlyCost,
+			FailureMode:    providerConfig.FailureMode,
+			HardwareShapes: append([]app.HardwareShape(nil), providerConfig.HardwareShapes...),
+			Events:         mockEvents(providerConfig.Events),
 		}, opts.Stdout, opts.Stderr))
 	}
 	if opts.GCPProviderFactory != nil {

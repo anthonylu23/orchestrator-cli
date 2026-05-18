@@ -40,8 +40,28 @@ Metric events include train and validation loss/accuracy. Checkpoint events poin
 
 `internal/cli` includes a PyTorch Iris integration test. It skips when `python3` or `torch` is unavailable, then verifies local execution, metric ingestion, summary metrics, checkpoint artifacts, and bundled data materialization.
 
+## Run On GCP
+
+The GCP demo uses the same training script inside a container. Because GCP v1 validates `gs://` inputs but does not mount them into the container, the wrapper at `examples/gcp/iris/train_iris_gcs.py` downloads the CSV from GCS before invoking `examples/iris_pytorch.py`.
+
+Build and push the image from the repository root:
+
+```sh
+gcloud storage cp examples/data/iris/Iris.csv gs://<bucket>/switchboard-demo/iris/Iris.csv
+gcloud auth configure-docker us-central1-docker.pkg.dev
+docker build -f examples/gcp/iris/Dockerfile \
+  -t us-central1-docker.pkg.dev/<project>/switchboard/iris-pytorch:latest .
+docker push us-central1-docker.pkg.dev/<project>/switchboard/iris-pytorch:latest
+```
+
+Update `examples/gcp-iris.yaml` with the project, bucket, and image URI, then run:
+
+```sh
+SWITCHBOARD_CLI_HOME="$(mktemp -d)" ./bin/switchboard-cli train --provider gcp --config examples/gcp-iris.yaml
+```
+
 ## Next Steps
 
-1. Keep this demo local-first until GCP supports source packaging or image build/push.
-2. Reuse the demo as the first containerized training workload once the GCP container workflow can build or consume a PyTorch image.
-3. Consider adding an optional resume-focused version after explicit user-facing `resume` support exists.
+1. Keep local and GCP Iris workflows aligned as the provider evolves.
+2. Add Switchboard-managed Docker build/push so users do not have to build the Iris image manually.
+3. Consider adding an optional resume-focused version after explicit user-facing `resume` support exists and shared checkpoint storage is available.

@@ -113,7 +113,7 @@ Exit criteria:
 
 ## Phase 4 - First Real Provider: GCP
 
-Status: in progress. The first GCP adapter submits prebuilt container images to Vertex AI CustomJob through the Google Cloud Go client, polls job status, records provider refs and estimates, reads Cloud Logging payloads into run artifacts, supports best-effort cancel, and rejects unsupported local bundles or non-GCS URI inputs before submit. Live auth and a billable CPU-only Vertex AI CustomJob smoke test passed on 2026-05-17 for project `switchboard-496606`; packaging workflows are still pending.
+Status: in progress. The first GCP adapter submits prebuilt container images to Vertex AI CustomJob through the Google Cloud Go client, polls job status, records provider refs and estimates, reads Cloud Logging payloads into run artifacts, supports best-effort cancel, and rejects unsupported local bundles or non-GCS URI inputs before submit. Live auth and a billable CPU-only Vertex AI CustomJob smoke test passed on 2026-05-17 for project `switchboard-496606`. The PyTorch Iris container example now provides the first realistic GCP training workload; Switchboard-managed image build/push is still pending.
 
 Goals:
 
@@ -133,8 +133,8 @@ Exit criteria:
 Next steps:
 
 1. Keep the GCP live smoke path repeatable against `switchboard-496606`.
-2. Decide whether local script packaging should use Switchboard-managed image build/push or a Vertex AI source package path.
-3. Containerize the PyTorch Iris demo as the first realistic GCP training workload.
+2. Run and keep the PyTorch Iris container demo repeatable against a GCS data object and Artifact Registry image.
+3. Add Switchboard-managed image build/push for local scripts; the accepted direction is documented in [GCP Packaging Decision](gcp-packaging-decision.md).
 4. Add richer GCP pricing/capacity facts as part of auto hardware routing.
 
 ## Phase 5 - Auto Hardware Routing

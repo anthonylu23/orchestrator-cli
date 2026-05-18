@@ -23,10 +23,11 @@ const (
 )
 
 type Config struct {
-	Name        string
-	HourlyCost  float64
-	FailureMode string
-	Events      []app.Event
+	Name           string
+	HourlyCost     float64
+	FailureMode    string
+	HardwareShapes []app.HardwareShape
+	Events         []app.Event
 }
 
 type Provider struct {
@@ -55,6 +56,7 @@ func (p *Provider) Capabilities(ctx context.Context) (app.ProviderCapabilities, 
 		SupportsDataBundle:      true,
 		SupportedURISchemes:     []string{"http", "https", "s3", "gs"},
 		SupportsObjectStorePull: true,
+		HardwareShapes:          append([]app.HardwareShape(nil), p.config.HardwareShapes...),
 	}, nil
 }
 

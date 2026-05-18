@@ -53,3 +53,31 @@ func TestSubmitEmitsEventsAndRetryableFailure(t *testing.T) {
 		t.Fatalf("events = %s", string(content))
 	}
 }
+
+func TestCapabilitiesIncludeConfiguredHardwareShapes(t *testing.T) {
+	provider := New(Config{
+		Name:       "mock-a100",
+		HourlyCost: 4.25,
+		HardwareShapes: []app.HardwareShape{{
+			ID:                "mock-a100-1",
+			Region:            "us-central1",
+			MachineType:       "a2-highgpu-1g",
+			GPUFamily:         "nvidia-a100",
+			VRAMGBPerGPU:      40,
+			TotalVRAMGB:       40,
+			OnDemandHourlyUSD: 4.25,
+			SupportsOnDemand:  true,
+		}},
+	}, nil, nil)
+
+	capabilities, err := provider.Capabilities(context.Background())
+	if err != nil {
+		t.Fatalf("Capabilities returned error: %v", err)
+	}
+	if len(capabilities.HardwareShapes) != 1 {
+		t.Fatalf("hardware shapes = %#v", capabilities.HardwareShapes)
+	}
+	if capabilities.HardwareShapes[0].ID != "mock-a100-1" || capabilities.HardwareShapes[0].TotalVRAMGB != 40 {
+		t.Fatalf("shape = %#v", capabilities.HardwareShapes[0])
+	}
+}

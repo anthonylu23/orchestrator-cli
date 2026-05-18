@@ -145,17 +145,37 @@ type RoutingDecision struct {
 	RejectedProviders []RoutingCandidate `json:"rejected_providers,omitempty"`
 }
 
+type HardwareShape struct {
+	ID                 string  `json:"id" yaml:"id"`
+	Provider           string  `json:"provider,omitempty" yaml:"provider,omitempty"`
+	Region             string  `json:"region" yaml:"region"`
+	MachineType        string  `json:"machine_type" yaml:"machine_type"`
+	AcceleratorType    string  `json:"accelerator_type,omitempty" yaml:"accelerator_type,omitempty"`
+	AcceleratorCount   int     `json:"accelerator_count" yaml:"accelerator_count"`
+	GPUFamily          string  `json:"gpu_family,omitempty" yaml:"gpu_family,omitempty"`
+	VRAMGBPerGPU       int     `json:"vram_gb_per_gpu,omitempty" yaml:"vram_gb_per_gpu,omitempty"`
+	TotalVRAMGB        int     `json:"total_vram_gb,omitempty" yaml:"total_vram_gb,omitempty"`
+	OnDemandHourlyUSD  float64 `json:"on_demand_hourly_usd,omitempty" yaml:"on_demand_hourly_usd,omitempty"`
+	SpotHourlyUSD      float64 `json:"spot_hourly_usd,omitempty" yaml:"spot_hourly_usd,omitempty"`
+	SupportsOnDemand   bool    `json:"supports_on_demand" yaml:"supports_on_demand"`
+	SupportsSpot       bool    `json:"supports_spot" yaml:"supports_spot"`
+	MaxRuntimeHours    *int    `json:"max_runtime_hours,omitempty" yaml:"max_runtime_hours,omitempty"`
+	AvailabilityHint   string  `json:"availability_hint,omitempty" yaml:"availability_hint,omitempty"`
+	AvailabilityReason string  `json:"availability_reason,omitempty" yaml:"availability_reason,omitempty"`
+}
+
 type ProviderCapabilities struct {
-	GPUFamilies             []string `json:"gpu_families"`
-	Regions                 []string `json:"regions"`
-	SupportsSpot            bool     `json:"supports_spot"`
-	SupportsOnDemand        bool     `json:"supports_on_demand"`
-	SupportsDockerImage     bool     `json:"supports_docker_image"`
-	SupportsLocalScript     bool     `json:"supports_local_script"`
-	SupportsDataBundle      bool     `json:"supports_data_bundle"`
-	SupportedURISchemes     []string `json:"supported_uri_schemes"`
-	SupportsObjectStorePull bool     `json:"supports_object_store_pull"`
-	MaxRuntimeHours         *int     `json:"max_runtime_hours,omitempty"`
+	GPUFamilies             []string        `json:"gpu_families"`
+	Regions                 []string        `json:"regions"`
+	HardwareShapes          []HardwareShape `json:"hardware_shapes,omitempty"`
+	SupportsSpot            bool            `json:"supports_spot"`
+	SupportsOnDemand        bool            `json:"supports_on_demand"`
+	SupportsDockerImage     bool            `json:"supports_docker_image"`
+	SupportsLocalScript     bool            `json:"supports_local_script"`
+	SupportsDataBundle      bool            `json:"supports_data_bundle"`
+	SupportedURISchemes     []string        `json:"supported_uri_schemes"`
+	SupportsObjectStorePull bool            `json:"supports_object_store_pull"`
+	MaxRuntimeHours         *int            `json:"max_runtime_hours,omitempty"`
 }
 
 type ProviderErrorKind string

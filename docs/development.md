@@ -103,7 +103,7 @@ Before writing logs, `events.jsonl`, summaries, or provider failure reasons, pro
 
 ## Next Steps
 
-1. Enable billing on the configured GCP project, then rerun the auth-only check in [GCP Live Smoke Test](gcp-live-smoke.md).
-2. Keep the gated billable container submit smoke test current with `SWITCHBOARD_GCP_LIVE=1` and `SWITCHBOARD_GCP_LIVE_SUBMIT=1`.
-3. Add local script packaging or image build/push now that the container-image CustomJob path is validated; the PyTorch Iris demo is a good first candidate workload for that path.
+1. Keep the gated billable container submit smoke test current with `SWITCHBOARD_GCP_LIVE=1` and `SWITCHBOARD_GCP_LIVE_SUBMIT=1`.
+2. Run the containerized PyTorch Iris demo from `examples/gcp/iris` when a GCS copy of the Iris CSV and an Artifact Registry image are available.
+3. Add Switchboard-managed Docker build/push now that the container-image CustomJob path is validated; see [GCP Packaging Decision](gcp-packaging-decision.md).
 4. Replace static GCP hourly estimates with provider pricing data during auto hardware routing work.

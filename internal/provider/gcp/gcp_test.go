@@ -112,6 +112,24 @@ func TestValidateJobValidatesAcceleratorConfig(t *testing.T) {
 	}
 }
 
+func TestCapabilitiesReportConfiguredHardwareShape(t *testing.T) {
+	provider := NewWithClient(testConfig(), &fakeClient{}, &bytes.Buffer{}, &bytes.Buffer{})
+	capabilities, err := provider.Capabilities(context.Background())
+	if err != nil {
+		t.Fatalf("Capabilities returned error: %v", err)
+	}
+	if len(capabilities.HardwareShapes) != 1 {
+		t.Fatalf("hardware shapes = %#v", capabilities.HardwareShapes)
+	}
+	shape := capabilities.HardwareShapes[0]
+	if shape.Provider != ProviderName || shape.MachineType != "n1-standard-8" || shape.AcceleratorCount != 1 {
+		t.Fatalf("shape = %#v", shape)
+	}
+	if shape.GPUFamily != "nvidia-tesla-t4" || shape.OnDemandHourlyUSD != 2.5 {
+		t.Fatalf("shape = %#v", shape)
+	}
+}
+
 func TestCreateRequestBuildsVertexCustomJob(t *testing.T) {
 	provider := NewWithClient(testConfig(), &fakeClient{}, &bytes.Buffer{}, &bytes.Buffer{})
 	req := provider.createRequest(app.SubmitRequest{

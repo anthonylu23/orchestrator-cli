@@ -115,6 +115,7 @@ Capabilities should be explicit and provider-independent so routing can reject p
 type ProviderCapabilities struct {
   GPUFamilies []GPUFamily
   Regions []Region
+  HardwareShapes []HardwareShape
   SupportsSpot bool
   SupportsOnDemand bool
   SupportsDockerImage bool
@@ -126,7 +127,7 @@ type ProviderCapabilities struct {
 }
 ```
 
-Future auto hardware routing will require provider capabilities to grow from broad GPU families into concrete hardware shapes: GPU model, VRAM, supported GPU counts, regions, availability, quota, hourly price, and launch constraints. Providers should report these facts; the orchestration core should still own the final route decision.
+Provider capabilities now include optional concrete hardware shapes for auto hardware routing groundwork: GPU model/family, VRAM, supported GPU counts, regions, availability hints, hourly prices, and launch constraints. The current router still selects providers only; the orchestration core should own final hardware route policy when shape-level routing is implemented.
 
 Adapters translate raw provider failures into normalized errors:
 

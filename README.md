@@ -10,7 +10,7 @@ Switchboard now has a local orchestration vertical slice, deterministic mock-pro
 
 Run artifacts redact secret-like keys and known secret environment values before persistence. Attempt history also records resume checkpoint provenance and provider cost estimates so failover decisions remain explainable after completion.
 
-GCP v1 is container-image-first. Live auth and a billable CPU-only Vertex AI CustomJob smoke test have passed on the `switchboard-496606` project. Local script packaging, image build/push, richer GCP data staging, and auto hardware routing remain roadmap work.
+GCP v1 is container-image-first. Live auth and a billable CPU-only Vertex AI CustomJob smoke test have passed on the `switchboard-496606` project, and `examples/gcp/iris` contains the first realistic PyTorch Iris container workflow. Local script packaging, managed image build/push, richer GCP data staging, and full auto hardware routing remain roadmap work.
 
 ## Quick Start
 
@@ -81,6 +81,18 @@ Run a Vertex AI CustomJob from a prebuilt container image:
 
 ```sh
 ./bin/switchboard-cli train --provider gcp --config examples/gcp-container.yaml
+```
+
+Build and run the containerized PyTorch Iris GCP demo:
+
+```sh
+gcloud storage cp examples/data/iris/Iris.csv gs://<bucket>/switchboard-demo/iris/Iris.csv
+gcloud auth configure-docker us-central1-docker.pkg.dev
+docker build -f examples/gcp/iris/Dockerfile \
+  -t us-central1-docker.pkg.dev/<project>/switchboard/iris-pytorch:latest .
+docker push us-central1-docker.pkg.dev/<project>/switchboard/iris-pytorch:latest
+
+SWITCHBOARD_CLI_HOME="$(mktemp -d)" ./bin/switchboard-cli train --provider gcp --config examples/gcp-iris.yaml
 ```
 
 ## Product Wedge
@@ -174,7 +186,7 @@ The core user-facing object is a run. Each provider execution is an attempt. Thi
 
 For `provider=auto`, routing checks provider capabilities before ranking candidates. Providers that cannot satisfy bundled data inputs or declared URI schemes are rejected with persisted reasons.
 
-Planned auto hardware routing will add GPU shape and GPU count selection on top of provider routing. See [Auto Hardware Routing](docs/auto-hardware-routing.md).
+Planned auto hardware routing will add GPU shape and GPU count selection on top of provider routing. The config loader and provider capabilities now expose the initial routing/sizing/hardware schema and hardware-shape facts, while the router still selects providers only. See [Auto Hardware Routing](docs/auto-hardware-routing.md).
 
 ## Artifacts
 
@@ -198,7 +210,7 @@ By default Switchboard writes to `~/.switchboard-cli`. Set `SWITCHBOARD_CLI_HOME
 3. Mock cloud provider and failure simulation.
 4. Provider extensibility hardening.
 5. GCP as the first real provider: container-image CustomJob support is implemented; packaging and richer staging remain.
-6. Auto hardware routing for fastest compatible single-node GPU selection within a max run cost.
+6. Auto hardware routing for fastest compatible single-node GPU selection within a max run cost; schema and provider hardware-shape reporting are in place, route policy remains.
 7. Later: Lambda, Hyperbolic, container packaging, shared checkpoint backends, fan-out sweeps, richer terminal UI, and optional hosted control plane.
 
 ## Docs
@@ -208,5 +220,6 @@ By default Switchboard writes to `~/.switchboard-cli`. Set `SWITCHBOARD_CLI_HOME
 - [PyTorch Iris Demo](docs/pytorch-iris-demo.md)
 - [GCP Provider](docs/gcp-provider.md)
 - [GCP Live Smoke Test](docs/gcp-live-smoke.md)
+- [GCP Packaging Decision](docs/gcp-packaging-decision.md)
 - [Auto Hardware Routing](docs/auto-hardware-routing.md)
 - [Roadmap](docs/roadmap.md)

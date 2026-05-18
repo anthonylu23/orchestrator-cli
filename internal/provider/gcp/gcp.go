@@ -99,6 +99,7 @@ func (p *Provider) Capabilities(ctx context.Context) (app.ProviderCapabilities, 
 	return app.ProviderCapabilities{
 		GPUFamilies:             gpuFamilies(p.config.AcceleratorType),
 		Regions:                 []string{p.config.Location},
+		HardwareShapes:          []app.HardwareShape{p.configuredHardwareShape()},
 		SupportsOnDemand:        true,
 		SupportsDockerImage:     true,
 		SupportsLocalScript:     false,
@@ -106,6 +107,24 @@ func (p *Provider) Capabilities(ctx context.Context) (app.ProviderCapabilities, 
 		SupportedURISchemes:     []string{"gs"},
 		SupportsObjectStorePull: true,
 	}, nil
+}
+
+func (p *Provider) configuredHardwareShape() app.HardwareShape {
+	idParts := []string{"gcp", p.config.Location, p.config.MachineType}
+	if p.config.AcceleratorType != "" {
+		idParts = append(idParts, strings.ToLower(strings.ReplaceAll(p.config.AcceleratorType, "_", "-")), fmt.Sprintf("%dg", p.config.AcceleratorCount))
+	}
+	return app.HardwareShape{
+		ID:                strings.Join(idParts, "-"),
+		Provider:          ProviderName,
+		Region:            p.config.Location,
+		MachineType:       p.config.MachineType,
+		AcceleratorType:   p.config.AcceleratorType,
+		AcceleratorCount:  int(p.config.AcceleratorCount),
+		GPUFamily:         firstGPUFamily(p.config.AcceleratorType),
+		OnDemandHourlyUSD: p.config.EstimateHourlyUSD,
+		SupportsOnDemand:  true,
+	}
 }
 
 func (p *Provider) ValidateJob(ctx context.Context, spec app.JobSpec) app.SupportReport {
@@ -520,6 +539,14 @@ func gpuFamilies(value string) []string {
 		return nil
 	}
 	return []string{strings.ToLower(strings.ReplaceAll(value, "_", "-"))}
+}
+
+func firstGPUFamily(value string) string {
+	families := gpuFamilies(value)
+	if len(families) == 0 {
+		return ""
+	}
+	return families[0]
 }
 
 func attemptState(state aiplatformpb.JobState) app.AttemptState {
