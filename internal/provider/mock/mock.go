@@ -51,12 +51,13 @@ func (p *Provider) ValidateAuth(ctx context.Context) error {
 
 func (p *Provider) Capabilities(ctx context.Context) (app.ProviderCapabilities, error) {
 	return app.ProviderCapabilities{
-		SupportsOnDemand:        true,
-		SupportsLocalScript:     true,
-		SupportsDataBundle:      true,
-		SupportedURISchemes:     []string{"http", "https", "s3", "gs"},
-		SupportsObjectStorePull: true,
-		HardwareShapes:          append([]app.HardwareShape(nil), p.config.HardwareShapes...),
+		SupportsOnDemand:           true,
+		SupportsLocalScript:        true,
+		SupportsDataBundle:         true,
+		SupportedURISchemes:        []string{"http", "https", "s3", "gs"},
+		SupportedCheckpointSchemes: []string{"file", "mock", "gs", "s3"},
+		SupportsObjectStorePull:    true,
+		HardwareShapes:             append([]app.HardwareShape(nil), p.config.HardwareShapes...),
 	}, nil
 }
 

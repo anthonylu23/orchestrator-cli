@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -17,6 +18,7 @@ import (
 	"github.com/anthonylu23/switchboard-cli/internal/app"
 	"github.com/anthonylu23/switchboard-cli/internal/artifact"
 	"github.com/anthonylu23/switchboard-cli/internal/config"
+	"github.com/anthonylu23/switchboard-cli/internal/packaging"
 	mockprovider "github.com/anthonylu23/switchboard-cli/internal/provider/mock"
 	"github.com/anthonylu23/switchboard-cli/internal/state"
 )
@@ -525,6 +527,61 @@ gcp:
 	}
 }
 
+func TestRunTrainPackagesLocalScriptForGCP(t *testing.T) {
+	dir := t.TempDir()
+	contextDir := filepath.Join(dir, "context")
+	if err := os.MkdirAll(contextDir, 0o755); err != nil {
+		t.Fatalf("create context: %v", err)
+	}
+	script := filepath.Join(contextDir, "train.py")
+	if err := os.WriteFile(script, []byte("print('ok')\n"), 0o600); err != nil {
+		t.Fatalf("write script: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(contextDir, "Dockerfile"), []byte("FROM python:3.11-slim\nCOPY . /workspace\nWORKDIR /workspace\n"), 0o600); err != nil {
+		t.Fatalf("write Dockerfile: %v", err)
+	}
+	fakeGCP := &fakeGCPAdapter{}
+	fakeBuilder := &fakeImageBuilder{image: "us-central1-docker.pkg.dev/test-project/switchboard/train:latest"}
+	var stdout bytes.Buffer
+	code, err := runTrain(context.Background(), Options{
+		Stdout: &stdout,
+		Stderr: &bytes.Buffer{},
+		GCPProviderFactory: func(cfg config.GCPConfig, stdout io.Writer, stderr io.Writer) app.ProviderAdapter {
+			return fakeGCP
+		},
+		ImageBuilderFactory: func(stdout io.Writer, stderr io.Writer) ImageBuilder {
+			return fakeBuilder
+		},
+	}, config.ResolvedTrainConfig{
+		Provider:        "gcp",
+		SwitchboardHome: filepath.Join(dir, "home"),
+		Job:             app.JobSpec{Name: "train.py", Script: script},
+		Packaging: config.PackagingConfig{
+			Dockerfile: "Dockerfile",
+			Context:    contextDir,
+			Image:      "us-central1-docker.pkg.dev/test-project/switchboard/train:latest",
+			Platform:   "linux/amd64",
+		},
+		GCP: config.GCPConfig{
+			ProjectID:       "test-project",
+			Location:        "us-central1",
+			OutputURIPrefix: "gs://bucket/outputs",
+		},
+	})
+	if err != nil || code != 0 {
+		t.Fatalf("runTrain code=%d err=%v stdout=%s", code, err, stdout.String())
+	}
+	if fakeBuilder.request.Config.ContextDir != contextDir || fakeBuilder.request.Config.Platform != "linux/amd64" {
+		t.Fatalf("build request = %#v", fakeBuilder.request)
+	}
+	if fakeGCP.lastSubmit.JobSpec.Image != fakeBuilder.image || fakeGCP.lastSubmit.JobSpec.Script != "" {
+		t.Fatalf("submitted job = %#v", fakeGCP.lastSubmit.JobSpec)
+	}
+	if !reflect.DeepEqual(fakeGCP.lastSubmit.JobSpec.Command, []string{"python3", "train.py"}) {
+		t.Fatalf("command = %#v", fakeGCP.lastSubmit.JobSpec.Command)
+	}
+}
+
 func TestGCPCancelStateIsNotOverwrittenBySubmitError(t *testing.T) {
 	home := filepath.Join(t.TempDir(), "home")
 	fake := &fakeGCPAdapter{
@@ -775,6 +832,20 @@ type fakeGCPAdapter struct {
 	releaseSubmit  chan struct{}
 	cancelCalled   chan struct{}
 	lastSubmit     app.SubmitRequest
+}
+
+type fakeImageBuilder struct {
+	image   string
+	request packaging.BuildRequest
+	err     error
+}
+
+func (b *fakeImageBuilder) BuildAndPush(ctx context.Context, req packaging.BuildRequest) (packaging.BuildResult, error) {
+	b.request = req
+	if b.err != nil {
+		return packaging.BuildResult{}, b.err
+	}
+	return packaging.BuildResult{Image: b.image}, nil
 }
 
 func (a *fakeGCPAdapter) Name() app.ProviderName {

@@ -5,6 +5,7 @@ import os
 import pathlib
 import random
 import sys
+import tempfile
 from urllib.parse import unquote, urlparse
 
 import torch
@@ -75,9 +76,36 @@ def checkpoint_path(value):
     parsed = urlparse(value)
     if parsed.scheme == "file":
         return pathlib.Path(unquote(parsed.path))
+    if parsed.scheme == "gs":
+        return download_gcs_checkpoint(value)
     if parsed.scheme:
         return None
     return pathlib.Path(value)
+
+
+def download_gcs_checkpoint(uri):
+    from google.cloud import storage
+
+    parsed = urlparse(uri)
+    target = pathlib.Path(tempfile.gettempdir()) / pathlib.Path(unquote(parsed.path)).name
+    client = storage.Client()
+    client.bucket(parsed.netloc).blob(unquote(parsed.path.lstrip("/"))).download_to_filename(target)
+    return target
+
+
+def upload_checkpoint_if_needed(path):
+    prefix = os.environ.get("SWITCHBOARD_CHECKPOINT_URI_PREFIX") or os.environ.get("ORCHESTRATOR_CHECKPOINT_URI_PREFIX", "")
+    parsed = urlparse(prefix)
+    if parsed.scheme != "gs":
+        return path.as_uri()
+
+    from google.cloud import storage
+
+    object_prefix = unquote(parsed.path.strip("/"))
+    object_name = "/".join(part for part in [object_prefix, path.name] if part)
+    client = storage.Client()
+    client.bucket(parsed.netloc).blob(object_name).upload_from_filename(path)
+    return f"gs://{parsed.netloc}/{object_name}"
 
 
 def train(args):
@@ -143,7 +171,7 @@ def train(args):
                 "model_state": model.state_dict(),
                 "optimizer_state": optimizer.state_dict(),
             }, path)
-            emit({"type": "checkpoint", "step": epoch, "checkpoint_uri": path.as_uri()})
+            emit({"type": "checkpoint", "step": epoch, "checkpoint_uri": upload_checkpoint_if_needed(path)})
 
     emit({"type": "status", "state": "completed"})
 

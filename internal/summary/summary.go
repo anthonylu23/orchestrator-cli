@@ -6,12 +6,16 @@ import (
 	"github.com/anthonylu23/switchboard-cli/internal/app"
 )
 
-func Build(run app.Run, attempts []app.Attempt, events []app.Event) app.Summary {
+func Build(run app.Run, attempts []app.Attempt, events []app.Event, routingDecisions ...app.RoutingDecision) app.Summary {
 	out := app.Summary{
 		RunID:            run.ID,
 		State:            run.State,
 		ProviderAttempts: attempts,
 		ExitReason:       run.Error,
+	}
+	if len(routingDecisions) > 0 {
+		decision := routingDecisions[0]
+		out.Routing = &decision
 	}
 	if !run.StartedAt.IsZero() && !run.EndedAt.IsZero() {
 		out.RuntimeSeconds = run.EndedAt.Sub(run.StartedAt).Seconds()

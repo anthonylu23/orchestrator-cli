@@ -42,9 +42,10 @@ func (p *Provider) ValidateAuth(ctx context.Context) error {
 
 func (p *Provider) Capabilities(ctx context.Context) (app.ProviderCapabilities, error) {
 	return app.ProviderCapabilities{
-		SupportsOnDemand:    true,
-		SupportsLocalScript: true,
-		SupportsDataBundle:  true,
+		SupportsOnDemand:           true,
+		SupportsLocalScript:        true,
+		SupportsDataBundle:         true,
+		SupportedCheckpointSchemes: []string{"file"},
 	}, nil
 }
 

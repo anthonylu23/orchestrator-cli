@@ -172,8 +172,47 @@ gcp:
 	if err == nil {
 		t.Fatal("expected gcp validation error")
 	}
-	if err.Error() != "gcp provider requires job.image" {
+	if err.Error() != "gcp provider requires job.image or packaging config for job.script" {
 		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestLoadTrainAcceptsGCPPackagingConfig(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "switchboard.yaml")
+	content := []byte(`
+job:
+  script: train.py
+packaging:
+  dockerfile: Dockerfile
+  context: .
+  platform: linux/amd64
+gcp:
+  project_id: test-project
+  location: us-central1
+  output_uri_prefix: gs://bucket/outputs
+  artifact_registry_repository: switchboard
+`)
+	if err := os.WriteFile(configPath, content, 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	got, err := LoadTrain(TrainFlags{
+		ConfigPath:      configPath,
+		Provider:        "gcp",
+		SwitchboardHome: filepath.Join(dir, "home"),
+	})
+	if err != nil {
+		t.Fatalf("LoadTrain returned error: %v", err)
+	}
+	if got.Job.Script != "train.py" || got.Job.Image != "" {
+		t.Fatalf("job = %#v", got.Job)
+	}
+	if got.Packaging.Dockerfile != "Dockerfile" || got.Packaging.Context != "." || got.Packaging.Platform != "linux/amd64" {
+		t.Fatalf("packaging = %#v", got.Packaging)
+	}
+	if got.GCP.ArtifactRegistryRepository != "switchboard" {
+		t.Fatalf("gcp = %#v", got.GCP)
 	}
 }
 

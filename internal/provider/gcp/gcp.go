@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -18,6 +19,8 @@ import (
 	"github.com/anthonylu23/switchboard-cli/internal/artifact"
 	"github.com/anthonylu23/switchboard-cli/internal/event"
 	"github.com/anthonylu23/switchboard-cli/internal/redact"
+	cloudbilling "google.golang.org/api/cloudbilling/v1"
+	compute "google.golang.org/api/compute/v1"
 	"google.golang.org/api/iterator"
 	"google.golang.org/api/option"
 	"google.golang.org/grpc/codes"
@@ -26,20 +29,22 @@ import (
 )
 
 const ProviderName = "gcp"
+const computeEngineServiceID = "services/6F81-5844-456A"
 
 type Config struct {
-	ProjectID           string
-	Location            string
-	OutputURIPrefix     string
-	MachineType         string
-	AcceleratorType     string
-	AcceleratorCount    int32
-	BootDiskType        string
-	BootDiskSizeGB      int32
-	ServiceAccount      string
-	Network             string
-	PollIntervalSeconds int
-	EstimateHourlyUSD   float64
+	ProjectID                  string
+	Location                   string
+	OutputURIPrefix            string
+	MachineType                string
+	AcceleratorType            string
+	AcceleratorCount           int32
+	BootDiskType               string
+	BootDiskSizeGB             int32
+	ServiceAccount             string
+	Network                    string
+	PollIntervalSeconds        int
+	EstimateHourlyUSD          float64
+	ArtifactRegistryRepository string
 }
 
 type Client interface {
@@ -48,6 +53,10 @@ type Client interface {
 	GetCustomJob(ctx context.Context, name string) (*aiplatformpb.CustomJob, error)
 	CancelCustomJob(ctx context.Context, name string) error
 	ListLogEntries(ctx context.Context, req *loggingpb.ListLogEntriesRequest) ([]*loggingpb.LogEntry, error)
+	ListCatalogSKUs(ctx context.Context, serviceID string) ([]*cloudbilling.Sku, error)
+	ListMachineTypes(ctx context.Context, projectID string) ([]*compute.MachineType, error)
+	ListAcceleratorTypes(ctx context.Context, projectID string) ([]*compute.AcceleratorType, error)
+	GetRegion(ctx context.Context, projectID string, region string) (*compute.Region, error)
 	Close() error
 }
 
@@ -96,16 +105,18 @@ func (p *Provider) ValidateAuth(ctx context.Context) error {
 }
 
 func (p *Provider) Capabilities(ctx context.Context) (app.ProviderCapabilities, error) {
+	hardwareShapes := p.hardwareShapes(ctx)
 	return app.ProviderCapabilities{
-		GPUFamilies:             gpuFamilies(p.config.AcceleratorType),
-		Regions:                 []string{p.config.Location},
-		HardwareShapes:          []app.HardwareShape{p.configuredHardwareShape()},
-		SupportsOnDemand:        true,
-		SupportsDockerImage:     true,
-		SupportsLocalScript:     false,
-		SupportsDataBundle:      false,
-		SupportedURISchemes:     []string{"gs"},
-		SupportsObjectStorePull: true,
+		GPUFamilies:                gpuFamiliesFromShapes(hardwareShapes),
+		Regions:                    []string{p.config.Location},
+		HardwareShapes:             hardwareShapes,
+		SupportsOnDemand:           true,
+		SupportsDockerImage:        true,
+		SupportsLocalScript:        false,
+		SupportsDataBundle:         false,
+		SupportedURISchemes:        []string{"gs"},
+		SupportedCheckpointSchemes: []string{"gs"},
+		SupportsObjectStorePull:    true,
 	}, nil
 }
 
@@ -114,17 +125,41 @@ func (p *Provider) configuredHardwareShape() app.HardwareShape {
 	if p.config.AcceleratorType != "" {
 		idParts = append(idParts, strings.ToLower(strings.ReplaceAll(p.config.AcceleratorType, "_", "-")), fmt.Sprintf("%dg", p.config.AcceleratorCount))
 	}
-	return app.HardwareShape{
-		ID:                strings.Join(idParts, "-"),
-		Provider:          ProviderName,
-		Region:            p.config.Location,
-		MachineType:       p.config.MachineType,
-		AcceleratorType:   p.config.AcceleratorType,
-		AcceleratorCount:  int(p.config.AcceleratorCount),
-		GPUFamily:         firstGPUFamily(p.config.AcceleratorType),
-		OnDemandHourlyUSD: p.config.EstimateHourlyUSD,
-		SupportsOnDemand:  true,
+	vramPerGPU := vramGBPerGPU(p.config.AcceleratorType)
+	totalVRAM := vramPerGPU * int(p.config.AcceleratorCount)
+	hourlyUSD := p.config.EstimateHourlyUSD
+	if hourlyUSD == 0 {
+		hourlyUSD = catalogHourlyUSD(p.config.Location, p.config.MachineType, p.config.AcceleratorType, int(p.config.AcceleratorCount))
 	}
+	return app.HardwareShape{
+		ID:                 strings.Join(idParts, "-"),
+		Provider:           ProviderName,
+		Region:             p.config.Location,
+		MachineType:        p.config.MachineType,
+		AcceleratorType:    p.config.AcceleratorType,
+		AcceleratorCount:   int(p.config.AcceleratorCount),
+		GPUFamily:          firstGPUFamily(p.config.AcceleratorType),
+		VRAMGBPerGPU:       vramPerGPU,
+		TotalVRAMGB:        totalVRAM,
+		OnDemandHourlyUSD:  hourlyUSD,
+		SupportsOnDemand:   true,
+		AvailabilityHint:   "configured",
+		AvailabilityReason: "configured from gcp.machine_type and gcp.accelerator_type",
+	}
+}
+
+func (p *Provider) hardwareShapes(ctx context.Context) []app.HardwareShape {
+	configured := p.configuredHardwareShape()
+	shapes := []app.HardwareShape{configured}
+	seen := map[string]bool{configured.ID: true}
+	for _, shape := range catalogHardwareShapes(p.config.Location) {
+		if seen[shape.ID] {
+			continue
+		}
+		shapes = append(shapes, shape)
+		seen[shape.ID] = true
+	}
+	return p.enrichHardwareShapes(ctx, shapes)
 }
 
 func (p *Provider) ValidateJob(ctx context.Context, spec app.JobSpec) app.SupportReport {
@@ -175,7 +210,11 @@ func (p *Provider) ValidateJob(ctx context.Context, spec app.JobSpec) app.Suppor
 }
 
 func (p *Provider) Estimate(ctx context.Context, spec app.JobSpec) (app.CostEstimate, error) {
-	return app.CostEstimate{HourlyUSD: p.config.EstimateHourlyUSD, Currency: "USD"}, nil
+	hourlyUSD := p.config.EstimateHourlyUSD
+	if hourlyUSD == 0 {
+		hourlyUSD = p.estimateHourlyUSD(ctx, p.config.MachineType, p.config.AcceleratorType, int(p.config.AcceleratorCount))
+	}
+	return app.CostEstimate{HourlyUSD: hourlyUSD, Currency: "USD"}, nil
 }
 
 func (p *Provider) Submit(ctx context.Context, req app.SubmitRequest) (app.SubmitResult, error) {
@@ -287,10 +326,17 @@ func (p *Provider) createRequest(req app.SubmitRequest) *aiplatformpb.CreateCust
 		}
 		env = append(env, &aiplatformpb.EnvVar{Name: k, Value: v})
 	}
+	for k, v := range p.gcpRuntimeEnv(req.RunID) {
+		if v == "" {
+			continue
+		}
+		env = append(env, &aiplatformpb.EnvVar{Name: k, Value: v})
+	}
+	machineType, acceleratorTypeValue, acceleratorCount := p.workerPoolHardware(req.SelectedHardware)
 	machine := &aiplatformpb.MachineSpec{
-		MachineType:      p.config.MachineType,
-		AcceleratorType:  acceleratorType(p.config.AcceleratorType),
-		AcceleratorCount: p.config.AcceleratorCount,
+		MachineType:      machineType,
+		AcceleratorType:  acceleratorType(acceleratorTypeValue),
+		AcceleratorCount: acceleratorCount,
 	}
 	worker := &aiplatformpb.WorkerPoolSpec{
 		MachineSpec:  machine,
@@ -309,7 +355,7 @@ func (p *Provider) createRequest(req app.SubmitRequest) *aiplatformpb.CreateCust
 	spec := &aiplatformpb.CustomJobSpec{
 		WorkerPoolSpecs: []*aiplatformpb.WorkerPoolSpec{worker},
 		BaseOutputDirectory: &aiplatformpb.GcsDestination{
-			OutputUriPrefix: strings.TrimRight(p.config.OutputURIPrefix, "/") + "/" + req.RunID,
+			OutputUriPrefix: p.gcpOutputDir(req.RunID),
 		},
 		ServiceAccount: p.config.ServiceAccount,
 		Network:        p.config.Network,
@@ -325,6 +371,39 @@ func (p *Provider) createRequest(req app.SubmitRequest) *aiplatformpb.CreateCust
 			},
 		},
 	}
+}
+
+func (p *Provider) gcpRuntimeEnv(runID string) map[string]string {
+	outputDir := p.gcpOutputDir(runID)
+	return map[string]string{
+		"SWITCHBOARD_GCS_OUTPUT_DIR":         outputDir,
+		"SWITCHBOARD_CHECKPOINT_URI_PREFIX":  outputDir + "/checkpoints",
+		"ORCHESTRATOR_GCS_OUTPUT_DIR":        outputDir,
+		"ORCHESTRATOR_CHECKPOINT_URI_PREFIX": outputDir + "/checkpoints",
+	}
+}
+
+func (p *Provider) gcpOutputDir(runID string) string {
+	return strings.TrimRight(p.config.OutputURIPrefix, "/") + "/" + runID
+}
+
+func (p *Provider) workerPoolHardware(selected *app.HardwareSelection) (string, string, int32) {
+	if selected != nil && selected.Provider == ProviderName {
+		machineType := selected.MachineType
+		if machineType == "" {
+			machineType = p.config.MachineType
+		}
+		acceleratorType := selected.AcceleratorType
+		if acceleratorType == "" {
+			acceleratorType = p.config.AcceleratorType
+		}
+		acceleratorCount := int32(selected.AcceleratorCount)
+		if acceleratorCount == 0 {
+			acceleratorCount = p.config.AcceleratorCount
+		}
+		return machineType, acceleratorType, acceleratorCount
+	}
+	return p.config.MachineType, p.config.AcceleratorType, p.config.AcceleratorCount
 }
 
 func (p *Provider) drainLogs(ctx context.Context, client Client, providerRef string, seen map[string]bool, logFile io.Writer, eventFile io.Writer, runID string, attemptID string, redactor redact.Redactor) {
@@ -414,8 +493,10 @@ func (p *Provider) pollInterval() time.Duration {
 }
 
 type realClient struct {
-	jobs *aiplatform.JobClient
-	logs *logging.Client
+	jobs    *aiplatform.JobClient
+	logs    *logging.Client
+	billing *cloudbilling.APIService
+	compute *compute.Service
 }
 
 func newRealClient(ctx context.Context, config Config) (Client, error) {
@@ -429,7 +510,19 @@ func newRealClient(ctx context.Context, config Config) (Client, error) {
 		_ = jobs.Close()
 		return nil, err
 	}
-	return &realClient{jobs: jobs, logs: logs}, nil
+	billing, err := cloudbilling.NewService(ctx)
+	if err != nil {
+		_ = jobs.Close()
+		_ = logs.Close()
+		return nil, err
+	}
+	computeClient, err := compute.NewService(ctx)
+	if err != nil {
+		_ = jobs.Close()
+		_ = logs.Close()
+		return nil, err
+	}
+	return &realClient{jobs: jobs, logs: logs, billing: billing, compute: computeClient}, nil
 }
 
 func (c *realClient) ValidateAuth(ctx context.Context, parent string) error {
@@ -470,6 +563,41 @@ func (c *realClient) ListLogEntries(ctx context.Context, req *loggingpb.ListLogE
 		}
 		entries = append(entries, entry)
 	}
+}
+
+func (c *realClient) ListCatalogSKUs(ctx context.Context, serviceID string) ([]*cloudbilling.Sku, error) {
+	var skus []*cloudbilling.Sku
+	err := c.billing.Services.Skus.List(serviceID).CurrencyCode("USD").PageSize(5000).Pages(ctx, func(resp *cloudbilling.ListSkusResponse) error {
+		skus = append(skus, resp.Skus...)
+		return nil
+	})
+	return skus, err
+}
+
+func (c *realClient) ListMachineTypes(ctx context.Context, projectID string) ([]*compute.MachineType, error) {
+	var machineTypes []*compute.MachineType
+	err := c.compute.MachineTypes.AggregatedList(projectID).ReturnPartialSuccess(true).Pages(ctx, func(resp *compute.MachineTypeAggregatedList) error {
+		for _, scoped := range resp.Items {
+			machineTypes = append(machineTypes, scoped.MachineTypes...)
+		}
+		return nil
+	})
+	return machineTypes, err
+}
+
+func (c *realClient) ListAcceleratorTypes(ctx context.Context, projectID string) ([]*compute.AcceleratorType, error) {
+	var acceleratorTypes []*compute.AcceleratorType
+	err := c.compute.AcceleratorTypes.AggregatedList(projectID).ReturnPartialSuccess(true).Pages(ctx, func(resp *compute.AcceleratorTypeAggregatedList) error {
+		for _, scoped := range resp.Items {
+			acceleratorTypes = append(acceleratorTypes, scoped.AcceleratorTypes...)
+		}
+		return nil
+	})
+	return acceleratorTypes, err
+}
+
+func (c *realClient) GetRegion(ctx context.Context, projectID string, region string) (*compute.Region, error) {
+	return c.compute.Regions.Get(projectID, region).Context(ctx).Do()
 }
 
 func (c *realClient) Close() error {
@@ -541,12 +669,501 @@ func gpuFamilies(value string) []string {
 	return []string{strings.ToLower(strings.ReplaceAll(value, "_", "-"))}
 }
 
+func gpuFamiliesFromShapes(shapes []app.HardwareShape) []string {
+	seen := map[string]bool{}
+	var families []string
+	for _, shape := range shapes {
+		if shape.GPUFamily == "" || seen[shape.GPUFamily] {
+			continue
+		}
+		families = append(families, shape.GPUFamily)
+		seen[shape.GPUFamily] = true
+	}
+	return families
+}
+
 func firstGPUFamily(value string) string {
 	families := gpuFamilies(value)
 	if len(families) == 0 {
 		return ""
 	}
 	return families[0]
+}
+
+type inventorySnapshot struct {
+	skus             []*cloudbilling.Sku
+	machineTypes     map[string]*compute.MachineType
+	machineZones     map[string][]string
+	acceleratorZones map[string][]string
+	acceleratorMax   map[string]int64
+	quotas           map[string]*compute.Quota
+	errors           []string
+}
+
+func (p *Provider) enrichHardwareShapes(ctx context.Context, shapes []app.HardwareShape) []app.HardwareShape {
+	snapshot := p.inventorySnapshot(ctx)
+	for i := range shapes {
+		shape := shapes[i]
+		if price := priceFromSKUs(snapshot.skus, shape, snapshot.machineTypes[shape.MachineType]); price > 0 {
+			shape.OnDemandHourlyUSD = price
+			if shape.AvailabilityHint == "static_estimate" {
+				shape.AvailabilityHint = "live_pricing"
+				shape.AvailabilityReason = "price from Cloud Billing Catalog API; regional capacity still estimated"
+			}
+		}
+		shape = applyLiveAvailability(shape, snapshot)
+		shapes[i] = shape
+	}
+	return shapes
+}
+
+func (p *Provider) estimateHourlyUSD(ctx context.Context, machineType string, acceleratorType string, acceleratorCount int) float64 {
+	shape := app.HardwareShape{
+		Region:           p.config.Location,
+		MachineType:      machineType,
+		AcceleratorType:  acceleratorType,
+		AcceleratorCount: acceleratorCount,
+	}
+	snapshot := p.inventorySnapshot(ctx)
+	if price := priceFromSKUs(snapshot.skus, shape, snapshot.machineTypes[machineType]); price > 0 {
+		return price
+	}
+	return catalogHourlyUSD(p.config.Location, machineType, acceleratorType, acceleratorCount)
+}
+
+func (p *Provider) inventorySnapshot(ctx context.Context) inventorySnapshot {
+	snapshot := inventorySnapshot{
+		machineTypes:     map[string]*compute.MachineType{},
+		machineZones:     map[string][]string{},
+		acceleratorZones: map[string][]string{},
+		acceleratorMax:   map[string]int64{},
+		quotas:           map[string]*compute.Quota{},
+	}
+	client, err := p.clientFor(ctx)
+	if err != nil {
+		snapshot.errors = append(snapshot.errors, err.Error())
+		return snapshot
+	}
+	if skus, err := client.ListCatalogSKUs(ctx, computeEngineServiceID); err == nil {
+		snapshot.skus = skus
+	} else {
+		snapshot.errors = append(snapshot.errors, fmt.Sprintf("pricing unavailable: %v", err))
+	}
+	if p.config.ProjectID == "" {
+		return snapshot
+	}
+	if machineTypes, err := client.ListMachineTypes(ctx, p.config.ProjectID); err == nil {
+		for _, machineType := range machineTypes {
+			if machineType == nil || !zoneInRegion(machineType.Zone, p.config.Location) {
+				continue
+			}
+			snapshot.machineTypes[machineType.Name] = machineType
+			snapshot.machineZones[machineType.Name] = appendUnique(snapshot.machineZones[machineType.Name], zoneName(machineType.Zone))
+		}
+	} else {
+		snapshot.errors = append(snapshot.errors, fmt.Sprintf("machine inventory unavailable: %v", err))
+	}
+	if acceleratorTypes, err := client.ListAcceleratorTypes(ctx, p.config.ProjectID); err == nil {
+		for _, acceleratorType := range acceleratorTypes {
+			if acceleratorType == nil || !zoneInRegion(acceleratorType.Zone, p.config.Location) {
+				continue
+			}
+			name := normalizeAcceleratorName(acceleratorType.Name)
+			snapshot.acceleratorZones[name] = appendUnique(snapshot.acceleratorZones[name], zoneName(acceleratorType.Zone))
+			if acceleratorType.MaximumCardsPerInstance > snapshot.acceleratorMax[name] {
+				snapshot.acceleratorMax[name] = acceleratorType.MaximumCardsPerInstance
+			}
+		}
+	} else {
+		snapshot.errors = append(snapshot.errors, fmt.Sprintf("accelerator inventory unavailable: %v", err))
+	}
+	if region, err := client.GetRegion(ctx, p.config.ProjectID, p.config.Location); err == nil && region != nil {
+		for _, quota := range region.Quotas {
+			if quota == nil || quota.Metric == "" {
+				continue
+			}
+			snapshot.quotas[quota.Metric] = quota
+		}
+	} else if err != nil {
+		snapshot.errors = append(snapshot.errors, fmt.Sprintf("region quota unavailable: %v", err))
+	}
+	sortSnapshot(snapshot)
+	return snapshot
+}
+
+func applyLiveAvailability(shape app.HardwareShape, snapshot inventorySnapshot) app.HardwareShape {
+	if len(snapshot.machineZones) == 0 && len(snapshot.acceleratorZones) == 0 && len(snapshot.quotas) == 0 {
+		if len(snapshot.errors) > 0 && shape.AvailabilityReason != "" {
+			shape.AvailabilityReason += "; " + strings.Join(snapshot.errors, "; ")
+		}
+		return shape
+	}
+	machineZones := snapshot.machineZones[shape.MachineType]
+	if len(snapshot.machineZones) > 0 && len(machineZones) == 0 {
+		shape.AvailabilityHint = "unavailable"
+		shape.AvailabilityReason = fmt.Sprintf("machine type %q was not listed in region %q", shape.MachineType, shape.Region)
+		return shape
+	}
+	zones := append([]string(nil), machineZones...)
+	if shape.AcceleratorType != "" && shape.AcceleratorCount > 0 {
+		acceleratorName := normalizeAcceleratorName(shape.AcceleratorType)
+		acceleratorZones := snapshot.acceleratorZones[acceleratorName]
+		if len(snapshot.acceleratorZones) > 0 && len(acceleratorZones) == 0 {
+			shape.AvailabilityHint = "unavailable"
+			shape.AvailabilityReason = fmt.Sprintf("accelerator %q was not listed in region %q", shape.AcceleratorType, shape.Region)
+			return shape
+		}
+		if len(zones) > 0 && len(acceleratorZones) > 0 {
+			zones = intersectStrings(zones, acceleratorZones)
+		} else if len(acceleratorZones) > 0 {
+			zones = append([]string(nil), acceleratorZones...)
+		}
+		if maxCards := snapshot.acceleratorMax[acceleratorName]; maxCards > 0 && int64(shape.AcceleratorCount) > maxCards {
+			shape.AvailabilityHint = "unavailable"
+			shape.AvailabilityReason = fmt.Sprintf("accelerator %q supports at most %d cards per instance in listed zones", shape.AcceleratorType, maxCards)
+			return shape
+		}
+		applyQuota(&shape, snapshot, gpuQuotaMetric(shape.AcceleratorType), float64(shape.AcceleratorCount))
+	} else if machine := snapshot.machineTypes[shape.MachineType]; machine != nil {
+		applyQuota(&shape, snapshot, cpuQuotaMetric(shape.MachineType), float64(machine.GuestCpus))
+	}
+	if len(zones) > 0 {
+		sort.Strings(zones)
+		shape.Zones = zones
+	}
+	if shape.AvailabilityHint == "" || shape.AvailabilityHint == "configured" || shape.AvailabilityHint == "static_estimate" || shape.AvailabilityHint == "live_pricing" {
+		if len(zones) > 0 {
+			shape.AvailabilityHint = "live_inventory"
+			shape.AvailabilityReason = "machine, accelerator, and regional quota facts came from Compute Engine APIs"
+		}
+	}
+	return shape
+}
+
+func applyQuota(shape *app.HardwareShape, snapshot inventorySnapshot, metric string, required float64) {
+	if metric == "" {
+		return
+	}
+	shape.QuotaMetric = metric
+	quota := snapshot.quotas[metric]
+	if quota == nil {
+		if len(snapshot.quotas) > 0 && shape.AvailabilityHint == "" {
+			shape.AvailabilityHint = "unknown_quota"
+			shape.AvailabilityReason = fmt.Sprintf("regional quota %q was not present in Compute Engine quota response", metric)
+		}
+		return
+	}
+	shape.QuotaLimit = quota.Limit
+	shape.QuotaUsage = quota.Usage
+	shape.QuotaAvailable = quota.Limit - quota.Usage
+	if quota.Limit > 0 && shape.QuotaAvailable < required {
+		shape.AvailabilityHint = "no_quota"
+		shape.AvailabilityReason = fmt.Sprintf("regional quota %q has %.0f available, requires %.0f", metric, shape.QuotaAvailable, required)
+	}
+}
+
+func priceFromSKUs(skus []*cloudbilling.Sku, shape app.HardwareShape, machineType *compute.MachineType) float64 {
+	if len(skus) == 0 {
+		return 0
+	}
+	total := 0.0
+	if machineType != nil {
+		family := machineFamily(shape.MachineType)
+		corePrice := firstSKUPrice(skus, shape.Region, func(description string) bool {
+			return containsAll(description, family, "core") && onDemandSKU(description)
+		})
+		ramPrice := firstSKUPrice(skus, shape.Region, func(description string) bool {
+			return containsAll(description, family, "ram") && onDemandSKU(description)
+		})
+		if corePrice > 0 {
+			total += float64(machineType.GuestCpus) * corePrice
+		}
+		if ramPrice > 0 {
+			total += float64(machineType.MemoryMb) / 1024 * ramPrice
+		}
+	}
+	if shape.AcceleratorType != "" && shape.AcceleratorCount > 0 {
+		token := acceleratorPriceToken(shape.AcceleratorType)
+		gpuPrice := firstSKUPrice(skus, shape.Region, func(description string) bool {
+			return containsAll(description, token, "gpu") && onDemandSKU(description)
+		})
+		if gpuPrice > 0 {
+			total += float64(shape.AcceleratorCount) * gpuPrice
+		}
+	}
+	return total
+}
+
+func firstSKUPrice(skus []*cloudbilling.Sku, region string, match func(string) bool) float64 {
+	for _, sku := range skus {
+		if sku == nil || !skuAppliesToRegion(sku, region) {
+			continue
+		}
+		description := normalizeDescription(sku.Description)
+		if !match(description) {
+			continue
+		}
+		if price := skuHourlyPriceUSD(sku); price > 0 {
+			return price
+		}
+	}
+	return 0
+}
+
+func skuHourlyPriceUSD(sku *cloudbilling.Sku) float64 {
+	if len(sku.PricingInfo) == 0 {
+		return 0
+	}
+	info := sku.PricingInfo[len(sku.PricingInfo)-1]
+	if info == nil || info.PricingExpression == nil {
+		return 0
+	}
+	expr := info.PricingExpression
+	if expr.UsageUnit != "" && !strings.EqualFold(expr.UsageUnit, "h") {
+		return 0
+	}
+	for _, tier := range expr.TieredRates {
+		if tier == nil || tier.UnitPrice == nil || tier.UnitPrice.CurrencyCode != "USD" {
+			continue
+		}
+		return float64(tier.UnitPrice.Units) + float64(tier.UnitPrice.Nanos)/1_000_000_000
+	}
+	return 0
+}
+
+func skuAppliesToRegion(sku *cloudbilling.Sku, region string) bool {
+	if len(sku.ServiceRegions) == 0 {
+		return true
+	}
+	for _, serviceRegion := range sku.ServiceRegions {
+		if serviceRegion == region || serviceRegion == regionGroup(region) {
+			return true
+		}
+	}
+	return false
+}
+
+func onDemandSKU(description string) bool {
+	for _, excluded := range []string{"preemptible", "spot", "commitment", "committed", "sole tenancy", "license"} {
+		if strings.Contains(description, excluded) {
+			return false
+		}
+	}
+	return true
+}
+
+func containsAll(value string, needles ...string) bool {
+	for _, needle := range needles {
+		if needle == "" {
+			continue
+		}
+		if !strings.Contains(value, normalizeDescription(needle)) {
+			return false
+		}
+	}
+	return true
+}
+
+func normalizeDescription(value string) string {
+	value = strings.ToLower(strings.ReplaceAll(value, "_", " "))
+	value = strings.ReplaceAll(value, "-", " ")
+	return strings.Join(strings.Fields(value), " ")
+}
+
+func acceleratorPriceToken(value string) string {
+	name := normalizeAcceleratorName(value)
+	switch name {
+	case "nvidia-tesla-t4":
+		return "t4"
+	case "nvidia-l4":
+		return "l4"
+	case "nvidia-tesla-a100":
+		return "a100"
+	case "nvidia-a100-80gb":
+		return "a100 80gb"
+	case "nvidia-h100-80gb":
+		return "h100"
+	default:
+		return strings.TrimPrefix(strings.ReplaceAll(name, "-", " "), "nvidia ")
+	}
+}
+
+func machineFamily(machineType string) string {
+	if idx := strings.Index(machineType, "-"); idx > 0 {
+		return strings.ToLower(machineType[:idx])
+	}
+	return strings.ToLower(machineType)
+}
+
+func gpuQuotaMetric(acceleratorType string) string {
+	switch normalizeAcceleratorName(acceleratorType) {
+	case "nvidia-tesla-t4":
+		return "NVIDIA_T4_GPUS"
+	case "nvidia-l4":
+		return "NVIDIA_L4_GPUS"
+	case "nvidia-tesla-a100":
+		return "NVIDIA_A100_GPUS"
+	case "nvidia-a100-80gb":
+		return "NVIDIA_A100_80GB_GPUS"
+	case "nvidia-h100-80gb":
+		return "NVIDIA_H100_GPUS"
+	default:
+		return ""
+	}
+}
+
+func cpuQuotaMetric(machineType string) string {
+	switch machineFamily(machineType) {
+	case "a2":
+		return "A2_CPUS"
+	case "c2":
+		return "C2_CPUS"
+	case "c2d":
+		return "C2D_CPUS"
+	case "c3":
+		return "C3_CPUS"
+	case "e2":
+		return "E2_CPUS"
+	case "m1":
+		return "M1_CPUS"
+	case "m2":
+		return "M2_CPUS"
+	case "m3":
+		return "M3_CPUS"
+	case "n2":
+		return "N2_CPUS"
+	case "n2d":
+		return "N2D_CPUS"
+	case "t2a":
+		return "T2A_CPUS"
+	case "t2d":
+		return "T2D_CPUS"
+	default:
+		return "CPUS"
+	}
+}
+
+func normalizeAcceleratorName(value string) string {
+	value = strings.ToLower(strings.ReplaceAll(value, "_", "-"))
+	if value == "tesla-t4" {
+		return "nvidia-tesla-t4"
+	}
+	if value == "tesla-a100" {
+		return "nvidia-tesla-a100"
+	}
+	if strings.HasPrefix(value, "nvidia-") {
+		return value
+	}
+	return "nvidia-" + value
+}
+
+func zoneInRegion(zone string, region string) bool {
+	zone = zoneName(zone)
+	return region == "" || strings.HasPrefix(zone, region+"-")
+}
+
+func zoneName(value string) string {
+	if idx := strings.LastIndex(value, "/"); idx >= 0 {
+		return value[idx+1:]
+	}
+	return value
+}
+
+func regionGroup(region string) string {
+	if idx := strings.Index(region, "-"); idx > 0 {
+		return region[:idx]
+	}
+	return region
+}
+
+func appendUnique(values []string, value string) []string {
+	if value == "" {
+		return values
+	}
+	for _, existing := range values {
+		if existing == value {
+			return values
+		}
+	}
+	return append(values, value)
+}
+
+func intersectStrings(a []string, b []string) []string {
+	seen := map[string]bool{}
+	for _, value := range a {
+		seen[value] = true
+	}
+	var out []string
+	for _, value := range b {
+		if seen[value] {
+			out = appendUnique(out, value)
+		}
+	}
+	return out
+}
+
+func sortSnapshot(snapshot inventorySnapshot) {
+	for key := range snapshot.machineZones {
+		sort.Strings(snapshot.machineZones[key])
+	}
+	for key := range snapshot.acceleratorZones {
+		sort.Strings(snapshot.acceleratorZones[key])
+	}
+}
+
+func catalogHardwareShapes(location string) []app.HardwareShape {
+	if location == "" {
+		location = "us-central1"
+	}
+	return []app.HardwareShape{
+		catalogShape(location, "n1-standard-4-t4-1", "n1-standard-4", "NVIDIA_TESLA_T4", 1, 16, 0.60),
+		catalogShape(location, "g2-standard-12-l4-1", "g2-standard-12", "NVIDIA_L4", 1, 24, 1.20),
+		catalogShape(location, "a2-highgpu-1g-a100-1", "a2-highgpu-1g", "NVIDIA_TESLA_A100", 1, 40, 3.70),
+		catalogShape(location, "a2-ultragpu-1g-a100-80gb-1", "a2-ultragpu-1g", "NVIDIA_A100_80GB", 1, 80, 5.50),
+		catalogShape(location, "a3-highgpu-8g-h100-8", "a3-highgpu-8g", "NVIDIA_H100_80GB", 8, 80, 88.00),
+	}
+}
+
+func catalogShape(location string, idSuffix string, machineType string, acceleratorType string, acceleratorCount int, vramPerGPU int, hourlyUSD float64) app.HardwareShape {
+	return app.HardwareShape{
+		ID:                 "gcp-" + location + "-" + idSuffix,
+		Provider:           ProviderName,
+		Region:             location,
+		MachineType:        machineType,
+		AcceleratorType:    acceleratorType,
+		AcceleratorCount:   acceleratorCount,
+		GPUFamily:          firstGPUFamily(acceleratorType),
+		VRAMGBPerGPU:       vramPerGPU,
+		TotalVRAMGB:        vramPerGPU * acceleratorCount,
+		OnDemandHourlyUSD:  hourlyUSD,
+		SupportsOnDemand:   true,
+		AvailabilityHint:   "static_estimate",
+		AvailabilityReason: "static Switchboard catalog estimate; validate quota and regional availability before large runs",
+	}
+}
+
+func vramGBPerGPU(acceleratorType string) int {
+	switch strings.ToUpper(strings.ReplaceAll(acceleratorType, "-", "_")) {
+	case "NVIDIA_TESLA_T4", "TESLA_T4":
+		return 16
+	case "NVIDIA_L4", "L4":
+		return 24
+	case "NVIDIA_TESLA_A100", "TESLA_A100":
+		return 40
+	case "NVIDIA_A100_80GB", "A100_80GB", "NVIDIA_H100_80GB", "H100_80GB":
+		return 80
+	default:
+		return 0
+	}
+}
+
+func catalogHourlyUSD(location string, machineType string, acceleratorType string, acceleratorCount int) float64 {
+	for _, shape := range catalogHardwareShapes(location) {
+		if shape.MachineType == machineType && strings.EqualFold(shape.AcceleratorType, acceleratorType) && shape.AcceleratorCount == acceleratorCount {
+			return shape.OnDemandHourlyUSD
+		}
+	}
+	return 0
 }
 
 func attemptState(state aiplatformpb.JobState) app.AttemptState {

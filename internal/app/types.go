@@ -128,6 +128,7 @@ type Summary struct {
 	CheckpointCount  int                `json:"checkpoint_count"`
 	ResumeCount      int                `json:"resume_count"`
 	ExitReason       string             `json:"exit_reason"`
+	Routing          *RoutingDecision   `json:"routing,omitempty"`
 }
 
 type RoutingCandidate struct {
@@ -136,46 +137,78 @@ type RoutingCandidate struct {
 	Reasons  []string `json:"reasons,omitempty"`
 }
 
+type HardwareSelection struct {
+	Provider         string  `json:"provider"`
+	ShapeID          string  `json:"shape_id"`
+	Region           string  `json:"region,omitempty"`
+	MachineType      string  `json:"machine_type,omitempty"`
+	AcceleratorType  string  `json:"accelerator_type,omitempty"`
+	AcceleratorCount int     `json:"accelerator_count,omitempty"`
+	GPUFamily        string  `json:"gpu_family,omitempty"`
+	TotalVRAMGB      int     `json:"total_vram_gb,omitempty"`
+	HourlyUSD        float64 `json:"hourly_usd,omitempty"`
+}
+
+type HardwareCandidate struct {
+	Provider string   `json:"provider"`
+	ShapeID  string   `json:"shape_id"`
+	Score    float64  `json:"score,omitempty"`
+	Reasons  []string `json:"reasons,omitempty"`
+}
+
 type RoutingDecision struct {
-	RunID             string             `json:"run_id"`
-	SelectedProvider  string             `json:"selected_provider"`
-	Objective         string             `json:"objective"`
-	SelectionReason   string             `json:"selection_reason"`
-	EligibleProviders []RoutingCandidate `json:"eligible_providers,omitempty"`
-	RejectedProviders []RoutingCandidate `json:"rejected_providers,omitempty"`
+	RunID                   string              `json:"run_id"`
+	SelectedProvider        string              `json:"selected_provider"`
+	Objective               string              `json:"objective"`
+	SelectionReason         string              `json:"selection_reason"`
+	EligibleProviders       []RoutingCandidate  `json:"eligible_providers,omitempty"`
+	RejectedProviders       []RoutingCandidate  `json:"rejected_providers,omitempty"`
+	SelectedHardware        *HardwareSelection  `json:"selected_hardware,omitempty"`
+	EligibleHardware        []HardwareCandidate `json:"eligible_hardware,omitempty"`
+	RejectedHardware        []HardwareCandidate `json:"rejected_hardware,omitempty"`
+	EstimatedRequiredVRAMGB *float64            `json:"estimated_required_vram_gb,omitempty"`
+	EstimatedRuntimeSeconds *float64            `json:"estimated_runtime_sec,omitempty"`
+	EstimatedTotalCostUSD   *float64            `json:"estimated_total_cost_usd,omitempty"`
+	Confidence              string              `json:"confidence,omitempty"`
 }
 
 type HardwareShape struct {
-	ID                 string  `json:"id" yaml:"id"`
-	Provider           string  `json:"provider,omitempty" yaml:"provider,omitempty"`
-	Region             string  `json:"region" yaml:"region"`
-	MachineType        string  `json:"machine_type" yaml:"machine_type"`
-	AcceleratorType    string  `json:"accelerator_type,omitempty" yaml:"accelerator_type,omitempty"`
-	AcceleratorCount   int     `json:"accelerator_count" yaml:"accelerator_count"`
-	GPUFamily          string  `json:"gpu_family,omitempty" yaml:"gpu_family,omitempty"`
-	VRAMGBPerGPU       int     `json:"vram_gb_per_gpu,omitempty" yaml:"vram_gb_per_gpu,omitempty"`
-	TotalVRAMGB        int     `json:"total_vram_gb,omitempty" yaml:"total_vram_gb,omitempty"`
-	OnDemandHourlyUSD  float64 `json:"on_demand_hourly_usd,omitempty" yaml:"on_demand_hourly_usd,omitempty"`
-	SpotHourlyUSD      float64 `json:"spot_hourly_usd,omitempty" yaml:"spot_hourly_usd,omitempty"`
-	SupportsOnDemand   bool    `json:"supports_on_demand" yaml:"supports_on_demand"`
-	SupportsSpot       bool    `json:"supports_spot" yaml:"supports_spot"`
-	MaxRuntimeHours    *int    `json:"max_runtime_hours,omitempty" yaml:"max_runtime_hours,omitempty"`
-	AvailabilityHint   string  `json:"availability_hint,omitempty" yaml:"availability_hint,omitempty"`
-	AvailabilityReason string  `json:"availability_reason,omitempty" yaml:"availability_reason,omitempty"`
+	ID                 string   `json:"id" yaml:"id"`
+	Provider           string   `json:"provider,omitempty" yaml:"provider,omitempty"`
+	Region             string   `json:"region" yaml:"region"`
+	Zones              []string `json:"zones,omitempty" yaml:"zones,omitempty"`
+	MachineType        string   `json:"machine_type" yaml:"machine_type"`
+	AcceleratorType    string   `json:"accelerator_type,omitempty" yaml:"accelerator_type,omitempty"`
+	AcceleratorCount   int      `json:"accelerator_count" yaml:"accelerator_count"`
+	GPUFamily          string   `json:"gpu_family,omitempty" yaml:"gpu_family,omitempty"`
+	VRAMGBPerGPU       int      `json:"vram_gb_per_gpu,omitempty" yaml:"vram_gb_per_gpu,omitempty"`
+	TotalVRAMGB        int      `json:"total_vram_gb,omitempty" yaml:"total_vram_gb,omitempty"`
+	OnDemandHourlyUSD  float64  `json:"on_demand_hourly_usd,omitempty" yaml:"on_demand_hourly_usd,omitempty"`
+	SpotHourlyUSD      float64  `json:"spot_hourly_usd,omitempty" yaml:"spot_hourly_usd,omitempty"`
+	SupportsOnDemand   bool     `json:"supports_on_demand" yaml:"supports_on_demand"`
+	SupportsSpot       bool     `json:"supports_spot" yaml:"supports_spot"`
+	MaxRuntimeHours    *int     `json:"max_runtime_hours,omitempty" yaml:"max_runtime_hours,omitempty"`
+	AvailabilityHint   string   `json:"availability_hint,omitempty" yaml:"availability_hint,omitempty"`
+	AvailabilityReason string   `json:"availability_reason,omitempty" yaml:"availability_reason,omitempty"`
+	QuotaMetric        string   `json:"quota_metric,omitempty" yaml:"quota_metric,omitempty"`
+	QuotaLimit         float64  `json:"quota_limit,omitempty" yaml:"quota_limit,omitempty"`
+	QuotaUsage         float64  `json:"quota_usage,omitempty" yaml:"quota_usage,omitempty"`
+	QuotaAvailable     float64  `json:"quota_available,omitempty" yaml:"quota_available,omitempty"`
 }
 
 type ProviderCapabilities struct {
-	GPUFamilies             []string        `json:"gpu_families"`
-	Regions                 []string        `json:"regions"`
-	HardwareShapes          []HardwareShape `json:"hardware_shapes,omitempty"`
-	SupportsSpot            bool            `json:"supports_spot"`
-	SupportsOnDemand        bool            `json:"supports_on_demand"`
-	SupportsDockerImage     bool            `json:"supports_docker_image"`
-	SupportsLocalScript     bool            `json:"supports_local_script"`
-	SupportsDataBundle      bool            `json:"supports_data_bundle"`
-	SupportedURISchemes     []string        `json:"supported_uri_schemes"`
-	SupportsObjectStorePull bool            `json:"supports_object_store_pull"`
-	MaxRuntimeHours         *int            `json:"max_runtime_hours,omitempty"`
+	GPUFamilies                []string        `json:"gpu_families"`
+	Regions                    []string        `json:"regions"`
+	HardwareShapes             []HardwareShape `json:"hardware_shapes,omitempty"`
+	SupportsSpot               bool            `json:"supports_spot"`
+	SupportsOnDemand           bool            `json:"supports_on_demand"`
+	SupportsDockerImage        bool            `json:"supports_docker_image"`
+	SupportsLocalScript        bool            `json:"supports_local_script"`
+	SupportsDataBundle         bool            `json:"supports_data_bundle"`
+	SupportedURISchemes        []string        `json:"supported_uri_schemes"`
+	SupportedCheckpointSchemes []string        `json:"supported_checkpoint_schemes,omitempty"`
+	SupportsObjectStorePull    bool            `json:"supports_object_store_pull"`
+	MaxRuntimeHours            *int            `json:"max_runtime_hours,omitempty"`
 }
 
 type ProviderErrorKind string
@@ -258,13 +291,14 @@ type CheckpointRef struct {
 }
 
 type SubmitRequest struct {
-	JobSpec    JobSpec
-	RunID      string
-	AttemptID  string
-	ResumeFrom *CheckpointRef
-	RuntimeEnv map[string]string
-	RunDir     string
-	OnStarted  func(ref ProviderJobRef) error
+	JobSpec          JobSpec
+	RunID            string
+	AttemptID        string
+	ResumeFrom       *CheckpointRef
+	SelectedHardware *HardwareSelection
+	RuntimeEnv       map[string]string
+	RunDir           string
+	OnStarted        func(ref ProviderJobRef) error
 }
 
 type SubmitResult struct {

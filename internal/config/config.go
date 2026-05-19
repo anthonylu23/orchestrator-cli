@@ -14,13 +14,14 @@ import (
 const DefaultBundleMaxSizeMB = 512
 
 type Config struct {
-	Job      JobConfig      `yaml:"job"`
-	Data     DataConfig     `yaml:"data"`
-	Routing  RoutingConfig  `yaml:"routing"`
-	Sizing   SizingConfig   `yaml:"sizing"`
-	Hardware HardwareConfig `yaml:"hardware"`
-	Mock     MockConfig     `yaml:"mock"`
-	GCP      GCPConfig      `yaml:"gcp"`
+	Job       JobConfig       `yaml:"job"`
+	Data      DataConfig      `yaml:"data"`
+	Packaging PackagingConfig `yaml:"packaging"`
+	Routing   RoutingConfig   `yaml:"routing"`
+	Sizing    SizingConfig    `yaml:"sizing"`
+	Hardware  HardwareConfig  `yaml:"hardware"`
+	Mock      MockConfig      `yaml:"mock"`
+	GCP       GCPConfig       `yaml:"gcp"`
 }
 
 type JobConfig struct {
@@ -36,6 +37,13 @@ type JobConfig struct {
 type DataConfig struct {
 	Inputs []app.DataInput `yaml:"inputs"`
 	Bundle BundleConfig    `yaml:"bundle"`
+}
+
+type PackagingConfig struct {
+	Dockerfile string `yaml:"dockerfile"`
+	Context    string `yaml:"context"`
+	Image      string `yaml:"image"`
+	Platform   string `yaml:"platform"`
 }
 
 type BundleConfig struct {
@@ -104,18 +112,19 @@ type MockConfig struct {
 }
 
 type GCPConfig struct {
-	ProjectID           string  `yaml:"project_id"`
-	Location            string  `yaml:"location"`
-	OutputURIPrefix     string  `yaml:"output_uri_prefix"`
-	MachineType         string  `yaml:"machine_type"`
-	AcceleratorType     string  `yaml:"accelerator_type"`
-	AcceleratorCount    int32   `yaml:"accelerator_count"`
-	BootDiskType        string  `yaml:"boot_disk_type"`
-	BootDiskSizeGB      int32   `yaml:"boot_disk_size_gb"`
-	ServiceAccount      string  `yaml:"service_account"`
-	Network             string  `yaml:"network"`
-	PollIntervalSeconds int     `yaml:"poll_interval_seconds"`
-	EstimateHourlyUSD   float64 `yaml:"estimate_hourly_usd"`
+	ProjectID                  string  `yaml:"project_id"`
+	Location                   string  `yaml:"location"`
+	OutputURIPrefix            string  `yaml:"output_uri_prefix"`
+	MachineType                string  `yaml:"machine_type"`
+	AcceleratorType            string  `yaml:"accelerator_type"`
+	AcceleratorCount           int32   `yaml:"accelerator_count"`
+	BootDiskType               string  `yaml:"boot_disk_type"`
+	BootDiskSizeGB             int32   `yaml:"boot_disk_size_gb"`
+	ServiceAccount             string  `yaml:"service_account"`
+	Network                    string  `yaml:"network"`
+	PollIntervalSeconds        int     `yaml:"poll_interval_seconds"`
+	EstimateHourlyUSD          float64 `yaml:"estimate_hourly_usd"`
+	ArtifactRegistryRepository string  `yaml:"artifact_registry_repository"`
 }
 
 type MockProviderConfig struct {
@@ -148,6 +157,7 @@ type TrainFlags struct {
 type ResolvedTrainConfig struct {
 	Provider                  string
 	Job                       app.JobSpec
+	Packaging                 PackagingConfig
 	Routing                   RoutingConfig
 	Sizing                    SizingConfig
 	Hardware                  HardwareConfig
@@ -224,6 +234,7 @@ func LoadTrain(flags TrainFlags) (ResolvedTrainConfig, error) {
 	return ResolvedTrainConfig{
 		Provider:                  provider,
 		Job:                       job,
+		Packaging:                 resolvePackaging(cfg.Packaging),
 		Routing:                   resolveRouting(cfg.Routing),
 		Sizing:                    cfg.Sizing,
 		Hardware:                  cfg.Hardware,
@@ -233,7 +244,14 @@ func LoadTrain(flags TrainFlags) (ResolvedTrainConfig, error) {
 		RequireOverrideAboveLimit: requireOverride,
 		AllowLargeDataBundle:      flags.AllowLargeDataBundle,
 		SwitchboardHome:           resolvedHome,
-	}, validateProviderConfig(provider, job, resolveGCP(cfg.GCP))
+	}, validateProviderConfig(provider, job, resolvePackaging(cfg.Packaging), resolveGCP(cfg.GCP))
+}
+
+func resolvePackaging(packaging PackagingConfig) PackagingConfig {
+	if packaging.Context == "" {
+		packaging.Context = "."
+	}
+	return packaging
 }
 
 func resolveRouting(routing RoutingConfig) RoutingConfig {
@@ -265,12 +283,12 @@ func resolveGCP(gcp GCPConfig) GCPConfig {
 	return gcp
 }
 
-func validateProviderConfig(provider string, job app.JobSpec, gcp GCPConfig) error {
+func validateProviderConfig(provider string, job app.JobSpec, packaging PackagingConfig, gcp GCPConfig) error {
 	if provider != "gcp" {
 		return nil
 	}
-	if job.Image == "" {
-		return errors.New("gcp provider requires job.image")
+	if job.Image == "" && !canPackageForGCP(job, packaging, gcp) {
+		return errors.New("gcp provider requires job.image or packaging config for job.script")
 	}
 	if gcp.ProjectID == "" {
 		return errors.New("gcp.project_id is required")
@@ -282,6 +300,16 @@ func validateProviderConfig(provider string, job app.JobSpec, gcp GCPConfig) err
 		return errors.New("gcp.output_uri_prefix is required")
 	}
 	return nil
+}
+
+func canPackageForGCP(job app.JobSpec, packaging PackagingConfig, gcp GCPConfig) bool {
+	if job.Script == "" {
+		return false
+	}
+	if packaging.Image != "" {
+		return true
+	}
+	return gcp.ProjectID != "" && gcp.Location != "" && gcp.ArtifactRegistryRepository != ""
 }
 
 func LoadFile(path string) (Config, error) {

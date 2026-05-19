@@ -70,6 +70,13 @@ CREATE TABLE IF NOT EXISTS routing_decisions (
   selection_reason TEXT NOT NULL,
   eligible_json TEXT NOT NULL,
   rejected_json TEXT NOT NULL,
+  selected_hardware_json TEXT NOT NULL DEFAULT '',
+  eligible_hardware_json TEXT NOT NULL DEFAULT '',
+  rejected_hardware_json TEXT NOT NULL DEFAULT '',
+  estimated_required_vram_gb REAL,
+  estimated_runtime_sec REAL,
+  estimated_total_cost_usd REAL,
+  confidence TEXT NOT NULL DEFAULT '',
   FOREIGN KEY(run_id) REFERENCES runs(id)
 );
 `); err != nil {
@@ -88,6 +95,22 @@ CREATE TABLE IF NOT EXISTS routing_decisions (
 		{name: "estimate_currency", def: "TEXT NOT NULL DEFAULT ''"},
 	} {
 		if err := s.addColumnIfMissing(ctx, "attempts", column.name, column.def); err != nil {
+			return err
+		}
+	}
+	for _, column := range []struct {
+		name string
+		def  string
+	}{
+		{name: "selected_hardware_json", def: "TEXT NOT NULL DEFAULT ''"},
+		{name: "eligible_hardware_json", def: "TEXT NOT NULL DEFAULT ''"},
+		{name: "rejected_hardware_json", def: "TEXT NOT NULL DEFAULT ''"},
+		{name: "estimated_required_vram_gb", def: "REAL"},
+		{name: "estimated_runtime_sec", def: "REAL"},
+		{name: "estimated_total_cost_usd", def: "REAL"},
+		{name: "confidence", def: "TEXT NOT NULL DEFAULT ''"},
+	} {
+		if err := s.addColumnIfMissing(ctx, "routing_decisions", column.name, column.def); err != nil {
 			return err
 		}
 	}
@@ -173,26 +196,55 @@ func (s *Store) SaveRoutingDecision(ctx context.Context, decision app.RoutingDec
 	if err != nil {
 		return err
 	}
+	selectedHardware, err := json.Marshal(decision.SelectedHardware)
+	if err != nil {
+		return err
+	}
+	eligibleHardware, err := json.Marshal(decision.EligibleHardware)
+	if err != nil {
+		return err
+	}
+	rejectedHardware, err := json.Marshal(decision.RejectedHardware)
+	if err != nil {
+		return err
+	}
 	_, err = s.db.ExecContext(ctx, `
-INSERT INTO routing_decisions (run_id, selected_provider, objective, selection_reason, eligible_json, rejected_json)
-VALUES (?, ?, ?, ?, ?, ?)
+INSERT INTO routing_decisions (
+  run_id, selected_provider, objective, selection_reason, eligible_json, rejected_json,
+  selected_hardware_json, eligible_hardware_json, rejected_hardware_json,
+  estimated_required_vram_gb, estimated_runtime_sec, estimated_total_cost_usd, confidence
+)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(run_id) DO UPDATE SET
   selected_provider = excluded.selected_provider,
   objective = excluded.objective,
   selection_reason = excluded.selection_reason,
   eligible_json = excluded.eligible_json,
-  rejected_json = excluded.rejected_json`,
-		decision.RunID, decision.SelectedProvider, decision.Objective, decision.SelectionReason, string(eligible), string(rejected))
+  rejected_json = excluded.rejected_json,
+  selected_hardware_json = excluded.selected_hardware_json,
+  eligible_hardware_json = excluded.eligible_hardware_json,
+  rejected_hardware_json = excluded.rejected_hardware_json,
+  estimated_required_vram_gb = excluded.estimated_required_vram_gb,
+  estimated_runtime_sec = excluded.estimated_runtime_sec,
+  estimated_total_cost_usd = excluded.estimated_total_cost_usd,
+  confidence = excluded.confidence`,
+		decision.RunID, decision.SelectedProvider, decision.Objective, decision.SelectionReason, string(eligible), string(rejected),
+		stringOrEmptyHardware(decision.SelectedHardware, string(selectedHardware)), string(eligibleHardware), string(rejectedHardware),
+		decision.EstimatedRequiredVRAMGB, decision.EstimatedRuntimeSeconds, decision.EstimatedTotalCostUSD, decision.Confidence)
 	return err
 }
 
 func (s *Store) GetRoutingDecision(ctx context.Context, runID string) (app.RoutingDecision, error) {
 	row := s.db.QueryRowContext(ctx, `
-SELECT run_id, selected_provider, objective, selection_reason, eligible_json, rejected_json
+SELECT run_id, selected_provider, objective, selection_reason, eligible_json, rejected_json,
+  selected_hardware_json, eligible_hardware_json, rejected_hardware_json,
+  estimated_required_vram_gb, estimated_runtime_sec, estimated_total_cost_usd, confidence
 FROM routing_decisions WHERE run_id = ?`, runID)
 	var decision app.RoutingDecision
-	var eligible, rejected string
-	if err := row.Scan(&decision.RunID, &decision.SelectedProvider, &decision.Objective, &decision.SelectionReason, &eligible, &rejected); err != nil {
+	var eligible, rejected, selectedHardware, eligibleHardware, rejectedHardware string
+	var requiredVRAM, runtimeSeconds, totalCost sql.NullFloat64
+	if err := row.Scan(&decision.RunID, &decision.SelectedProvider, &decision.Objective, &decision.SelectionReason, &eligible, &rejected,
+		&selectedHardware, &eligibleHardware, &rejectedHardware, &requiredVRAM, &runtimeSeconds, &totalCost, &decision.Confidence); err != nil {
 		if err == sql.ErrNoRows {
 			return app.RoutingDecision{}, fmt.Errorf("routing decision for run %q not found", runID)
 		}
@@ -204,7 +256,43 @@ FROM routing_decisions WHERE run_id = ?`, runID)
 	if err := json.Unmarshal([]byte(rejected), &decision.RejectedProviders); err != nil {
 		return app.RoutingDecision{}, err
 	}
+	if selectedHardware != "" {
+		var hardware app.HardwareSelection
+		if err := json.Unmarshal([]byte(selectedHardware), &hardware); err != nil {
+			return app.RoutingDecision{}, err
+		}
+		decision.SelectedHardware = &hardware
+	}
+	if eligibleHardware != "" {
+		if err := json.Unmarshal([]byte(eligibleHardware), &decision.EligibleHardware); err != nil {
+			return app.RoutingDecision{}, err
+		}
+	}
+	if rejectedHardware != "" {
+		if err := json.Unmarshal([]byte(rejectedHardware), &decision.RejectedHardware); err != nil {
+			return app.RoutingDecision{}, err
+		}
+	}
+	if requiredVRAM.Valid {
+		value := requiredVRAM.Float64
+		decision.EstimatedRequiredVRAMGB = &value
+	}
+	if runtimeSeconds.Valid {
+		value := runtimeSeconds.Float64
+		decision.EstimatedRuntimeSeconds = &value
+	}
+	if totalCost.Valid {
+		value := totalCost.Float64
+		decision.EstimatedTotalCostUSD = &value
+	}
 	return decision, nil
+}
+
+func stringOrEmptyHardware(selection *app.HardwareSelection, value string) string {
+	if selection == nil {
+		return ""
+	}
+	return value
 }
 
 func (s *Store) GetRun(ctx context.Context, runID string) (app.Run, error) {

@@ -15,6 +15,8 @@ import (
 	"github.com/anthonylu23/switchboard-cli/internal/app"
 	"github.com/anthonylu23/switchboard-cli/internal/artifact"
 	"github.com/anthonylu23/switchboard-cli/internal/provider/contract"
+	cloudbilling "google.golang.org/api/cloudbilling/v1"
+	compute "google.golang.org/api/compute/v1"
 	"google.golang.org/genproto/googleapis/rpc/status"
 	"google.golang.org/grpc/codes"
 	grpcstatus "google.golang.org/grpc/status"
@@ -118,14 +120,100 @@ func TestCapabilitiesReportConfiguredHardwareShape(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Capabilities returned error: %v", err)
 	}
-	if len(capabilities.HardwareShapes) != 1 {
+	if len(capabilities.HardwareShapes) < 2 {
 		t.Fatalf("hardware shapes = %#v", capabilities.HardwareShapes)
 	}
 	shape := capabilities.HardwareShapes[0]
 	if shape.Provider != ProviderName || shape.MachineType != "n1-standard-8" || shape.AcceleratorCount != 1 {
 		t.Fatalf("shape = %#v", shape)
 	}
-	if shape.GPUFamily != "nvidia-tesla-t4" || shape.OnDemandHourlyUSD != 2.5 {
+	if shape.GPUFamily != "nvidia-tesla-t4" || shape.OnDemandHourlyUSD != 2.5 || shape.VRAMGBPerGPU != 16 || shape.TotalVRAMGB != 16 {
+		t.Fatalf("shape = %#v", shape)
+	}
+	foundCatalogA100 := false
+	for _, candidate := range capabilities.HardwareShapes {
+		if candidate.MachineType == "a2-highgpu-1g" && candidate.AcceleratorType == "NVIDIA_TESLA_A100" && candidate.OnDemandHourlyUSD > 0 {
+			foundCatalogA100 = true
+		}
+	}
+	if !foundCatalogA100 {
+		t.Fatalf("expected static A100 catalog shape: %#v", capabilities.HardwareShapes)
+	}
+}
+
+func TestEstimateUsesCatalogWhenHourlyOverrideIsUnset(t *testing.T) {
+	cfg := testConfig()
+	cfg.EstimateHourlyUSD = 0
+	cfg.MachineType = "a2-highgpu-1g"
+	cfg.AcceleratorType = "NVIDIA_TESLA_A100"
+	cfg.AcceleratorCount = 1
+	provider := NewWithClient(cfg, &fakeClient{}, &bytes.Buffer{}, &bytes.Buffer{})
+	estimate, err := provider.Estimate(context.Background(), app.JobSpec{Image: "image"})
+	if err != nil {
+		t.Fatalf("Estimate returned error: %v", err)
+	}
+	if estimate.HourlyUSD != 3.70 || estimate.Currency != "USD" {
+		t.Fatalf("estimate = %#v", estimate)
+	}
+}
+
+func TestCapabilitiesUseLivePricingAndCapacityWhenAvailable(t *testing.T) {
+	cfg := testConfig()
+	cfg.EstimateHourlyUSD = 0
+	client := &fakeClient{
+		skus: []*cloudbilling.Sku{
+			hourlySKU("N1 Predefined Instance Core running in Americas", "us", 0.05),
+			hourlySKU("N1 Predefined Instance Ram running in Americas", "us", 0.01),
+			hourlySKU("Nvidia Tesla T4 GPU running in Americas", "us", 0.35),
+		},
+		machineTypes: []*compute.MachineType{
+			{Name: "n1-standard-8", Zone: "https://www.googleapis.com/compute/v1/projects/test/zones/us-central1-a", GuestCpus: 8, MemoryMb: 30 * 1024},
+		},
+		acceleratorTypes: []*compute.AcceleratorType{
+			{Name: "nvidia-tesla-t4", Zone: "us-central1-a", MaximumCardsPerInstance: 4},
+		},
+		region: &compute.Region{Quotas: []*compute.Quota{
+			{Metric: "NVIDIA_T4_GPUS", Limit: 8, Usage: 2},
+		}},
+	}
+	provider := NewWithClient(cfg, client, &bytes.Buffer{}, &bytes.Buffer{})
+	capabilities, err := provider.Capabilities(context.Background())
+	if err != nil {
+		t.Fatalf("Capabilities returned error: %v", err)
+	}
+	shape := capabilities.HardwareShapes[0]
+	if shape.OnDemandHourlyUSD < 1.049 || shape.OnDemandHourlyUSD > 1.051 {
+		t.Fatalf("hourly = %f, shape = %#v", shape.OnDemandHourlyUSD, shape)
+	}
+	if shape.AvailabilityHint != "live_inventory" || shape.QuotaMetric != "NVIDIA_T4_GPUS" || shape.QuotaAvailable != 6 {
+		t.Fatalf("shape = %#v", shape)
+	}
+	if len(shape.Zones) != 1 || shape.Zones[0] != "us-central1-a" {
+		t.Fatalf("zones = %#v", shape.Zones)
+	}
+}
+
+func TestCapabilitiesMarkNoQuotaShapes(t *testing.T) {
+	cfg := testConfig()
+	cfg.EstimateHourlyUSD = 0
+	client := &fakeClient{
+		machineTypes: []*compute.MachineType{
+			{Name: "n1-standard-8", Zone: "us-central1-a", GuestCpus: 8, MemoryMb: 30 * 1024},
+		},
+		acceleratorTypes: []*compute.AcceleratorType{
+			{Name: "nvidia-tesla-t4", Zone: "us-central1-a", MaximumCardsPerInstance: 4},
+		},
+		region: &compute.Region{Quotas: []*compute.Quota{
+			{Metric: "NVIDIA_T4_GPUS", Limit: 1, Usage: 1},
+		}},
+	}
+	provider := NewWithClient(cfg, client, &bytes.Buffer{}, &bytes.Buffer{})
+	capabilities, err := provider.Capabilities(context.Background())
+	if err != nil {
+		t.Fatalf("Capabilities returned error: %v", err)
+	}
+	shape := capabilities.HardwareShapes[0]
+	if shape.AvailabilityHint != "no_quota" || !strings.Contains(shape.AvailabilityReason, "NVIDIA_T4_GPUS") {
 		t.Fatalf("shape = %#v", shape)
 	}
 }
@@ -169,13 +257,37 @@ func TestCreateRequestBuildsVertexCustomJob(t *testing.T) {
 	if container.GetImageUri() != "us-docker.pkg.dev/project/train:latest" {
 		t.Fatalf("image = %q", container.GetImageUri())
 	}
-	if len(container.GetEnv()) != 2 {
+	if len(container.GetEnv()) != 6 {
 		t.Fatalf("env = %#v", container.GetEnv())
 	}
+	envValues := map[string]string{}
 	for _, env := range container.GetEnv() {
 		if env.GetValue() == "" {
 			t.Fatalf("empty env values should be omitted for Vertex AI: %#v", container.GetEnv())
 		}
+		envValues[env.GetName()] = env.GetValue()
+	}
+	if envValues["SWITCHBOARD_CHECKPOINT_URI_PREFIX"] != "gs://outputs/r_123/checkpoints" {
+		t.Fatalf("checkpoint uri prefix env = %#v", envValues)
+	}
+}
+
+func TestCreateRequestUsesSelectedHardware(t *testing.T) {
+	provider := NewWithClient(testConfig(), &fakeClient{}, &bytes.Buffer{}, &bytes.Buffer{})
+	req := provider.createRequest(app.SubmitRequest{
+		JobSpec:   app.JobSpec{Name: "training", Image: "image"},
+		RunID:     "r_123",
+		AttemptID: "a_456",
+		SelectedHardware: &app.HardwareSelection{
+			Provider:         ProviderName,
+			MachineType:      "a2-highgpu-1g",
+			AcceleratorType:  "NVIDIA_TESLA_A100",
+			AcceleratorCount: 1,
+		},
+	})
+	machine := req.GetCustomJob().GetJobSpec().GetWorkerPoolSpecs()[0].GetMachineSpec()
+	if machine.GetMachineType() != "a2-highgpu-1g" || machine.GetAcceleratorCount() != 1 || machine.GetAcceleratorType() != aiplatformpb.AcceleratorType_NVIDIA_TESLA_A100 {
+		t.Fatalf("machine = %#v", machine)
 	}
 }
 
@@ -421,14 +533,18 @@ func TestLiveSubmitContainerJob(t *testing.T) {
 }
 
 type fakeClient struct {
-	validateErr error
-	createName  string
-	createErr   error
-	statuses    []aiplatformpb.JobState
-	statusError *status.Status
-	statusErr   error
-	logs        []*loggingpb.LogEntry
-	canceled    string
+	validateErr      error
+	createName       string
+	createErr        error
+	statuses         []aiplatformpb.JobState
+	statusError      *status.Status
+	statusErr        error
+	logs             []*loggingpb.LogEntry
+	skus             []*cloudbilling.Sku
+	machineTypes     []*compute.MachineType
+	acceleratorTypes []*compute.AcceleratorType
+	region           *compute.Region
+	canceled         string
 }
 
 func (c *fakeClient) ValidateAuth(ctx context.Context, parent string) error {
@@ -476,6 +592,22 @@ func (c *fakeClient) ListLogEntries(ctx context.Context, req *loggingpb.ListLogE
 	return c.logs, nil
 }
 
+func (c *fakeClient) ListCatalogSKUs(ctx context.Context, serviceID string) ([]*cloudbilling.Sku, error) {
+	return c.skus, nil
+}
+
+func (c *fakeClient) ListMachineTypes(ctx context.Context, projectID string) ([]*compute.MachineType, error) {
+	return c.machineTypes, nil
+}
+
+func (c *fakeClient) ListAcceleratorTypes(ctx context.Context, projectID string) ([]*compute.AcceleratorType, error) {
+	return c.acceleratorTypes, nil
+}
+
+func (c *fakeClient) GetRegion(ctx context.Context, projectID string, region string) (*compute.Region, error) {
+	return c.region, nil
+}
+
 func (c *fakeClient) Close() error {
 	return nil
 }
@@ -492,6 +624,23 @@ func testConfig() Config {
 		BootDiskSizeGB:      100,
 		PollIntervalSeconds: 1,
 		EstimateHourlyUSD:   2.5,
+	}
+}
+
+func hourlySKU(description string, region string, price float64) *cloudbilling.Sku {
+	units := int64(price)
+	nanos := int64((price - float64(units)) * 1_000_000_000)
+	return &cloudbilling.Sku{
+		Description:    description,
+		ServiceRegions: []string{region},
+		PricingInfo: []*cloudbilling.PricingInfo{{
+			PricingExpression: &cloudbilling.PricingExpression{
+				UsageUnit: "h",
+				TieredRates: []*cloudbilling.TierRate{{
+					UnitPrice: &cloudbilling.Money{CurrencyCode: "USD", Units: units, Nanos: nanos},
+				}},
+			},
+		}},
 	}
 }
 

@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/anthonylu23/switchboard-cli/internal/app"
@@ -16,6 +18,7 @@ import (
 	"github.com/anthonylu23/switchboard-cli/internal/data"
 	"github.com/anthonylu23/switchboard-cli/internal/event"
 	"github.com/anthonylu23/switchboard-cli/internal/home"
+	"github.com/anthonylu23/switchboard-cli/internal/packaging"
 	"github.com/anthonylu23/switchboard-cli/internal/provider"
 	gcpprovider "github.com/anthonylu23/switchboard-cli/internal/provider/gcp"
 	localprovider "github.com/anthonylu23/switchboard-cli/internal/provider/local"
@@ -29,9 +32,14 @@ import (
 )
 
 type Options struct {
-	Stdout             io.Writer
-	Stderr             io.Writer
-	GCPProviderFactory func(config.GCPConfig, io.Writer, io.Writer) app.ProviderAdapter
+	Stdout              io.Writer
+	Stderr              io.Writer
+	GCPProviderFactory  func(config.GCPConfig, io.Writer, io.Writer) app.ProviderAdapter
+	ImageBuilderFactory func(io.Writer, io.Writer) ImageBuilder
+}
+
+type ImageBuilder interface {
+	BuildAndPush(context.Context, packaging.BuildRequest) (packaging.BuildResult, error)
 }
 
 const (
@@ -126,6 +134,14 @@ func runTrain(ctx context.Context, opts Options, resolved config.ResolvedTrainCo
 
 	now := time.Now().UTC()
 	runID := app.NewRunID()
+	originalScript := job.Script
+	if shouldPackageForProvider(resolved, job) {
+		packaged, err := packageJob(ctx, opts, resolved, job, runID)
+		if err != nil {
+			return exitCodeInvalidSpec, err
+		}
+		job = packaged
+	}
 	paths := artifact.ForRun(resolved.SwitchboardHome, runID)
 	if err := artifact.EnsureRun(paths); err != nil {
 		return exitCodeInternal, err
@@ -136,7 +152,7 @@ func runTrain(ctx context.Context, opts Options, resolved config.ResolvedTrainCo
 	}
 	defer store.Close()
 
-	run := app.Run{ID: runID, JobName: resolved.Job.Name, Script: resolved.Job.Script, Image: resolved.Job.Image, Provider: resolved.Provider, State: app.RunStateRunning, StartedAt: now}
+	run := app.Run{ID: runID, JobName: resolved.Job.Name, Script: originalScript, Image: job.Image, Provider: resolved.Provider, State: app.RunStateRunning, StartedAt: now}
 	if err := store.CreateRun(ctx, run); err != nil {
 		return exitCodeInternal, err
 	}
@@ -150,21 +166,29 @@ func runTrain(ctx context.Context, opts Options, resolved config.ResolvedTrainCo
 	var resumeFrom *app.CheckpointRef
 	for attemptNumber := 1; attemptNumber <= maxAttempts; attemptNumber++ {
 		selectedProvider := resolved.Provider
+		var selectedHardware *app.HardwareSelection
 		if selectedProvider == string(app.ProviderAuto) {
-			decision, err := routing.Select(ctx, registry, job, routing.Options{Objective: resolved.Routing.Objective, Exclude: excluded})
+			decision, err := routing.Select(ctx, registry, job, routingOptions(resolved, excluded, resumeFrom))
 			decision.RunID = runID
 			if decision.RunID != "" {
 				_ = store.SaveRoutingDecision(ctx, decision)
 			}
 			if err != nil {
+				if resumeFrom != nil {
+					message := fmt.Sprintf("retryable provider failure but checkpoint %q is not reachable by any remaining provider", resumeFrom.URI)
+					finishRunOnly(ctx, store, runID, exitCodeMissingResume, runRedactor.String(message))
+					_ = writeSummary(ctx, store, paths, runID)
+					return exitCodeMissingResume, fmt.Errorf("%s", message)
+				}
 				finishRunOnly(ctx, store, runID, exitCodeRouting, runRedactor.String(err.Error()))
 				_ = writeSummary(ctx, store, paths, runID)
 				return exitCodeRouting, err
 			}
 			selectedProvider = decision.SelectedProvider
+			selectedHardware = decision.SelectedHardware
 			fmt.Fprintf(opts.Stdout, "Selected %s: %s\n", selectedProvider, decision.SelectionReason)
 		}
-		code, retryable, err := runAttempt(ctx, opts, store, registry, paths, runID, selectedProvider, job, manifest, resumeFrom)
+		code, retryable, err := runAttempt(ctx, opts, store, registry, paths, runID, selectedProvider, job, manifest, resumeFrom, selectedHardware)
 		if err == nil {
 			return code, nil
 		}
@@ -189,6 +213,113 @@ func runTrain(ctx context.Context, opts Options, resolved config.ResolvedTrainCo
 	return exitCodeInternal, fmt.Errorf("run did not complete")
 }
 
+func routingOptions(resolved config.ResolvedTrainConfig, excluded map[string]bool, resumeFrom *app.CheckpointRef) routing.Options {
+	return routing.Options{
+		Mode:                resolved.Routing.Mode,
+		Objective:           resolved.Routing.Objective,
+		Exclude:             excluded,
+		BudgetMaxRunCostUSD: resolved.Routing.Budget.MaxRunCostUSD,
+		Sizing: routing.SizingHints{
+			ModelParametersB:          resolved.Sizing.Hints.ModelParametersB,
+			ModelArtifactGB:           resolved.Sizing.Hints.ModelArtifactGB,
+			BatchSize:                 resolved.Sizing.Hints.BatchSize,
+			GradientAccumulationSteps: resolved.Sizing.Hints.GradientAccumulationSteps,
+			Precision:                 resolved.Sizing.Hints.Precision,
+			Optimizer:                 resolved.Sizing.Hints.Optimizer,
+			ExpectedSteps:             resolved.Sizing.Hints.ExpectedSteps,
+		},
+		Hardware: routing.HardwareConstraints{
+			MaxGPUs:            resolved.Hardware.Constraints.MaxGPUs,
+			AllowedGPUFamilies: resolved.Hardware.Constraints.AllowedGPUFamilies,
+			MinVRAMGBPerGPU:    resolved.Hardware.Constraints.MinVRAMGBPerGPU,
+			Regions:            resolved.Hardware.Constraints.Regions,
+			AllowSpot:          resolved.Hardware.Constraints.AllowSpot,
+			RequireOnDemand:    resolved.Hardware.Constraints.RequireOnDemand,
+		},
+		ManualHardware: routing.ManualHardware{
+			Provider:    resolved.Hardware.Manual.Provider,
+			ShapeID:     resolved.Hardware.Manual.ShapeID,
+			MachineType: resolved.Hardware.Manual.MachineType,
+			Region:      resolved.Hardware.Manual.Region,
+		},
+		ResumeFrom: resumeFrom,
+	}
+}
+
+func shouldPackageForProvider(resolved config.ResolvedTrainConfig, job app.JobSpec) bool {
+	if job.Image != "" || job.Script == "" {
+		return false
+	}
+	if resolved.Provider != gcpprovider.ProviderName && resolved.Provider != string(app.ProviderAuto) {
+		return false
+	}
+	return resolved.Packaging.Image != "" || resolved.Packaging.Dockerfile != "" || resolved.GCP.ArtifactRegistryRepository != ""
+}
+
+func packageJob(ctx context.Context, opts Options, resolved config.ResolvedTrainConfig, job app.JobSpec, runID string) (app.JobSpec, error) {
+	image := resolved.Packaging.Image
+	var err error
+	if image == "" {
+		image, err = packaging.ArtifactRegistryImage(resolved.GCP.Location, resolved.GCP.ProjectID, resolved.GCP.ArtifactRegistryRepository, runID)
+		if err != nil {
+			return app.JobSpec{}, err
+		}
+	}
+	builder := imageBuilder(opts)
+	fmt.Fprintf(opts.Stdout, "Packaging %s as %s\n", job.Script, image)
+	result, err := builder.BuildAndPush(ctx, packaging.BuildRequest{
+		Config: packaging.Config{
+			Dockerfile: resolved.Packaging.Dockerfile,
+			ContextDir: resolved.Packaging.Context,
+			Image:      image,
+			Platform:   resolved.Packaging.Platform,
+		},
+		RunID: runID,
+	})
+	if err != nil {
+		return app.JobSpec{}, err
+	}
+	packaged := job
+	packaged.Image = result.Image
+	if len(packaged.Command) == 0 {
+		scriptPath, err := containerScriptPath(job.Script, resolved.Packaging.Context)
+		if err != nil {
+			return app.JobSpec{}, err
+		}
+		packaged.Command = []string{"python3", scriptPath}
+	}
+	packaged.Script = ""
+	return packaged, nil
+}
+
+func imageBuilder(opts Options) ImageBuilder {
+	if opts.ImageBuilderFactory != nil {
+		return opts.ImageBuilderFactory(opts.Stdout, opts.Stderr)
+	}
+	return packaging.DockerBuilder{Stdout: opts.Stdout, Stderr: opts.Stderr}
+}
+
+func containerScriptPath(script string, contextDir string) (string, error) {
+	if contextDir == "" {
+		contextDir = "."
+	}
+	if filepath.IsAbs(script) {
+		absContext, err := filepath.Abs(contextDir)
+		if err != nil {
+			return "", fmt.Errorf("resolve packaging context: %w", err)
+		}
+		rel, err := filepath.Rel(absContext, script)
+		if err != nil {
+			return "", fmt.Errorf("resolve script relative to packaging context: %w", err)
+		}
+		if strings.HasPrefix(rel, ".."+string(filepath.Separator)) || rel == ".." {
+			return "", fmt.Errorf("script %q must be inside packaging context %q", script, contextDir)
+		}
+		return filepath.ToSlash(rel), nil
+	}
+	return filepath.ToSlash(script), nil
+}
+
 func finishFailed(ctx context.Context, store *state.Store, runID string, attemptID string, code int, reason string, providerRef string) {
 	endedAt := time.Now().UTC()
 	_ = store.FinishAttempt(ctx, attemptID, app.AttemptStateFailed, code, reason, providerRef, endedAt)
@@ -199,7 +330,7 @@ func finishRunOnly(ctx context.Context, store *state.Store, runID string, code i
 	_ = store.FinishRun(ctx, runID, app.RunStateFailed, code, reason, time.Now().UTC())
 }
 
-func runAttempt(ctx context.Context, opts Options, store *state.Store, registry *provider.Registry, paths artifact.Paths, runID string, selectedProvider string, job app.JobSpec, manifest app.DataManifest, resumeFrom *app.CheckpointRef) (int, bool, error) {
+func runAttempt(ctx context.Context, opts Options, store *state.Store, registry *provider.Registry, paths artifact.Paths, runID string, selectedProvider string, job app.JobSpec, manifest app.DataManifest, resumeFrom *app.CheckpointRef, selectedHardware *app.HardwareSelection) (int, bool, error) {
 	baseRedactor := redact.FromEnvironment(job.Env)
 	attemptID := app.NewAttemptID()
 	attempt := app.Attempt{ID: attemptID, RunID: runID, Provider: selectedProvider, State: app.AttemptStateRunning, StartedAt: time.Now().UTC()}
@@ -241,23 +372,30 @@ func runAttempt(ctx context.Context, opts Options, store *state.Store, registry 
 	}
 	runtimeEnv := runtimeEnvForProvider(selectedProvider, runID, attemptID, resumeValue, paths)
 	attemptRedactor := redact.FromEnvironment(attemptJob.Env, runtimeEnv)
-	estimate, err := adapter.Estimate(ctx, attemptJob)
-	if err != nil {
-		reason := attemptRedactor.String(err.Error())
-		finishFailed(ctx, store, runID, attemptID, exitCodeRouting, reason, "")
-		_ = writeSummary(ctx, store, paths, runID)
-		return exitCodeRouting, false, err
+	estimate := app.CostEstimate{Currency: "USD"}
+	if selectedHardware != nil && selectedHardware.HourlyUSD > 0 {
+		estimate.HourlyUSD = selectedHardware.HourlyUSD
+	} else {
+		var err error
+		estimate, err = adapter.Estimate(ctx, attemptJob)
+		if err != nil {
+			reason := attemptRedactor.String(err.Error())
+			finishFailed(ctx, store, runID, attemptID, exitCodeRouting, reason, "")
+			_ = writeSummary(ctx, store, paths, runID)
+			return exitCodeRouting, false, err
+		}
 	}
 	if err := store.UpdateAttemptEstimate(ctx, attemptID, estimate); err != nil {
 		return exitCodeInternal, false, err
 	}
 	result, err := adapter.Submit(ctx, app.SubmitRequest{
-		JobSpec:    attemptJob,
-		RunID:      runID,
-		AttemptID:  attemptID,
-		ResumeFrom: resumeFrom,
-		RuntimeEnv: runtimeEnv,
-		RunDir:     paths.RunDir,
+		JobSpec:          attemptJob,
+		RunID:            runID,
+		AttemptID:        attemptID,
+		ResumeFrom:       resumeFrom,
+		SelectedHardware: selectedHardware,
+		RuntimeEnv:       runtimeEnv,
+		RunDir:           paths.RunDir,
 		OnStarted: func(ref app.ProviderJobRef) error {
 			return store.UpdateAttemptProviderRef(ctx, attemptID, attemptRedactor.String(ref.ID))
 		},
@@ -356,6 +494,10 @@ func writeSummary(ctx context.Context, store *state.Store, paths artifact.Paths,
 	events, err := event.ReadJSONL(paths.EventsJSONL)
 	if err != nil {
 		return err
+	}
+	if decision, err := store.GetRoutingDecision(ctx, runID); err == nil {
+		built := summary.Build(run, attempts, events, decision)
+		return artifact.WriteSummary(paths.Summary, redact.FromEnvironment().Summary(built))
 	}
 	built := summary.Build(run, attempts, events)
 	return artifact.WriteSummary(paths.Summary, redact.FromEnvironment().Summary(built))
@@ -594,18 +736,19 @@ func buildProviderRegistry(opts Options, mockConfig config.MockConfig, gcpConfig
 
 func gcpConfigFromConfig(cfg config.GCPConfig) gcpprovider.Config {
 	return gcpprovider.Config{
-		ProjectID:           cfg.ProjectID,
-		Location:            cfg.Location,
-		OutputURIPrefix:     cfg.OutputURIPrefix,
-		MachineType:         cfg.MachineType,
-		AcceleratorType:     cfg.AcceleratorType,
-		AcceleratorCount:    cfg.AcceleratorCount,
-		BootDiskType:        cfg.BootDiskType,
-		BootDiskSizeGB:      cfg.BootDiskSizeGB,
-		ServiceAccount:      cfg.ServiceAccount,
-		Network:             cfg.Network,
-		PollIntervalSeconds: cfg.PollIntervalSeconds,
-		EstimateHourlyUSD:   cfg.EstimateHourlyUSD,
+		ProjectID:                  cfg.ProjectID,
+		Location:                   cfg.Location,
+		OutputURIPrefix:            cfg.OutputURIPrefix,
+		MachineType:                cfg.MachineType,
+		AcceleratorType:            cfg.AcceleratorType,
+		AcceleratorCount:           cfg.AcceleratorCount,
+		BootDiskType:               cfg.BootDiskType,
+		BootDiskSizeGB:             cfg.BootDiskSizeGB,
+		ServiceAccount:             cfg.ServiceAccount,
+		Network:                    cfg.Network,
+		PollIntervalSeconds:        cfg.PollIntervalSeconds,
+		EstimateHourlyUSD:          cfg.EstimateHourlyUSD,
+		ArtifactRegistryRepository: cfg.ArtifactRegistryRepository,
 	}
 }
 

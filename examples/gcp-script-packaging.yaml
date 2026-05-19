@@ -1,0 +1,29 @@
+job:
+  name: "gcp-iris-packaging-demo"
+  script: "examples/gcp/iris/train_iris_gcs.py"
+  command: ["python", "/app/train_iris_gcs.py"]
+  args:
+    - "--data-uri"
+    - "gs://my-bucket/switchboard-demo/iris/Iris.csv"
+    - "--epochs"
+    - "40"
+
+packaging:
+  dockerfile: "examples/gcp/iris/Dockerfile"
+  context: "."
+  platform: "linux/amd64"
+
+data:
+  inputs:
+    - name: "iris"
+      source: "gs://my-bucket/switchboard-demo/iris/Iris.csv"
+      mode: "uri"
+
+gcp:
+  project_id: "my-project"
+  location: "us-central1"
+  output_uri_prefix: "gs://my-bucket/switchboard-outputs"
+  artifact_registry_repository: "switchboard"
+  machine_type: "n1-standard-4"
+  boot_disk_type: "pd-ssd"
+  boot_disk_size_gb: 100

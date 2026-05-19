@@ -58,3 +58,17 @@ func TestBuildSummaryUsesMetricDirectionDefaults(t *testing.T) {
 		t.Fatalf("best accuracy = %f", got.BestMetrics["accuracy"])
 	}
 }
+
+func TestBuildSummaryIncludesRoutingDecision(t *testing.T) {
+	run := app.Run{ID: "r_1", State: app.RunStateSucceeded}
+	decision := app.RoutingDecision{
+		RunID:            "r_1",
+		SelectedProvider: "gcp",
+		SelectedHardware: &app.HardwareSelection{Provider: "gcp", ShapeID: "gcp-a100"},
+		Confidence:       "hinted",
+	}
+	got := Build(run, nil, nil, decision)
+	if got.Routing == nil || got.Routing.SelectedProvider != "gcp" || got.Routing.SelectedHardware.ShapeID != "gcp-a100" {
+		t.Fatalf("summary routing = %#v", got.Routing)
+	}
+}

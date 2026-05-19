@@ -96,6 +96,28 @@ func TestRoutingDecisionLifecycle(t *testing.T) {
 			Provider: "local",
 			Reasons:  []string{"local provider does not fetch URI data inputs"},
 		}},
+		SelectedHardware: &app.HardwareSelection{
+			Provider:        "mock-gcp",
+			ShapeID:         "mock-a100-1",
+			Region:          "us-central1",
+			MachineType:     "a2-highgpu-1g",
+			AcceleratorType: "NVIDIA_TESLA_A100",
+			TotalVRAMGB:     40,
+		},
+		EligibleHardware: []app.HardwareCandidate{{
+			Provider: "mock-gcp",
+			ShapeID:  "mock-a100-1",
+			Score:    3600,
+		}},
+		RejectedHardware: []app.HardwareCandidate{{
+			Provider: "mock-gcp",
+			ShapeID:  "mock-t4-1",
+			Reasons:  []string{"total VRAM 16GB is below required 40GB"},
+		}},
+		EstimatedRequiredVRAMGB: floatPtr(40),
+		EstimatedRuntimeSeconds: floatPtr(3600),
+		EstimatedTotalCostUSD:   floatPtr(1.3),
+		Confidence:              "hinted",
 	}
 	if err := store.SaveRoutingDecision(ctx, decision); err != nil {
 		t.Fatalf("SaveRoutingDecision returned error: %v", err)
@@ -107,6 +129,13 @@ func TestRoutingDecisionLifecycle(t *testing.T) {
 	if got.SelectedProvider != "mock-gcp" || len(got.RejectedProviders) != 1 {
 		t.Fatalf("decision = %#v", got)
 	}
+	if got.SelectedHardware == nil || got.SelectedHardware.ShapeID != "mock-a100-1" || got.EstimatedTotalCostUSD == nil || *got.EstimatedTotalCostUSD != 1.3 {
+		t.Fatalf("hardware decision = %#v", got)
+	}
+}
+
+func floatPtr(value float64) *float64 {
+	return &value
 }
 
 func TestOpenMigratesOldAttemptSchema(t *testing.T) {
