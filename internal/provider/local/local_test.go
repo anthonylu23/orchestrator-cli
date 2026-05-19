@@ -96,3 +96,38 @@ func TestSubmitFailure(t *testing.T) {
 		t.Fatalf("exit code = %d", result.ExitCode)
 	}
 }
+
+func TestSubmitHandlesLongLogLineAndContinuesParsingEvents(t *testing.T) {
+	dir := t.TempDir()
+	paths := artifact.ForRun(dir, "r_1")
+	if err := artifact.EnsureRun(paths); err != nil {
+		t.Fatalf("EnsureRun returned error: %v", err)
+	}
+	script := filepath.Join(dir, "long.py")
+	if err := os.WriteFile(script, []byte(`
+print("x" * 70000)
+print('{"type":"status","state":"after-long-line"}')
+`), 0o600); err != nil {
+		t.Fatalf("write script: %v", err)
+	}
+	provider := New(&bytes.Buffer{}, &bytes.Buffer{})
+	result, err := provider.Submit(context.Background(), app.SubmitRequest{
+		JobSpec:   app.JobSpec{Script: script, WorkDir: paths.Workspace},
+		RunID:     "r_1",
+		AttemptID: "a_1",
+		RunDir:    paths.RunDir,
+	})
+	if err != nil {
+		t.Fatalf("Submit returned error: %v", err)
+	}
+	if result.ExitCode != 0 {
+		t.Fatalf("result = %#v", result)
+	}
+	events, err := os.ReadFile(paths.EventsJSONL)
+	if err != nil {
+		t.Fatalf("read events: %v", err)
+	}
+	if !strings.Contains(string(events), "after-long-line") {
+		t.Fatalf("events = %s", string(events))
+	}
+}

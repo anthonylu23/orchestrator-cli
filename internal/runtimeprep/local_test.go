@@ -3,6 +3,7 @@ package runtimeprep
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/anthonylu23/switchboard-cli/internal/app"
@@ -68,5 +69,30 @@ func TestPrepareLocalMaterializesFileAndDirectory(t *testing.T) {
 	}
 	if len(prepared.Job.Data) != len(manifest.Inputs) || prepared.Job.Data[0].Mode != app.DataInputModeBundle {
 		t.Fatalf("prepared data = %#v", prepared.Job.Data)
+	}
+}
+
+func TestPrepareLocalRejectsSymlinkInsideBundle(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "dataset")
+	if err := os.MkdirAll(source, 0o755); err != nil {
+		t.Fatalf("mkdir source: %v", err)
+	}
+	target := filepath.Join(dir, "outside.txt")
+	if err := os.WriteFile(target, []byte("outside"), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	if err := os.Symlink(target, filepath.Join(source, "link.txt")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	_, err := PrepareLocal(app.JobSpec{Script: "train.py"}, app.DataManifest{Inputs: []app.DataInput{{
+		Name:   "train",
+		Source: source,
+		Mount:  "/workspace/data/train",
+		Mode:   app.DataInputModeBundle,
+	}}}, filepath.Join(dir, "workspace"))
+	if err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("error = %v", err)
 	}
 }

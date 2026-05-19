@@ -156,6 +156,7 @@ func (p *Provider) Cancel(ctx context.Context, ref app.ProviderJobRef) error {
 func (p *Provider) consume(wg *sync.WaitGroup, writeMu *sync.Mutex, reader io.Reader, terminal io.Writer, logFile io.Writer, eventFile io.Writer, runID string, attemptID string, redactor redact.Redactor) {
 	defer wg.Done()
 	scanner := bufio.NewScanner(reader)
+	scanner.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
 	for scanner.Scan() {
 		line := scanner.Text()
 		redactedLine := redactor.Line(line)
@@ -166,6 +167,12 @@ func (p *Provider) consume(wg *sync.WaitGroup, writeMu *sync.Mutex, reader io.Re
 		if parsed.Structured {
 			_ = event.WriteJSONL(eventFile, redactor.Event(parsed.Event))
 		}
+		writeMu.Unlock()
+	}
+	if err := scanner.Err(); err != nil {
+		writeMu.Lock()
+		_, _ = fmt.Fprintf(terminal, "log scanner error: %s\n", redactor.String(err.Error()))
+		_, _ = fmt.Fprintf(logFile, "log scanner error: %s\n", redactor.String(err.Error()))
 		writeMu.Unlock()
 	}
 }

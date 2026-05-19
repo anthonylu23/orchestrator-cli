@@ -100,12 +100,15 @@ func validateURI(source string) error {
 }
 
 func localSize(path string) (int64, error) {
-	info, err := os.Stat(path)
+	info, err := os.Lstat(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return 0, fmt.Errorf("data input path %q does not exist", path)
 		}
 		return 0, fmt.Errorf("stat data input path %q: %w", path, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return 0, fmt.Errorf("data input path %q is a symlink; bundled data inputs must not contain symlinks", path)
 	}
 	if !info.IsDir() {
 		return info.Size(), nil
@@ -114,6 +117,9 @@ func localSize(path string) (int64, error) {
 	err = filepath.WalkDir(path, func(p string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
+		}
+		if d.Type()&os.ModeSymlink != 0 {
+			return fmt.Errorf("data input path %q is a symlink; bundled data inputs must not contain symlinks", p)
 		}
 		if d.IsDir() {
 			return nil

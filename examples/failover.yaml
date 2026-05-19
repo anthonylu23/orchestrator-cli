@@ -1,6 +1,6 @@
 job:
   name: "mock-failover-demo"
-  script: "examples/train.py"
+  script: "train.py"
   args: ["--train-data", "/workspace/data/train"]
 
 data:

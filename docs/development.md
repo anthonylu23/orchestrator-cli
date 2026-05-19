@@ -98,6 +98,8 @@ The local provider stores a `local:<pid>` provider reference on the running atte
 
 The GCP provider stores the full Vertex AI CustomJob resource name as the provider reference. `switchboard-cli cancel <run-id>` uses that reference to issue a best-effort CustomJob cancel request.
 
+Config files are portable across working directories: relative local `job.script`, `job.work_dir`, bundled data `source` values, and `packaging` paths are resolved from the directory containing `--config`. Explicit flag-provided script paths keep normal shell/cwd semantics. Bundled data preflight rejects symlinks, including symlinks nested in bundled directories, so size accounting and materialization operate on the declared tree only.
+
 Run records include the script path for script jobs and the image URI for container jobs; human-readable `status` output shows whichever target is present. Attempt records include optional resume checkpoint and cost estimate provenance. Routing decisions include selected hardware, estimated VRAM/runtime/cost, confidence, and rejected hardware reasons when hardware routing is active. GCP hardware shapes include live zones and quota fields when Compute Engine APIs are reachable. Existing SQLite databases are migrated in place by adding missing run, attempt, and routing-decision columns when opened.
 
 Before writing logs, `events.jsonl`, summaries, or provider failure reasons, providers and orchestration code redact secret-like keys and known secret values from job/runtime/inherited environment variables. Do not add new persistence paths without using the redaction utility.
@@ -106,5 +108,5 @@ Before writing logs, `events.jsonl`, summaries, or provider failure reasons, pro
 
 1. Keep the gated billable container submit smoke test current with `SWITCHBOARD_GCP_LIVE=1` and `SWITCHBOARD_GCP_LIVE_SUBMIT=1`.
 2. Run the containerized PyTorch Iris demo from `examples/gcp/iris` when a GCS copy of the Iris CSV and an Artifact Registry image are available.
-3. Add live smoke coverage for GCP pricing/capacity API permissions.
+3. Add live smoke coverage for GCP pricing/capacity API permissions, including the auto-routing path when GCP config is intentionally present.
 4. Add more cloud resume examples once additional providers can consume shared checkpoint URIs.
