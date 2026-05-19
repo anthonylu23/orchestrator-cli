@@ -107,9 +107,12 @@ func rewriteEnv(env map[string]string, mounts map[string]string) map[string]stri
 }
 
 func materializeBundle(source string, dest string) error {
-	info, err := os.Stat(source)
+	info, err := os.Lstat(source)
 	if err != nil {
 		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("bundle source %q is a symlink; bundled data inputs must not contain symlinks", source)
 	}
 	if info.IsDir() {
 		return copyDir(source, dest)
@@ -124,6 +127,9 @@ func copyDir(source string, dest string) error {
 	return filepath.WalkDir(source, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
+		}
+		if d.Type()&os.ModeSymlink != 0 {
+			return fmt.Errorf("bundle source %q is a symlink; bundled data inputs must not contain symlinks", path)
 		}
 		rel, err := filepath.Rel(source, path)
 		if err != nil {

@@ -157,7 +157,7 @@ func runTrain(ctx context.Context, opts Options, resolved config.ResolvedTrainCo
 		return exitCodeInternal, err
 	}
 
-	registry := buildProviderRegistry(opts, resolved.Mock, resolved.GCP)
+	registry := buildTrainProviderRegistry(opts, resolved)
 	maxAttempts := resolved.Routing.MaxAttempts
 	if maxAttempts < 1 {
 		maxAttempts = 1
@@ -716,6 +716,14 @@ func newProvidersCommand(opts Options) *cobra.Command {
 }
 
 func buildProviderRegistry(opts Options, mockConfig config.MockConfig, gcpConfig config.GCPConfig) *provider.Registry {
+	return buildProviderRegistryWithOptions(opts, mockConfig, gcpConfig, true)
+}
+
+func buildTrainProviderRegistry(opts Options, resolved config.ResolvedTrainConfig) *provider.Registry {
+	return buildProviderRegistryWithOptions(opts, resolved.Mock, resolved.GCP, shouldRegisterGCPForTrain(resolved))
+}
+
+func buildProviderRegistryWithOptions(opts Options, mockConfig config.MockConfig, gcpConfig config.GCPConfig, includeGCP bool) *provider.Registry {
 	adapters := []app.ProviderAdapter{localprovider.New(opts.Stdout, opts.Stderr)}
 	for _, providerConfig := range mergedMockProviders(mockConfig) {
 		adapters = append(adapters, mockprovider.New(mockprovider.Config{
@@ -726,12 +734,22 @@ func buildProviderRegistry(opts Options, mockConfig config.MockConfig, gcpConfig
 			Events:         mockEvents(providerConfig.Events),
 		}, opts.Stdout, opts.Stderr))
 	}
-	if opts.GCPProviderFactory != nil {
+	if opts.GCPProviderFactory != nil && includeGCP {
 		adapters = append(adapters, opts.GCPProviderFactory(gcpConfig, opts.Stdout, opts.Stderr))
-	} else {
+	} else if includeGCP {
 		adapters = append(adapters, gcpprovider.New(gcpConfigFromConfig(gcpConfig), opts.Stdout, opts.Stderr))
 	}
 	return provider.NewRegistry(adapters...)
+}
+
+func shouldRegisterGCPForTrain(resolved config.ResolvedTrainConfig) bool {
+	if resolved.Provider == gcpprovider.ProviderName {
+		return true
+	}
+	if resolved.Provider != string(app.ProviderAuto) {
+		return false
+	}
+	return resolved.GCP.ProjectID != "" && resolved.GCP.OutputURIPrefix != ""
 }
 
 func gcpConfigFromConfig(cfg config.GCPConfig) gcpprovider.Config {

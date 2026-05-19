@@ -169,6 +169,7 @@ data:
 ```
 
 Local paths default to bundled inputs. URI sources default to runtime-resolved inputs. Oversized local bundles fail preflight unless the user passes an explicit override such as `--allow-large-data-bundle`.
+When a YAML config is loaded with `--config`, relative local paths in `job.script`, `job.work_dir`, bundled data `source` values, and `packaging` paths are resolved relative to the config file's directory. Bundled data inputs must not contain symlinks.
 
 For local runs, bundled files and directories are copied into each run workspace under `runs/<run-id>/workspace`. Mounts must be under `/workspace`; for example, `/workspace/data/train` maps to `runs/<run-id>/workspace/data/train`. Job arguments and environment values that reference declared mounts are rewritten to host paths before the local process starts.
 

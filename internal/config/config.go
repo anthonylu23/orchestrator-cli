@@ -3,8 +3,10 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/anthonylu23/switchboard-cli/internal/app"
 	"github.com/anthonylu23/switchboard-cli/internal/home"
@@ -171,12 +173,14 @@ type ResolvedTrainConfig struct {
 
 func LoadTrain(flags TrainFlags) (ResolvedTrainConfig, error) {
 	cfg := Config{}
+	configDir := ""
 	if flags.ConfigPath != "" {
 		loaded, err := LoadFile(flags.ConfigPath)
 		if err != nil {
 			return ResolvedTrainConfig{}, err
 		}
 		cfg = loaded
+		configDir = filepath.Dir(flags.ConfigPath)
 	}
 
 	provider := cfgProviderDefault(flags.Provider)
@@ -194,7 +198,8 @@ func LoadTrain(flags TrainFlags) (ResolvedTrainConfig, error) {
 		Data:    append([]app.DataInput(nil), cfg.Data.Inputs...),
 		WorkDir: cfg.Job.WorkDir,
 	}
-	if flags.Script != "" {
+	scriptFromFlag := flags.Script != ""
+	if scriptFromFlag {
 		job.Script = flags.Script
 	}
 	if len(flags.Args) > 0 {
@@ -215,6 +220,16 @@ func LoadTrain(flags TrainFlags) (ResolvedTrainConfig, error) {
 	}
 	if job.WorkDir == "" {
 		job.WorkDir = "."
+	}
+	if configDir != "" {
+		if scriptFromFlag {
+			originalScript := job.Script
+			job = resolveJobPaths(job, configDir)
+			job.Script = originalScript
+		} else {
+			job = resolveJobPaths(job, configDir)
+		}
+		cfg.Packaging = resolvePackagingPaths(cfg.Packaging, configDir)
 	}
 
 	maxSizeMB := cfg.Data.Bundle.MaxSizeMB
@@ -252,6 +267,39 @@ func resolvePackaging(packaging PackagingConfig) PackagingConfig {
 		packaging.Context = "."
 	}
 	return packaging
+}
+
+func resolveJobPaths(job app.JobSpec, baseDir string) app.JobSpec {
+	job.Script = resolveLocalPath(job.Script, baseDir)
+	job.WorkDir = resolveLocalPath(job.WorkDir, baseDir)
+	for i := range job.Data {
+		if isPathLikeSource(job.Data[i].Source) {
+			job.Data[i].Source = resolveLocalPath(job.Data[i].Source, baseDir)
+		}
+	}
+	return job
+}
+
+func resolvePackagingPaths(packaging PackagingConfig, baseDir string) PackagingConfig {
+	packaging = resolvePackaging(packaging)
+	packaging.Context = resolveLocalPath(packaging.Context, baseDir)
+	packaging.Dockerfile = resolveLocalPath(packaging.Dockerfile, baseDir)
+	return packaging
+}
+
+func resolveLocalPath(path string, baseDir string) string {
+	if path == "" || filepath.IsAbs(path) || baseDir == "" {
+		return path
+	}
+	return filepath.Clean(filepath.Join(baseDir, path))
+}
+
+func isPathLikeSource(source string) bool {
+	parsed, err := url.Parse(source)
+	if err != nil {
+		return true
+	}
+	return parsed.Scheme == "" || len(parsed.Scheme) == 1 && !strings.Contains(source, "://")
 }
 
 func resolveRouting(routing RoutingConfig) RoutingConfig {

@@ -74,6 +74,7 @@ func ReadJSONL(path string) ([]app.Event, error) {
 
 	var events []app.Event
 	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
 	for scanner.Scan() {
 		var ev app.Event
 		if err := json.Unmarshal(scanner.Bytes(), &ev); err != nil {

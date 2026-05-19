@@ -2,6 +2,8 @@ package event
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -53,5 +55,20 @@ func TestWriteJSONL(t *testing.T) {
 	}
 	if !strings.HasSuffix(buf.String(), "\n") {
 		t.Fatalf("expected newline, got %q", buf.String())
+	}
+}
+
+func TestReadJSONLHandlesLongLines(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "events.jsonl")
+	longState := strings.Repeat("x", 70000)
+	if err := os.WriteFile(path, []byte(`{"type":"status","state":"`+longState+`"}`+"\n"), 0o600); err != nil {
+		t.Fatalf("write events: %v", err)
+	}
+	events, err := ReadJSONL(path)
+	if err != nil {
+		t.Fatalf("ReadJSONL returned error: %v", err)
+	}
+	if len(events) != 1 || events[0].State != longState {
+		t.Fatalf("events = %#v", events)
 	}
 }

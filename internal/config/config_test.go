@@ -117,6 +117,79 @@ data:
 	}
 }
 
+func TestLoadTrainResolvesConfigRelativePaths(t *testing.T) {
+	dir := t.TempDir()
+	configDir := filepath.Join(dir, "configs")
+	if err := os.MkdirAll(filepath.Join(configDir, "data"), 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+	configPath := filepath.Join(configDir, "switchboard.yaml")
+	content := []byte(`
+job:
+  script: train.py
+  work_dir: work
+data:
+  inputs:
+    - name: train
+      source: data/train.csv
+      mode: bundle
+    - name: remote
+      source: gs://bucket/data.csv
+      mode: uri
+packaging:
+  dockerfile: Dockerfile
+  context: .
+`)
+	if err := os.WriteFile(configPath, content, 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	got, err := LoadTrain(TrainFlags{
+		ConfigPath:      configPath,
+		Provider:        "local",
+		SwitchboardHome: filepath.Join(dir, "home"),
+	})
+	if err != nil {
+		t.Fatalf("LoadTrain returned error: %v", err)
+	}
+	if got.Job.Script != filepath.Join(configDir, "train.py") {
+		t.Fatalf("script = %q", got.Job.Script)
+	}
+	if got.Job.WorkDir != filepath.Join(configDir, "work") {
+		t.Fatalf("work dir = %q", got.Job.WorkDir)
+	}
+	if got.Job.Data[0].Source != filepath.Join(configDir, "data", "train.csv") {
+		t.Fatalf("bundle source = %q", got.Job.Data[0].Source)
+	}
+	if got.Job.Data[1].Source != "gs://bucket/data.csv" {
+		t.Fatalf("uri source = %q", got.Job.Data[1].Source)
+	}
+	if got.Packaging.Context != configDir || got.Packaging.Dockerfile != filepath.Join(configDir, "Dockerfile") {
+		t.Fatalf("packaging = %#v", got.Packaging)
+	}
+}
+
+func TestLoadTrainDoesNotResolveFlagScriptAgainstConfig(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "switchboard.yaml")
+	if err := os.WriteFile(configPath, []byte("job:\n  script: yaml.py\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	got, err := LoadTrain(TrainFlags{
+		ConfigPath:      configPath,
+		Provider:        "local",
+		Script:          "flag.py",
+		SwitchboardHome: filepath.Join(dir, "home"),
+	})
+	if err != nil {
+		t.Fatalf("LoadTrain returned error: %v", err)
+	}
+	if got.Job.Script != "flag.py" {
+		t.Fatalf("script = %q", got.Job.Script)
+	}
+}
+
 func TestLoadTrainAcceptsContainerImageJob(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "switchboard.yaml")
@@ -205,10 +278,10 @@ gcp:
 	if err != nil {
 		t.Fatalf("LoadTrain returned error: %v", err)
 	}
-	if got.Job.Script != "train.py" || got.Job.Image != "" {
+	if got.Job.Script != filepath.Join(dir, "train.py") || got.Job.Image != "" {
 		t.Fatalf("job = %#v", got.Job)
 	}
-	if got.Packaging.Dockerfile != "Dockerfile" || got.Packaging.Context != "." || got.Packaging.Platform != "linux/amd64" {
+	if got.Packaging.Dockerfile != filepath.Join(dir, "Dockerfile") || got.Packaging.Context != dir || got.Packaging.Platform != "linux/amd64" {
 		t.Fatalf("packaging = %#v", got.Packaging)
 	}
 	if got.GCP.ArtifactRegistryRepository != "switchboard" {

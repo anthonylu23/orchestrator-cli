@@ -1,6 +1,6 @@
 job:
   name: "gcp-iris-packaging-demo"
-  script: "examples/gcp/iris/train_iris_gcs.py"
+  script: "gcp/iris/train_iris_gcs.py"
   command: ["python", "/app/train_iris_gcs.py"]
   args:
     - "--data-uri"
@@ -9,8 +9,8 @@ job:
     - "40"
 
 packaging:
-  dockerfile: "examples/gcp/iris/Dockerfile"
-  context: "."
+  dockerfile: "gcp/iris/Dockerfile"
+  context: ".."
   platform: "linux/amd64"
 
 data:

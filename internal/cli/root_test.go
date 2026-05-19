@@ -736,6 +736,34 @@ func TestRunTrainRetryableFailureWithoutCheckpointReturnsMissingResumeExit(t *te
 	}
 }
 
+func TestAutoProviderWithoutGCPConfigDoesNotInitializeGCP(t *testing.T) {
+	dir := t.TempDir()
+	factoryCalls := 0
+	code, err := runTrain(context.Background(), Options{
+		Stdout: &bytes.Buffer{},
+		Stderr: &bytes.Buffer{},
+		GCPProviderFactory: func(cfg config.GCPConfig, stdout io.Writer, stderr io.Writer) app.ProviderAdapter {
+			factoryCalls++
+			return &fakeGCPAdapter{}
+		},
+	}, config.ResolvedTrainConfig{
+		Provider:        string(app.ProviderAuto),
+		SwitchboardHome: filepath.Join(dir, "home"),
+		Job:             app.JobSpec{Script: "train.py"},
+		Routing:         config.RoutingConfig{Objective: "min_cost", MaxAttempts: 1},
+		Mock: config.MockConfig{Providers: []config.MockProviderConfig{{
+			Name:       "mock-fast",
+			HourlyCost: 0.5,
+		}}},
+	})
+	if err != nil || code != 0 {
+		t.Fatalf("runTrain code=%d err=%v", code, err)
+	}
+	if factoryCalls != 0 {
+		t.Fatalf("gcp factory calls = %d", factoryCalls)
+	}
+}
+
 func TestRunTrainTerminalProviderFailureDoesNotFailOver(t *testing.T) {
 	var stdout bytes.Buffer
 	code, err := runTrain(context.Background(), Options{Stdout: &stdout, Stderr: &bytes.Buffer{}}, config.ResolvedTrainConfig{
