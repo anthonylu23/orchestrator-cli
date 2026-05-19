@@ -118,4 +118,14 @@ SWITCHBOARD_CLI_HOME="$(mktemp -d)" \
 go run ./cmd/switchboard-cli train --provider gcp --config gcp-smoke.yaml
 ```
 
-Keep this as a container-image smoke test. Local script packaging remains deferred until this path succeeds against a billing-enabled project.
+Keep this as the minimal container-image smoke test. Use `examples/gcp-script-packaging.yaml` when you want to exercise the managed Docker build/push path before the same Vertex submit flow.
+
+## Pricing and Capacity Check
+
+Provider capability reporting enriches shapes with Cloud Billing Catalog prices, Compute Engine machine/accelerator inventory, and regional quota facts when those APIs are reachable. The same ADC principal used for live GCP tests should be able to call:
+
+1. Cloud Billing Catalog `services.skus.list` for public Compute Engine SKUs.
+2. Compute Engine aggregated machine and accelerator type listings.
+3. Compute Engine region `get` for quota fields.
+
+If any of those calls fail, Switchboard keeps static estimates and marks the shape availability reason. A failed pricing/capacity lookup should not block container submission; submit-time quota or capacity failures are still normalized as retryable provider errors.

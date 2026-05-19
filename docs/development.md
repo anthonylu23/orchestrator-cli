@@ -13,10 +13,11 @@ The implementation is a Go CLI with a small internal package split:
 7. `internal/provider`: provider registry and adapters.
 8. `internal/provider/local`: local script execution provider.
 9. `internal/provider/gcp`: Vertex AI CustomJob provider for prebuilt container images.
-10. `internal/event`: mixed stdout parsing and JSONL helpers.
-11. `internal/artifact` and `internal/summary`: durable artifact paths and summary generation.
-12. `internal/redact`: redaction of secret-like keys and known secret environment values before persistence.
-13. `internal/provider/contract`: reusable adapter contract checks for local, mock, GCP, and future providers.
+10. `internal/packaging`: Docker build/push helpers used before provider submit.
+11. `internal/event`: mixed stdout parsing and JSONL helpers.
+12. `internal/artifact` and `internal/summary`: durable artifact paths and summary generation.
+13. `internal/redact`: redaction of secret-like keys and known secret environment values before persistence.
+14. `internal/provider/contract`: reusable adapter contract checks for local, mock, GCP, and future providers.
 
 ## Local Workflow
 
@@ -81,7 +82,7 @@ The CLI keeps stable exit categories for automation:
 
 ## Current Limits
 
-The `local` provider, deterministic mock providers, and a GCP Vertex AI CustomJob provider are implemented. GCP v1 requires a prebuilt `job.image` and supports only `gs://` URI data inputs; local script packaging, Docker image builds, source distribution upload, non-GCS cloud data inputs, and multi-worker training are deferred. `logs --follow` follows active run artifacts until the run reaches a terminal state and drains newly appended logs before returning. Explicit `resume` is still roadmap work.
+The `local` provider, deterministic mock providers, and a GCP Vertex AI CustomJob provider are implemented. GCP v1 accepts a prebuilt `job.image` or a packageable `job.script` that is built and pushed through the Docker packaging layer before submit. GCP data inputs still support only `gs://` URI inputs; source distribution upload, non-GCS cloud data inputs, and multi-worker training are deferred. GCP capabilities use Cloud Billing Catalog pricing, Compute Engine machine/accelerator inventory, and regional quota facts when available, with static estimates as fallback. `logs --follow` follows active run artifacts until the run reaches a terminal state and drains newly appended logs before returning. Explicit user-facing `resume` is still roadmap work, but provider failover passes compatible checkpoint events into later attempts.
 
 ## Runtime Workspace
 
@@ -97,7 +98,7 @@ The local provider stores a `local:<pid>` provider reference on the running atte
 
 The GCP provider stores the full Vertex AI CustomJob resource name as the provider reference. `switchboard-cli cancel <run-id>` uses that reference to issue a best-effort CustomJob cancel request.
 
-Run records include the script path for script jobs and the image URI for container jobs; human-readable `status` output shows whichever target is present. Attempt records include optional resume checkpoint and cost estimate provenance. Existing SQLite databases are migrated in place by adding missing run and attempt columns when opened.
+Run records include the script path for script jobs and the image URI for container jobs; human-readable `status` output shows whichever target is present. Attempt records include optional resume checkpoint and cost estimate provenance. Routing decisions include selected hardware, estimated VRAM/runtime/cost, confidence, and rejected hardware reasons when hardware routing is active. GCP hardware shapes include live zones and quota fields when Compute Engine APIs are reachable. Existing SQLite databases are migrated in place by adding missing run, attempt, and routing-decision columns when opened.
 
 Before writing logs, `events.jsonl`, summaries, or provider failure reasons, providers and orchestration code redact secret-like keys and known secret values from job/runtime/inherited environment variables. Do not add new persistence paths without using the redaction utility.
 
@@ -105,5 +106,5 @@ Before writing logs, `events.jsonl`, summaries, or provider failure reasons, pro
 
 1. Keep the gated billable container submit smoke test current with `SWITCHBOARD_GCP_LIVE=1` and `SWITCHBOARD_GCP_LIVE_SUBMIT=1`.
 2. Run the containerized PyTorch Iris demo from `examples/gcp/iris` when a GCS copy of the Iris CSV and an Artifact Registry image are available.
-3. Add Switchboard-managed Docker build/push now that the container-image CustomJob path is validated; see [GCP Packaging Decision](gcp-packaging-decision.md).
-4. Replace static GCP hourly estimates with provider pricing data during auto hardware routing work.
+3. Add live smoke coverage for GCP pricing/capacity API permissions.
+4. Add more cloud resume examples once additional providers can consume shared checkpoint URIs.

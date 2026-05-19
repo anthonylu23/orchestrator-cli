@@ -19,7 +19,7 @@ Data Preparation
   validate inputs, estimate bundle size, build data manifest, prepare mounts
 
 Orchestration Core
-  run state machine, attempt manager, routing, retry/failover, checkpoints, future hardware selection
+  run state machine, attempt manager, routing, retry/failover, checkpoints, hardware selection
 
 Provider Layer
   provider registry, adapter contract, capabilities, normalized errors
@@ -43,7 +43,7 @@ Core entities:
 1. `Run`: job spec, desired state, current state, timestamps, and final outcome.
 2. `Attempt`: provider name, provider job reference, attempt state, resume checkpoint URI/step, cost estimate, and exit reason.
 3. `Event`: structured metric, checkpoint, status, and log payloads linked to a run and attempt.
-4. `Summary`: derived final metrics, best metrics, runtime, checkpoint count, resume count, provider attempts, and exit reason.
+4. `Summary`: derived final metrics, best metrics, runtime, checkpoint count, resume count, provider attempts, routing decision, and exit reason.
 
 SQLite is the canonical state store for runs and attempts. Files under `~/.switchboard-cli/runs/<run-id>/` are durable user-facing artifacts. Local attempts also use a per-run workspace at `runs/<run-id>/workspace`.
 
@@ -122,12 +122,14 @@ type ProviderCapabilities struct {
   SupportsLocalScript bool
   SupportsDataBundle bool
   SupportedURISchemes []string
+  SupportedCheckpointSchemes []string
   SupportsObjectStorePull bool
   MaxRuntimeHours *int
 }
 ```
 
-Provider capabilities now include optional concrete hardware shapes for auto hardware routing groundwork: GPU model/family, VRAM, supported GPU counts, regions, availability hints, hourly prices, and launch constraints. The current router still selects providers only; the orchestration core should own final hardware route policy when shape-level routing is implemented.
+Provider capabilities include concrete hardware shapes for auto hardware routing: GPU model/family, VRAM, supported GPU counts, regions, availability hints, hourly prices, and launch constraints. The orchestration core owns hardware route policy.
+Provider capabilities also declare supported checkpoint URI schemes. Failover routing rejects providers that cannot read the latest checkpoint URI.
 
 Adapters translate raw provider failures into normalized errors:
 
@@ -164,11 +166,11 @@ selection reason
 
 Routing decisions are stored in SQLite with JSON snapshots of eligible and rejected providers. This makes the final provider selection explainable after the run completes.
 
-For `provider=auto`, Switchboard filters incompatible providers, ranks eligible providers by objective, and selects the best candidate. On resumable provider failure, the core discovers the latest checkpoint, excludes providers according to failure policy, and submits a new attempt with resume metadata. Attempts persist resume checkpoint and estimate provenance for later inspection through summaries and state.
+For `provider=auto`, Switchboard filters incompatible providers, ranks eligible providers by objective, and selects the best candidate. When hardware routing is active, the decision includes the selected provider, selected shape, estimated VRAM, estimated runtime, estimated total cost, confidence, and rejected hardware reasons. On resumable provider failure, the core discovers the latest checkpoint, excludes providers according to failure policy, rejects providers that cannot read the checkpoint URI scheme, and submits a new attempt with resume metadata. Attempts persist resume checkpoint and estimate provenance for later inspection through summaries and state.
 
-## Planned Hardware Routing
+## Hardware Routing
 
-Auto hardware routing should extend provider routing without moving policy into adapters. The first version should stay single-node and choose one machine with 1-N GPUs.
+Auto hardware routing extends provider routing without moving policy into adapters. The first version stays single-node and chooses one machine with 1-N GPUs.
 
 Planned control levels:
 
@@ -176,7 +178,7 @@ Planned control levels:
 2. `auto_provider`: route provider while honoring user-selected hardware requirements.
 3. `manual`: use the specified provider and hardware.
 
-The preferred full-auto objective is fastest compatible hardware within a max estimated run cost. Inputs should come from a probe-first sizing profile plus user hints for dataset size, model size, batch size, precision, optimizer, and sequence/image shape. If the estimator cannot produce a confident memory and cost estimate, routing should reject full-auto before submit with actionable missing-input or bounds reasons.
+The preferred full-auto objective is fastest compatible hardware within a max estimated run cost. Current inputs come from sizing hints and hardware constraints; probe artifacts are future work. If the estimator cannot produce a confident memory and cost estimate, routing rejects full-auto before submit with actionable missing-input or bounds reasons.
 
 The planned routing flow is:
 
@@ -190,7 +192,7 @@ job config
   -> provider submit
 ```
 
-Persisted decisions should include selected provider, GPU model/family, GPU count, estimated VRAM, estimated runtime, estimated total cost, confidence, and rejected provider/hardware reasons.
+Persisted decisions include selected provider, GPU model/family, GPU count, estimated VRAM, estimated runtime, estimated total cost, confidence, and rejected provider/hardware reasons.
 
 ## Checkpoints
 
@@ -202,7 +204,7 @@ type CheckpointResolver interface {
 }
 ```
 
-The current resolver reads structured checkpoint events from `events.jsonl` and returns the highest-step checkpoint. Real cross-provider resume requires shared storage reachable from both providers. Local/mock tests model the metadata flow before adding GCS or S3.
+The current resolver reads structured checkpoint events from `events.jsonl` and returns the highest-step checkpoint. Real cross-provider resume requires shared storage reachable from both providers. Providers report supported checkpoint URI schemes, and routing rejects resume attempts where the next provider cannot read the latest checkpoint. Local/mock tests model the metadata flow; GCP is considered reachable only for `gs://` checkpoint URIs.
 
 ## Runtime and Telemetry
 
@@ -218,7 +220,7 @@ type RuntimeBundle struct {
 }
 ```
 
-Early local execution may run scripts directly. Cloud execution may initially require explicit images rather than automatic packaging.
+Local execution may run scripts directly. Cloud execution uses images. For GCP, the CLI can build and push a Docker image before submit when `job.script` and `packaging` are configured, then hand an image job to the provider adapter.
 
 The local provider materializes bundled data into the workspace and executes the script from that workspace. The mock provider simulates data preparation, URI fetch success, configured logs/events, and retryable failures. Future cloud providers can upload bundled data to staging storage or use provider-native transfer behavior.
 
@@ -257,7 +259,7 @@ Adding a provider should require:
 3. Reporting capabilities.
 4. Mapping raw API errors into normalized provider errors.
 5. Supporting or explicitly rejecting bundled data and URI schemes.
-6. Reporting concrete hardware shapes when auto hardware routing is implemented.
+6. Reporting concrete hardware shapes and supported checkpoint schemes.
 7. Passing the shared provider contract tests, with explicit contract settings for intentional behavior differences such as artifact-backed logs.
 8. Registering the adapter.
 

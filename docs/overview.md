@@ -18,7 +18,7 @@ Run a training job through one CLI, materialize its data inputs consistently, ch
 
 "Given my script, data, sizing profile, and budget, choose compatible provider and GPU hardware, run the job, and resume if execution fails."
 
-The first implementation proves the lifecycle through local and mock providers before integrating real cloud APIs. That keeps the early work focused on orchestration quality instead of provider setup friction. The next product layer is auto hardware routing: selecting provider and single-node GPU shape/count from model, data, batch, precision, probe output, and budget.
+The first implementation proves the lifecycle through local and mock providers, then GCP as the first real cloud API. The current product layer adds managed image packaging for GCP script jobs and first-pass auto hardware routing: selecting provider and single-node GPU shape/count from model, batch, precision, constraints, and budget.
 
 ## Differentiation
 
@@ -39,12 +39,12 @@ The first implementation proves the lifecycle through local and mock providers b
 7. Durable artifacts under `~/.switchboard-cli/runs/<run-id>/`.
 8. Provider adapter contract tests.
 9. GCP as the first real provider after local/mock behavior is proven.
-10. Planned auto hardware routing after provider/hardware capability reporting exists.
+10. First-pass auto hardware routing after provider/hardware capability reporting exists.
 
 ## Deferred Scope
 
 1. Three real providers at once.
-2. Automatic container packaging.
+2. Provider-agnostic container packaging beyond the implemented GCP Docker build/push path.
 3. Hosted control plane.
 4. Unified billing or a single Switchboard API key.
 5. Kubernetes.
@@ -54,15 +54,15 @@ The first implementation proves the lifecycle through local and mock providers b
 9. Enterprise governance and compliance features.
 10. Typed API connector framework for arbitrary dataset APIs.
 
-## Planned Auto Hardware Routing
+## Auto Hardware Routing
 
-Auto hardware routing is planned, not implemented yet. The intended control levels are:
+Auto hardware routing is implemented for first-pass single-node provider and shape selection. The control levels are:
 
 1. `full_auto`: Switchboard selects provider, GPU shape, and single-node GPU count.
 2. `auto_provider`: the user selects hardware requirements, and Switchboard selects the provider.
 3. `manual`: the user selects both provider and hardware.
 
-The default objective should be fastest compatible infrastructure within a max estimated run cost. The sizing path should be probe-first: training scripts or frameworks emit a sizing profile, and user hints such as dataset size, model size, batch size, precision, optimizer, and sequence/image dimensions fill gaps or set bounds. If Switchboard cannot estimate memory fit or total cost with enough confidence, it should fail before submit with clear guidance rather than overprovision silently.
+The default objective is fastest compatible infrastructure within a max estimated run cost. The current sizing path uses user hints such as model size, batch size, precision, and optimizer; probe artifacts are still future work. If Switchboard cannot estimate memory fit or total cost with enough confidence, it fails before submit with clear guidance rather than overprovisioning silently.
 
 ## Early Runtime Assumptions
 

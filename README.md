@@ -10,7 +10,7 @@ Switchboard now has a local orchestration vertical slice, deterministic mock-pro
 
 Run artifacts redact secret-like keys and known secret environment values before persistence. Attempt history also records resume checkpoint provenance and provider cost estimates so failover decisions remain explainable after completion.
 
-GCP v1 is container-image-first. Live auth and a billable CPU-only Vertex AI CustomJob smoke test have passed on the `switchboard-496606` project, and `examples/gcp/iris` contains the first realistic PyTorch Iris container workflow. Local script packaging, managed image build/push, richer GCP data staging, and full auto hardware routing remain roadmap work.
+GCP v1 is still image-submit-first at the provider boundary, but the CLI can now build and push a Docker image before submit when a GCP job uses `job.script` with `packaging` config. Live auth and a billable CPU-only Vertex AI CustomJob smoke test have passed on the `switchboard-496606` project, and `examples/gcp/iris` contains the first realistic PyTorch Iris container workflow with optional GCS checkpoint upload/resume. GCP capabilities can use live Cloud Billing pricing, Compute Engine machine/accelerator inventory, and regional quota facts with static fallback. GCP data staging beyond `gs://`, additional providers, and richer QoL workflows remain roadmap work.
 
 ## Quick Start
 
@@ -95,6 +95,26 @@ docker push us-central1-docker.pkg.dev/<project>/switchboard/iris-pytorch:latest
 SWITCHBOARD_CLI_HOME="$(mktemp -d)" ./bin/switchboard-cli train --provider gcp --config examples/gcp-iris.yaml
 ```
 
+Run a local script on GCP by letting Switchboard build and push an image first:
+
+```yaml
+job:
+  script: examples/train.py
+packaging:
+  dockerfile: Dockerfile
+  context: .
+  platform: linux/amd64
+gcp:
+  project_id: my-project
+  location: us-central1
+  output_uri_prefix: gs://my-bucket/switchboard-outputs
+  artifact_registry_repository: switchboard
+```
+
+The packaging layer runs `docker build` and `docker push`, derives an Artifact Registry image when `packaging.image` is omitted, and submits the resulting image to the existing GCP provider path. Configure Docker auth first with `gcloud auth configure-docker <location>-docker.pkg.dev`.
+
+See `examples/gcp-script-packaging.yaml` for a GCP Iris config that builds from the checked-in Dockerfile before submitting.
+
 ## Product Wedge
 
 Given a training script, data inputs, sizing profile, and budget, Switchboard should choose compatible execution infrastructure, run the job, persist telemetry, and resume from the latest checkpoint if a provider fails.
@@ -121,7 +141,7 @@ switchboard-cli cancel <run-id>
 switchboard-cli providers list --json
 ```
 
-Planned commands not implemented yet include explicit `resume`. Planned provider work includes local script packaging for GCP and additional cloud adapters.
+Planned commands not implemented yet include explicit `resume`. Planned provider work now focuses on additional cloud adapters and richer provider-specific staging/checkpoint integrations.
 
 ## Data Inputs
 
@@ -152,7 +172,7 @@ Local paths default to bundled inputs. URI sources default to runtime-resolved i
 
 For local runs, bundled files and directories are copied into each run workspace under `runs/<run-id>/workspace`. Mounts must be under `/workspace`; for example, `/workspace/data/train` maps to `runs/<run-id>/workspace/data/train`. Job arguments and environment values that reference declared mounts are rewritten to host paths before the local process starts.
 
-For GCP runs, v1 accepts `job.image` and `gs://` URI inputs only. Bundled local data and non-GCS URI inputs are rejected before submit. See [GCP Provider](docs/gcp-provider.md).
+For GCP runs, v1 accepts `job.image` directly or can package `job.script` into a Docker image before submit. Data inputs must still be `gs://` URI inputs. Bundled local data and non-GCS URI inputs are rejected before submit. GCP containers receive `SWITCHBOARD_CHECKPOINT_URI_PREFIX=gs://<output-prefix>/<run-id>/checkpoints`; training code can upload checkpoint files there and emit those shared `gs://` URIs for resume/failover. See [GCP Provider](docs/gcp-provider.md).
 
 Example local data run:
 
@@ -186,7 +206,7 @@ The core user-facing object is a run. Each provider execution is an attempt. Thi
 
 For `provider=auto`, routing checks provider capabilities before ranking candidates. Providers that cannot satisfy bundled data inputs or declared URI schemes are rejected with persisted reasons.
 
-Planned auto hardware routing will add GPU shape and GPU count selection on top of provider routing. The config loader and provider capabilities now expose the initial routing/sizing/hardware schema and hardware-shape facts, while the router still selects providers only. See [Auto Hardware Routing](docs/auto-hardware-routing.md).
+Auto hardware routing now supports single-node provider and hardware-shape selection for `full_auto`, `auto_provider`, and `manual` modes using provider-reported shape facts, sizing hints, budget limits, and persisted rejection reasons. GCP reports a configured shape plus a catalog enriched by live pricing, inventory, and regional quota facts when available. See [Auto Hardware Routing](docs/auto-hardware-routing.md).
 
 ## Artifacts
 
@@ -201,7 +221,7 @@ By default Switchboard writes to `~/.switchboard-cli`. Set `SWITCHBOARD_CLI_HOME
 ~/.switchboard-cli/runs/<run-id>/workspace/
 ```
 
-`summary.json` includes final metrics and direction-aware `best_metrics`: common loss/error/perplexity/latency/duration metrics are minimized, while other metrics are maximized. Provider attempts include resume checkpoint and estimate fields when available.
+`summary.json` includes final metrics and direction-aware `best_metrics`: common loss/error/perplexity/latency/duration metrics are minimized, while other metrics are maximized. Provider attempts include resume checkpoint and estimate fields when available. Auto-routed runs include the persisted routing decision, selected hardware, estimated VRAM/runtime/cost, confidence, and provider/hardware rejection reasons.
 
 ## Roadmap Summary
 
@@ -209,9 +229,9 @@ By default Switchboard writes to `~/.switchboard-cli`. Set `SWITCHBOARD_CLI_HOME
 2. Local orchestration vertical slice.
 3. Mock cloud provider and failure simulation.
 4. Provider extensibility hardening.
-5. GCP as the first real provider: container-image CustomJob support is implemented; packaging and richer staging remain.
-6. Auto hardware routing for fastest compatible single-node GPU selection within a max run cost; schema and provider hardware-shape reporting are in place, route policy remains.
-7. Later: Lambda, Hyperbolic, container packaging, shared checkpoint backends, fan-out sweeps, richer terminal UI, and optional hosted control plane.
+5. GCP as the first real provider: container-image CustomJob support, managed Docker build/push, live pricing/capacity enrichment, and GCS checkpoint resume are implemented; richer data staging remains.
+6. Auto hardware routing for fastest compatible single-node GPU selection within a max run cost is implemented with provider-reported facts, including live GCP pricing/inventory/quota enrichment when available.
+7. Later: Lambda, Hyperbolic, shared checkpoint backends, fan-out sweeps, richer terminal UI, and optional hosted control plane.
 
 ## Docs
 

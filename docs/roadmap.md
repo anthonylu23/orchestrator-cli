@@ -113,13 +113,13 @@ Exit criteria:
 
 ## Phase 4 - First Real Provider: GCP
 
-Status: in progress. The first GCP adapter submits prebuilt container images to Vertex AI CustomJob through the Google Cloud Go client, polls job status, records provider refs and estimates, reads Cloud Logging payloads into run artifacts, supports best-effort cancel, and rejects unsupported local bundles or non-GCS URI inputs before submit. Live auth and a billable CPU-only Vertex AI CustomJob smoke test passed on 2026-05-17 for project `switchboard-496606`. The PyTorch Iris container example now provides the first realistic GCP training workload; Switchboard-managed image build/push is still pending.
+Status: substantially complete for the first provider milestone. The GCP adapter submits container images to Vertex AI CustomJob through the Google Cloud Go client, polls job status, records provider refs and estimates, reads Cloud Logging payloads into run artifacts, supports best-effort cancel, and rejects unsupported local bundles or non-GCS URI inputs before submit. Live auth and a billable CPU-only Vertex AI CustomJob smoke test passed on 2026-05-17 for project `switchboard-496606`. The PyTorch Iris container example provides the first realistic GCP training workload, the CLI can now build/push Docker images before submit for GCP script jobs, and GCP capability reporting can use live Cloud Billing/Compute pricing, inventory, and regional quota facts with static fallback.
 
 Goals:
 
 1. Validate GCP auth through Application Default Credentials.
 2. Submit, status, logs, and cancel a Vertex AI CustomJob from a prebuilt container image.
-3. Add basic static GCP cost estimation and capability reporting.
+3. Add GCP cost estimation and capability reporting with live API enrichment and static fallback.
 4. Reject unsupported bundled data and non-GCS URI-backed data clearly.
 5. Document a GCP container-image example.
 
@@ -134,10 +134,12 @@ Next steps:
 
 1. Keep the GCP live smoke path repeatable against `switchboard-496606`.
 2. Run and keep the PyTorch Iris container demo repeatable against a GCS data object and Artifact Registry image.
-3. Add Switchboard-managed image build/push for local scripts; the accepted direction is documented in [GCP Packaging Decision](gcp-packaging-decision.md).
-4. Add richer GCP pricing/capacity facts as part of auto hardware routing.
+3. Keep Switchboard-managed image build/push covered by fake-runner tests and documented Artifact Registry auth guidance.
+4. Add a gated live smoke check for Cloud Billing/Compute pricing and capacity permissions.
 
 ## Phase 5 - Auto Hardware Routing
+
+Status: first single-node implementation complete. The router can select provider and hardware shape for `full_auto`, `auto_provider`, and `manual`, reject shapes for memory/budget/constraint/no-quota reasons, persist selected hardware and estimates, and include the decision in summaries. GCP reports a configured shape plus a catalog enriched by live Cloud Billing and Compute inventory/quota APIs when available.
 
 Goals:
 
@@ -158,8 +160,7 @@ Exit criteria:
 ## Later Phases
 
 1. Add Lambda and Hyperbolic adapters.
-2. Add explicit Docker image build/package workflow.
-3. Add GCS and S3 checkpoint backends.
+2. Add GCS and S3 checkpoint backends and provider examples that emit shared checkpoint URIs.
 4. Add multi-node and distributed training topology after single-node auto hardware proves useful.
 5. Add basic experiment fan-out.
 6. Add richer terminal attach views.
@@ -184,7 +185,7 @@ The initial two-week milestone is not three-provider cloud coverage. It is a pol
 2. Event ingestion: mixed stdout, JSONL metrics, checkpoints, statuses, and plain logs.
 3. Data handling: bundled files/directories, URI inputs, size limit override, mounted paths, and secret redaction.
 4. State persistence: runs, attempts, routing decisions, summaries, and exit reasons.
-5. Routing: cheapest eligible provider today; planned fastest-within-budget provider and hardware selection under declared sizing, budget, and data requirements.
+5. Routing: cheapest eligible provider by default; fastest-within-budget provider and hardware selection under declared sizing, budget, and data requirements when hardware routing is active.
 6. Failure handling: retryable provider failures trigger alternate attempts.
-7. Resume: latest checkpoint is passed through `SubmitRequest.ResumeFrom`.
+7. Resume: latest checkpoint is passed through `SubmitRequest.ResumeFrom` only when the selected provider supports the checkpoint URI scheme.
 8. Provider contract: local, mock, and future real providers satisfy the same core expectations.

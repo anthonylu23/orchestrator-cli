@@ -2,7 +2,9 @@
 
 ## Status
 
-Auto hardware routing is planned scope. The config loader now accepts the concrete `routing`, `sizing`, and `hardware` schema below, and provider capabilities can expose concrete hardware shapes. Mock and GCP providers can report those shape facts, but the orchestration router still makes provider-level decisions only. Memory fit, runtime prediction, total run cost, selected hardware persistence, and manual hardware enforcement remain implementation work.
+Auto hardware routing is implemented for the first single-node path. The config loader accepts `routing`, `sizing`, and `hardware`; provider capabilities expose concrete shapes; and the orchestration router can select provider plus hardware shape for `full_auto`, `auto_provider`, and `manual`.
+
+Current limits: sizing uses conservative hints rather than a probe artifact. GCP pricing and inventory are loaded from Google APIs when available, with static estimates as a fallback; capacity remains quota/inventory-based rather than a hard reservation.
 
 ## Goal
 
@@ -14,9 +16,7 @@ Switchboard should let users choose how much control they want over infrastructu
 
 The default full-auto objective should be fastest compatible hardware within a user-specified max estimated run cost. This keeps the product focused on useful training outcomes instead of always choosing the cheapest hourly machine.
 
-## Conceptual Config
-
-The exact schema is not implemented yet, but the intended shape is:
+## Config
 
 ```yaml
 routing:
@@ -48,9 +48,21 @@ hardware:
 
 For `auto_provider`, `hardware.constraints` becomes the user-authored contract and the router only chooses an eligible provider. For `manual`, the config should identify the provider and concrete hardware shape directly.
 
+Manual example:
+
+```yaml
+routing:
+  mode: "manual"
+
+hardware:
+  manual:
+    provider: "gcp"
+    shape_id: "gcp-us-central1-a2-highgpu-1g-a100-1"
+```
+
 ## Sizing Model
 
-The preferred sizing source is a probe or profiling step emitted by the training script or framework. User-provided hints seed or override the probe when the script cannot infer everything.
+The preferred future sizing source is a probe or profiling step emitted by the training script or framework. The current implementation uses user-provided hints and constraints.
 
 Useful sizing inputs include:
 
@@ -61,11 +73,11 @@ Useful sizing inputs include:
 5. Dataset size and expected epoch/step count.
 6. Direct measured values from a probe, such as peak VRAM per sample and estimated throughput.
 
-If full-auto cannot estimate memory fit or run cost with enough confidence, it should fail before submit with clear missing-input or bounds guidance. It should not silently select expensive oversized hardware.
+If `full_auto` cannot estimate memory fit or run cost with enough confidence, it fails before submit with clear missing-input or bounds guidance. It does not silently select expensive oversized hardware.
 
 ## Routing Decision
 
-Auto hardware routing should extend the existing persisted routing decision. A completed decision should explain:
+Auto hardware routing extends the existing persisted routing decision. A completed decision explains:
 
 1. Selected provider.
 2. Selected GPU family/model and GPU count.
@@ -74,30 +86,28 @@ Auto hardware routing should extend the existing persisted routing decision. A c
 5. Confidence level and the source of the estimate.
 6. Rejected providers and rejected hardware shapes with reasons.
 
-The first implementation should stay single-node: choose one machine with 1-N GPUs. Multi-node topology, distributed training setup, network selection, and storage topology are later scope.
+The first implementation stays single-node: choose one machine with 1-N GPUs. Multi-node topology, distributed training setup, network selection, and storage topology are later scope.
 
 ## Architecture Direction
 
 The orchestration core should continue to own routing policy. Providers should report available accelerator shapes, pricing, regions, quota/capacity facts, and launch constraints. Providers should not choose the route themselves.
 
-At implementation time, the routing flow should become:
+The routing flow is:
 
 ```text
 job config
   -> data preparation
-  -> sizing probe and user hints
+  -> sizing hints
   -> provider and hardware inventory
   -> memory/runtime/cost estimator
   -> route decision
   -> provider submit
 ```
 
-The same run/attempt model still applies. If an attempt fails for a retryable provider reason, the next attempt may select another provider and hardware shape as long as it satisfies the same sizing, budget, and resume constraints.
+The same run/attempt model still applies. If an attempt fails for a retryable provider reason, the next attempt may select another provider and hardware shape as long as it satisfies the same sizing, budget, and checkpoint reachability constraints.
 
 ## Next Steps
 
 1. Add a sizing profile artifact contract that scripts can emit during probe runs.
-2. Add routing tests and implementation for memory fit, fastest-within-budget ranking, confidence failures, and manual override behavior.
-3. Persist selected hardware, estimated VRAM, estimated runtime, estimated total cost, confidence, and rejected shape reasons.
-4. Replace static GCP hourly estimates with pricing/capacity inventory behind provider capabilities.
-5. Add shared checkpoint storage rules before allowing cross-provider resume from GCP file checkpoints.
+2. Expand live GCP inventory smoke tests around Cloud Billing and Compute quota permissions.
+3. Expand the shape catalog and contract tests as Lambda, Hyperbolic, and other providers are added.
