@@ -6,6 +6,8 @@ require (
 	cloud.google.com/go/aiplatform v1.125.0
 	cloud.google.com/go/logging v1.17.0
 	github.com/spf13/cobra v1.10.2
+	golang.org/x/crypto v0.50.0
+	golang.org/x/term v0.42.0
 	google.golang.org/api v0.278.0
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260427160629-7cedc36a6bc4
 	google.golang.org/grpc v1.81.0
@@ -41,7 +43,6 @@ require (
 	go.opentelemetry.io/otel v1.43.0 // indirect
 	go.opentelemetry.io/otel/metric v1.43.0 // indirect
 	go.opentelemetry.io/otel/trace v1.43.0 // indirect
-	golang.org/x/crypto v0.50.0 // indirect
 	golang.org/x/net v0.53.0 // indirect
 	golang.org/x/oauth2 v0.36.0 // indirect
 	golang.org/x/sync v0.20.0 // indirect

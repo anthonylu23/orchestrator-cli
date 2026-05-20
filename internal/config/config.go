@@ -24,6 +24,7 @@ type Config struct {
 	Hardware  HardwareConfig  `yaml:"hardware"`
 	Mock      MockConfig      `yaml:"mock"`
 	GCP       GCPConfig       `yaml:"gcp"`
+	Lambda    LambdaConfig    `yaml:"lambda"`
 }
 
 type JobConfig struct {
@@ -129,6 +130,20 @@ type GCPConfig struct {
 	ArtifactRegistryRepository string  `yaml:"artifact_registry_repository"`
 }
 
+type LambdaConfig struct {
+	RegionName             string `yaml:"region_name"`
+	InstanceTypeName       string `yaml:"instance_type_name"`
+	SSHKeyName             string `yaml:"ssh_key_name"`
+	SSHPrivateKey          string `yaml:"ssh_private_key"`
+	ImageFamily            string `yaml:"image_family"`
+	PollIntervalSeconds    int    `yaml:"poll_interval_seconds"`
+	TerminateOnCompletion  *bool  `yaml:"terminate_on_completion"`
+	KeepInstanceOnFailure  bool   `yaml:"keep_instance_on_failure"`
+	APITimeoutSeconds      int    `yaml:"api_timeout_seconds"`
+	SSHConnectTimeoutSecs  int    `yaml:"ssh_connect_timeout_seconds"`
+	SSHReadyTimeoutSeconds int    `yaml:"ssh_ready_timeout_seconds"`
+}
+
 type MockProviderConfig struct {
 	Name           string              `yaml:"name"`
 	HourlyCost     float64             `yaml:"hourly_cost"`
@@ -165,6 +180,7 @@ type ResolvedTrainConfig struct {
 	Hardware                  HardwareConfig
 	Mock                      MockConfig
 	GCP                       GCPConfig
+	Lambda                    LambdaConfig
 	BundleMaxSizeBytes        int64
 	RequireOverrideAboveLimit bool
 	AllowLargeDataBundle      bool
@@ -230,6 +246,7 @@ func LoadTrain(flags TrainFlags) (ResolvedTrainConfig, error) {
 			job = resolveJobPaths(job, configDir)
 		}
 		cfg.Packaging = resolvePackagingPaths(cfg.Packaging, configDir)
+		cfg.Lambda = resolveLambdaPaths(cfg.Lambda, configDir)
 	}
 
 	maxSizeMB := cfg.Data.Bundle.MaxSizeMB
@@ -255,11 +272,12 @@ func LoadTrain(flags TrainFlags) (ResolvedTrainConfig, error) {
 		Hardware:                  cfg.Hardware,
 		Mock:                      cfg.Mock,
 		GCP:                       resolveGCP(cfg.GCP),
+		Lambda:                    resolveLambda(cfg.Lambda),
 		BundleMaxSizeBytes:        int64(maxSizeMB) * 1024 * 1024,
 		RequireOverrideAboveLimit: requireOverride,
 		AllowLargeDataBundle:      flags.AllowLargeDataBundle,
 		SwitchboardHome:           resolvedHome,
-	}, validateProviderConfig(provider, job, resolvePackaging(cfg.Packaging), resolveGCP(cfg.GCP))
+	}, validateProviderConfig(provider, job, resolvePackaging(cfg.Packaging), resolveGCP(cfg.GCP), resolveLambda(cfg.Lambda))
 }
 
 func resolvePackaging(packaging PackagingConfig) PackagingConfig {
@@ -285,6 +303,17 @@ func resolvePackagingPaths(packaging PackagingConfig, baseDir string) PackagingC
 	packaging.Context = resolveLocalPath(packaging.Context, baseDir)
 	packaging.Dockerfile = resolveLocalPath(packaging.Dockerfile, baseDir)
 	return packaging
+}
+
+func resolveLambdaPaths(lambda LambdaConfig, baseDir string) LambdaConfig {
+	if strings.HasPrefix(lambda.SSHPrivateKey, "~/") {
+		if homeDir, err := os.UserHomeDir(); err == nil {
+			lambda.SSHPrivateKey = filepath.Join(homeDir, strings.TrimPrefix(lambda.SSHPrivateKey, "~/"))
+		}
+		return lambda
+	}
+	lambda.SSHPrivateKey = resolveLocalPath(lambda.SSHPrivateKey, baseDir)
+	return lambda
 }
 
 func resolveLocalPath(path string, baseDir string) string {
@@ -331,10 +360,38 @@ func resolveGCP(gcp GCPConfig) GCPConfig {
 	return gcp
 }
 
-func validateProviderConfig(provider string, job app.JobSpec, packaging PackagingConfig, gcp GCPConfig) error {
-	if provider != "gcp" {
+func resolveLambda(lambda LambdaConfig) LambdaConfig {
+	if lambda.PollIntervalSeconds == 0 {
+		lambda.PollIntervalSeconds = 30
+	}
+	if lambda.TerminateOnCompletion == nil {
+		defaultTerminate := true
+		lambda.TerminateOnCompletion = &defaultTerminate
+	}
+	if lambda.APITimeoutSeconds == 0 {
+		lambda.APITimeoutSeconds = 30
+	}
+	if lambda.SSHConnectTimeoutSecs == 0 {
+		lambda.SSHConnectTimeoutSecs = 10
+	}
+	if lambda.SSHReadyTimeoutSeconds == 0 {
+		lambda.SSHReadyTimeoutSeconds = 600
+	}
+	return lambda
+}
+
+func validateProviderConfig(provider string, job app.JobSpec, packaging PackagingConfig, gcp GCPConfig, lambda LambdaConfig) error {
+	switch provider {
+	case "gcp":
+		return validateGCPConfig(job, packaging, gcp)
+	case "lambda":
+		return validateLambdaConfig(job, lambda)
+	default:
 		return nil
 	}
+}
+
+func validateGCPConfig(job app.JobSpec, packaging PackagingConfig, gcp GCPConfig) error {
 	var reasons []string
 	if job.Image == "" && !canPackageForGCP(job, packaging, gcp) {
 		reasons = append(reasons, "gcp provider requires job.image or packaging config for job.script")
@@ -347,6 +404,32 @@ func validateProviderConfig(provider string, job app.JobSpec, packaging Packagin
 	}
 	if gcp.OutputURIPrefix == "" {
 		reasons = append(reasons, "gcp.output_uri_prefix is required")
+	}
+	if len(reasons) > 0 {
+		return errors.New(strings.Join(reasons, "; "))
+	}
+	return nil
+}
+
+func validateLambdaConfig(job app.JobSpec, lambda LambdaConfig) error {
+	var reasons []string
+	if job.Image == "" {
+		reasons = append(reasons, "lambda provider requires job.image")
+	}
+	if job.Script != "" {
+		reasons = append(reasons, "lambda provider v1 does not package local scripts; provide job.image")
+	}
+	if lambda.RegionName == "" {
+		reasons = append(reasons, "lambda.region_name is required")
+	}
+	if lambda.InstanceTypeName == "" {
+		reasons = append(reasons, "lambda.instance_type_name is required")
+	}
+	if lambda.SSHKeyName == "" {
+		reasons = append(reasons, "lambda.ssh_key_name is required")
+	}
+	if lambda.SSHPrivateKey == "" {
+		reasons = append(reasons, "lambda.ssh_private_key is required")
 	}
 	if len(reasons) > 0 {
 		return errors.New(strings.Join(reasons, "; "))

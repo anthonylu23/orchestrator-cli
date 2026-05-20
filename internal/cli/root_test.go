@@ -386,10 +386,53 @@ func TestProvidersListIncludesMocks(t *testing.T) {
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("providers list returned error: %v", err)
 	}
-	for _, name := range []string{"local", "mock-lambda", "mock-gcp", "gcp"} {
+	for _, name := range []string{"local", "mock-lambda", "mock-gcp", "gcp", "lambda"} {
 		if !strings.Contains(stdout.String(), name) {
 			t.Fatalf("%q missing from %s", name, stdout.String())
 		}
+	}
+}
+
+func TestCredentialsCommandsSetListGetAndDelete(t *testing.T) {
+	dir := t.TempDir()
+	home := filepath.Join(dir, "home")
+	t.Setenv("SWITCHBOARD_CREDENTIALS_PASSPHRASE", "test-passphrase")
+	t.Setenv("TEST_LAMBDA_KEY", "test-secret-value")
+	var stdout, stderr bytes.Buffer
+	cmd := NewRootCommand(Options{Stdout: &stdout, Stderr: &stderr})
+	cmd.SetArgs([]string{"--home", home, "credentials", "set", "lambda", "api-key", "--from-env", "TEST_LAMBDA_KEY"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("set returned error: %v\nstdout=%s\nstderr=%s", err, stdout.String(), stderr.String())
+	}
+	if strings.Contains(stdout.String(), "test-secret-value") {
+		t.Fatalf("import output leaked secret: %s", stdout.String())
+	}
+
+	stdout.Reset()
+	cmd = NewRootCommand(Options{Stdout: &stdout, Stderr: &stderr})
+	cmd.SetArgs([]string{"--home", home, "credentials", "list", "--json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("list returned error: %v", err)
+	}
+	if !strings.Contains(stdout.String(), `"key":"lambda/api_key"`) || strings.Contains(stdout.String(), "test-secret-value") {
+		t.Fatalf("list output = %s", stdout.String())
+	}
+
+	stdout.Reset()
+	cmd = NewRootCommand(Options{Stdout: &stdout, Stderr: &stderr})
+	cmd.SetArgs([]string{"--home", home, "credentials", "get", "lambda", "api-key", "--show"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("get returned error: %v", err)
+	}
+	if strings.TrimSpace(stdout.String()) != "test-secret-value" {
+		t.Fatalf("get output = %q", stdout.String())
+	}
+
+	stdout.Reset()
+	cmd = NewRootCommand(Options{Stdout: &stdout, Stderr: &stderr})
+	cmd.SetArgs([]string{"--home", home, "credentials", "delete", "lambda", "api-key"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("delete returned error: %v", err)
 	}
 }
 
@@ -485,6 +528,68 @@ gcp:
 	}
 	if !strings.Contains(stdout.String(), "us-docker.pkg.dev/project/repo/train:latest") {
 		t.Fatalf("status = %s", stdout.String())
+	}
+}
+
+func TestLambdaTrainIntegrationUsesConfiguredProvider(t *testing.T) {
+	dir := t.TempDir()
+	home := filepath.Join(dir, "home")
+	configPath := filepath.Join(dir, "switchboard.yaml")
+	configContent := `
+job:
+  name: lambda-test
+  image: ghcr.io/example/switchboard-lambda-smoke:latest
+  command: ["python", "/app/train.py"]
+  args: ["--epochs", "1"]
+lambda:
+  region_name: us-west-1
+  instance_type_name: gpu_1x_a10
+  ssh_key_name: switchboard
+  ssh_private_key: ~/.ssh/id_ed25519
+`
+	if err := os.WriteFile(configPath, []byte(configContent), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	var captured config.LambdaConfig
+	fake := &fakeLambdaAdapter{}
+	var stdout, stderr bytes.Buffer
+	cmd := NewRootCommand(Options{
+		Stdout: &stdout,
+		Stderr: &stderr,
+		LambdaProviderFactory: func(cfg config.LambdaConfig, stdout io.Writer, stderr io.Writer) app.ProviderAdapter {
+			captured = cfg
+			return fake
+		},
+	})
+	cmd.SetArgs([]string{"--home", home, "train", "--provider", "lambda", "--config", configPath})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("train returned error: %v\nstdout=%s\nstderr=%s", err, stdout.String(), stderr.String())
+	}
+	if captured.RegionName != "us-west-1" || captured.InstanceTypeName != "gpu_1x_a10" || captured.SSHKeyName != "switchboard" {
+		t.Fatalf("captured config = %#v", captured)
+	}
+	runID := extractRunID(t, stdout.String())
+	paths := artifact.ForRun(home, runID)
+	store, err := state.Open(paths.DB)
+	if err != nil {
+		t.Fatalf("open state: %v", err)
+	}
+	defer store.Close()
+	attempts, err := store.AttemptsByRun(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("attempts: %v", err)
+	}
+	if len(attempts) != 1 {
+		t.Fatalf("attempts = %#v", attempts)
+	}
+	if attempts[0].Provider != "lambda" || attempts[0].ProviderRef != "lambda:i-fake" {
+		t.Fatalf("attempt = %#v", attempts[0])
+	}
+	if fake.lastSubmit.RuntimeEnv["SWITCHBOARD_CHECKPOINT_DIR"] != "/tmp/switchboard/checkpoints" {
+		t.Fatalf("lambda checkpoint env = %#v", fake.lastSubmit.RuntimeEnv)
+	}
+	if strings.Contains(fake.lastSubmit.RuntimeEnv["SWITCHBOARD_EVENTS_PATH"], home) {
+		t.Fatalf("lambda events path should not point at local artifact path: %#v", fake.lastSubmit.RuntimeEnv)
 	}
 }
 
@@ -1034,3 +1139,70 @@ func (a *fakeGCPAdapter) Cancel(ctx context.Context, ref app.ProviderJobRef) err
 }
 
 var errUnsupportedFakeLogs = errors.New("unsupported")
+
+type fakeLambdaAdapter struct {
+	lastSubmit app.SubmitRequest
+}
+
+func (a *fakeLambdaAdapter) Name() app.ProviderName {
+	return "lambda"
+}
+
+func (a *fakeLambdaAdapter) ValidateAuth(ctx context.Context) error {
+	return nil
+}
+
+func (a *fakeLambdaAdapter) Capabilities(ctx context.Context) (app.ProviderCapabilities, error) {
+	return app.ProviderCapabilities{
+		SupportsDockerImage:        true,
+		SupportedURISchemes:        []string{"http", "https", "s3", "gs"},
+		SupportedCheckpointSchemes: []string{"s3", "gs"},
+		HardwareShapes: []app.HardwareShape{{
+			ID:                "lambda-us-west-1-gpu-1x-a10",
+			Provider:          "lambda",
+			Region:            "us-west-1",
+			MachineType:       "gpu_1x_a10",
+			AcceleratorType:   "A10 (24 GB)",
+			AcceleratorCount:  1,
+			GPUFamily:         "A10",
+			VRAMGBPerGPU:      24,
+			TotalVRAMGB:       24,
+			OnDemandHourlyUSD: 0.75,
+			SupportsOnDemand:  true,
+		}},
+	}, nil
+}
+
+func (a *fakeLambdaAdapter) ValidateJob(ctx context.Context, spec app.JobSpec) app.SupportReport {
+	if spec.Image == "" {
+		return app.SupportReport{Supported: false, Reasons: []string{"lambda provider requires job.image"}}
+	}
+	return app.SupportReport{Supported: true}
+}
+
+func (a *fakeLambdaAdapter) Estimate(ctx context.Context, spec app.JobSpec) (app.CostEstimate, error) {
+	return app.CostEstimate{HourlyUSD: 0.75, Currency: "USD"}, nil
+}
+
+func (a *fakeLambdaAdapter) Submit(ctx context.Context, req app.SubmitRequest) (app.SubmitResult, error) {
+	a.lastSubmit = req
+	ref := "lambda:i-fake"
+	if req.OnStarted != nil {
+		if err := req.OnStarted(app.ProviderJobRef{ID: ref}); err != nil {
+			return app.SubmitResult{}, err
+		}
+	}
+	return app.SubmitResult{ProviderJobRef: ref, ExitCode: 0, ExitReason: "completed"}, nil
+}
+
+func (a *fakeLambdaAdapter) GetStatus(ctx context.Context, ref app.ProviderJobRef) (app.ProviderJobStatus, error) {
+	return app.ProviderJobStatus{State: app.AttemptStateSucceeded}, nil
+}
+
+func (a *fakeLambdaAdapter) StreamLogs(ctx context.Context, req app.LogStreamRequest) (app.LogStream, error) {
+	return nil, errUnsupportedFakeLogs
+}
+
+func (a *fakeLambdaAdapter) Cancel(ctx context.Context, ref app.ProviderJobRef) error {
+	return nil
+}

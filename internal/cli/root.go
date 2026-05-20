@@ -15,12 +15,14 @@ import (
 	"github.com/anthonylu23/switchboard-cli/internal/artifact"
 	"github.com/anthonylu23/switchboard-cli/internal/checkpoint"
 	"github.com/anthonylu23/switchboard-cli/internal/config"
+	"github.com/anthonylu23/switchboard-cli/internal/credentials"
 	"github.com/anthonylu23/switchboard-cli/internal/data"
 	"github.com/anthonylu23/switchboard-cli/internal/event"
 	"github.com/anthonylu23/switchboard-cli/internal/home"
 	"github.com/anthonylu23/switchboard-cli/internal/packaging"
 	"github.com/anthonylu23/switchboard-cli/internal/provider"
 	gcpprovider "github.com/anthonylu23/switchboard-cli/internal/provider/gcp"
+	lambdaprovider "github.com/anthonylu23/switchboard-cli/internal/provider/lambda"
 	localprovider "github.com/anthonylu23/switchboard-cli/internal/provider/local"
 	mockprovider "github.com/anthonylu23/switchboard-cli/internal/provider/mock"
 	"github.com/anthonylu23/switchboard-cli/internal/redact"
@@ -32,10 +34,11 @@ import (
 )
 
 type Options struct {
-	Stdout              io.Writer
-	Stderr              io.Writer
-	GCPProviderFactory  func(config.GCPConfig, io.Writer, io.Writer) app.ProviderAdapter
-	ImageBuilderFactory func(io.Writer, io.Writer) ImageBuilder
+	Stdout                io.Writer
+	Stderr                io.Writer
+	GCPProviderFactory    func(config.GCPConfig, io.Writer, io.Writer) app.ProviderAdapter
+	LambdaProviderFactory func(config.LambdaConfig, io.Writer, io.Writer) app.ProviderAdapter
+	ImageBuilderFactory   func(io.Writer, io.Writer) ImageBuilder
 }
 
 type ImageBuilder interface {
@@ -71,6 +74,7 @@ func NewRootCommand(opts Options) *cobra.Command {
 	root.AddCommand(newLogsCommand(opts, &home))
 	root.AddCommand(newCancelCommand(opts, &home))
 	root.AddCommand(newProvidersCommand(opts))
+	root.AddCommand(newCredentialsCommand(opts, &home))
 	return root
 }
 
@@ -157,7 +161,11 @@ func runTrain(ctx context.Context, opts Options, resolved config.ResolvedTrainCo
 		return exitCodeInternal, err
 	}
 
-	registry := buildTrainProviderRegistry(opts, resolved)
+	credentialResolver, err := credentialResolverForTrain(opts, resolved)
+	if err != nil {
+		return exitCodeInvalidSpec, err
+	}
+	registry := buildTrainProviderRegistry(opts, resolved, credentialResolver)
 	maxAttempts := resolved.Routing.MaxAttempts
 	if maxAttempts < 1 {
 		maxAttempts = 1
@@ -464,7 +472,7 @@ func runAttempt(ctx context.Context, opts Options, store *state.Store, registry 
 func runtimeEnvForProvider(selectedProvider string, runID string, attemptID string, resumeValue string, paths artifact.Paths) map[string]string {
 	checkpointDir := paths.Checkpoints
 	eventsPath := paths.EventsJSONL
-	if selectedProvider == gcpprovider.ProviderName {
+	if selectedProvider == gcpprovider.ProviderName || selectedProvider == lambdaprovider.ProviderName {
 		checkpointDir = "/tmp/switchboard/checkpoints"
 		eventsPath = "/tmp/switchboard/events.jsonl"
 	}
@@ -715,15 +723,229 @@ func newProvidersCommand(opts Options) *cobra.Command {
 	return cmd
 }
 
+func newCredentialsCommand(opts Options, homeFlag *string) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "credentials",
+		Short: "Manage encrypted provider credentials",
+	}
+
+	var force bool
+	initCmd := &cobra.Command{
+		Use:   "init",
+		Short: "Initialize the encrypted local credentials store",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			store, path, err := openCredentialStore(opts, *homeFlag)
+			if err != nil {
+				return err
+			}
+			if err := store.Init(force); err != nil {
+				return err
+			}
+			fmt.Fprintf(opts.Stdout, "Initialized credentials store: %s\n", path)
+			return nil
+		},
+	}
+	initCmd.Flags().BoolVar(&force, "force", false, "Overwrite an existing credentials store")
+
+	var fromEnv string
+	var valueStdin bool
+	setCmd := &cobra.Command{
+		Use:   "set <provider> <name>",
+		Short: "Set a credential value",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			key, err := credentials.Key(args[0], args[1])
+			if err != nil {
+				return err
+			}
+			value, err := credentialValue(opts, key, fromEnv, valueStdin)
+			if err != nil {
+				return err
+			}
+			store, _, err := openCredentialStore(opts, *homeFlag)
+			if err != nil {
+				return err
+			}
+			if err := store.Set(key, value); err != nil {
+				return err
+			}
+			fmt.Fprintf(opts.Stdout, "Stored credential: %s\n", key)
+			return nil
+		},
+	}
+	setCmd.Flags().StringVar(&fromEnv, "from-env", "", "Read the credential value from an environment variable")
+	setCmd.Flags().BoolVar(&valueStdin, "value-stdin", false, "Read the credential value from stdin")
+
+	var show bool
+	getCmd := &cobra.Command{
+		Use:   "get <provider> <name>",
+		Short: "Check or reveal a credential value",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			key, err := credentials.Key(args[0], args[1])
+			if err != nil {
+				return err
+			}
+			store, _, err := openCredentialStore(opts, *homeFlag)
+			if err != nil {
+				return err
+			}
+			secret, err := store.Get(key)
+			if err != nil {
+				return err
+			}
+			if show {
+				fmt.Fprintln(opts.Stdout, secret.Value)
+			} else {
+				fmt.Fprintf(opts.Stdout, "Credential exists: %s\n", key)
+			}
+			return nil
+		},
+	}
+	getCmd.Flags().BoolVar(&show, "show", false, "Print the credential value")
+
+	deleteCmd := &cobra.Command{
+		Use:   "delete <provider> <name>",
+		Short: "Delete a credential",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			key, err := credentials.Key(args[0], args[1])
+			if err != nil {
+				return err
+			}
+			store, _, err := openCredentialStore(opts, *homeFlag)
+			if err != nil {
+				return err
+			}
+			if err := store.Delete(key); err != nil {
+				return err
+			}
+			fmt.Fprintf(opts.Stdout, "Deleted credential: %s\n", key)
+			return nil
+		},
+	}
+
+	var listJSON bool
+	listCmd := &cobra.Command{
+		Use:   "list",
+		Short: "List stored credential metadata",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			store, _, err := openCredentialStore(opts, *homeFlag)
+			if err != nil {
+				return err
+			}
+			items, err := store.List()
+			if err != nil {
+				return err
+			}
+			if listJSON {
+				return json.NewEncoder(opts.Stdout).Encode(items)
+			}
+			for _, item := range items {
+				fmt.Fprintf(opts.Stdout, "%s\tupdated=%s\n", item.Key, item.UpdatedAt.Format(time.RFC3339))
+			}
+			return nil
+		},
+	}
+	listCmd.Flags().BoolVar(&listJSON, "json", false, "Print JSON")
+
+	statusCmd := &cobra.Command{
+		Use:   "status <provider>",
+		Short: "Show stored credentials for one provider",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			provider := strings.ReplaceAll(strings.ToLower(args[0]), "-", "_")
+			store, _, err := openCredentialStore(opts, *homeFlag)
+			if err != nil {
+				return err
+			}
+			items, err := store.List()
+			if err != nil {
+				return err
+			}
+			found := false
+			for _, item := range items {
+				if item.Provider != provider {
+					continue
+				}
+				found = true
+				fmt.Fprintf(opts.Stdout, "%s\tpresent\tupdated=%s\n", item.Key, item.UpdatedAt.Format(time.RFC3339))
+			}
+			if !found {
+				fmt.Fprintf(opts.Stdout, "No stored credentials for provider: %s\n", provider)
+			}
+			return nil
+		},
+	}
+
+	cmd.AddCommand(initCmd, setCmd, getCmd, deleteCmd, listCmd, statusCmd)
+	return cmd
+}
+
+func openCredentialStore(opts Options, homeFlag string) (*credentials.EncryptedFileStore, string, error) {
+	resolvedHome, err := home.Resolve(homeFlag)
+	if err != nil {
+		return nil, "", err
+	}
+	passphrase, err := credentials.PassphraseFromEnvOrPrompt("Credentials passphrase: ", opts.Stderr)
+	if err != nil {
+		return nil, "", err
+	}
+	path := credentials.DefaultPath(resolvedHome)
+	store, err := credentials.OpenEncryptedFile(path, passphrase)
+	if err != nil {
+		return nil, "", err
+	}
+	return store, path, nil
+}
+
+func openCredentialStoreAtHome(opts Options, resolvedHome string) (*credentials.EncryptedFileStore, string, error) {
+	passphrase, err := credentials.PassphraseFromEnvOrPrompt("Credentials passphrase: ", opts.Stderr)
+	if err != nil {
+		return nil, "", err
+	}
+	path := credentials.DefaultPath(resolvedHome)
+	store, err := credentials.OpenEncryptedFile(path, passphrase)
+	if err != nil {
+		return nil, "", err
+	}
+	return store, path, nil
+}
+
+func credentialValue(opts Options, key string, fromEnv string, valueStdin bool) (string, error) {
+	if fromEnv != "" && valueStdin {
+		return "", fmt.Errorf("--from-env and --value-stdin are mutually exclusive")
+	}
+	if fromEnv != "" {
+		value := os.Getenv(fromEnv)
+		if value == "" {
+			return "", fmt.Errorf("environment variable %s is empty or unset", fromEnv)
+		}
+		return value, nil
+	}
+	if valueStdin {
+		content, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			return "", err
+		}
+		value := strings.TrimRight(string(content), "\r\n")
+		if value == "" {
+			return "", fmt.Errorf("stdin value for %s is empty", key)
+		}
+		return value, nil
+	}
+	return credentials.SecretFromPrompt(fmt.Sprintf("Credential value for %s: ", key), opts.Stderr)
+}
+
 func buildProviderRegistry(opts Options, mockConfig config.MockConfig, gcpConfig config.GCPConfig) *provider.Registry {
-	return buildProviderRegistryWithOptions(opts, mockConfig, gcpConfig, true)
+	return buildProviderRegistryWithOptions(opts, mockConfig, gcpConfig, config.LambdaConfig{}, credentials.Resolver{}, true, true)
 }
 
-func buildTrainProviderRegistry(opts Options, resolved config.ResolvedTrainConfig) *provider.Registry {
-	return buildProviderRegistryWithOptions(opts, resolved.Mock, resolved.GCP, shouldRegisterGCPForTrain(resolved))
+func buildTrainProviderRegistry(opts Options, resolved config.ResolvedTrainConfig, credentialResolver credentials.Resolver) *provider.Registry {
+	return buildProviderRegistryWithOptions(opts, resolved.Mock, resolved.GCP, resolved.Lambda, credentialResolver, shouldRegisterGCPForTrain(resolved), shouldRegisterLambdaForTrain(resolved))
 }
 
-func buildProviderRegistryWithOptions(opts Options, mockConfig config.MockConfig, gcpConfig config.GCPConfig, includeGCP bool) *provider.Registry {
+func buildProviderRegistryWithOptions(opts Options, mockConfig config.MockConfig, gcpConfig config.GCPConfig, lambdaConfig config.LambdaConfig, credentialResolver credentials.Resolver, includeGCP bool, includeLambda bool) *provider.Registry {
 	adapters := []app.ProviderAdapter{localprovider.New(opts.Stdout, opts.Stderr)}
 	for _, providerConfig := range mergedMockProviders(mockConfig) {
 		adapters = append(adapters, mockprovider.New(mockprovider.Config{
@@ -739,7 +961,23 @@ func buildProviderRegistryWithOptions(opts Options, mockConfig config.MockConfig
 	} else if includeGCP {
 		adapters = append(adapters, gcpprovider.New(gcpConfigFromConfig(gcpConfig), opts.Stdout, opts.Stderr))
 	}
+	if opts.LambdaProviderFactory != nil && includeLambda {
+		adapters = append(adapters, opts.LambdaProviderFactory(lambdaConfig, opts.Stdout, opts.Stderr))
+	} else if includeLambda {
+		adapters = append(adapters, lambdaprovider.New(lambdaConfigFromConfig(lambdaConfig, credentialResolver), opts.Stdout, opts.Stderr))
+	}
 	return provider.NewRegistry(adapters...)
+}
+
+func credentialResolverForTrain(opts Options, resolved config.ResolvedTrainConfig) (credentials.Resolver, error) {
+	if opts.LambdaProviderFactory != nil || !shouldRegisterLambdaForTrain(resolved) {
+		return credentials.Resolver{}, nil
+	}
+	store, _, err := openCredentialStoreAtHome(opts, resolved.SwitchboardHome)
+	if err != nil {
+		return credentials.Resolver{}, err
+	}
+	return credentials.Resolver{Store: store}, nil
 }
 
 func shouldRegisterGCPForTrain(resolved config.ResolvedTrainConfig) bool {
@@ -750,6 +988,16 @@ func shouldRegisterGCPForTrain(resolved config.ResolvedTrainConfig) bool {
 		return false
 	}
 	return resolved.GCP.ProjectID != "" && resolved.GCP.OutputURIPrefix != ""
+}
+
+func shouldRegisterLambdaForTrain(resolved config.ResolvedTrainConfig) bool {
+	if resolved.Provider == lambdaprovider.ProviderName {
+		return true
+	}
+	if resolved.Provider != string(app.ProviderAuto) {
+		return false
+	}
+	return resolved.Lambda.RegionName != "" && resolved.Lambda.InstanceTypeName != "" && resolved.Lambda.SSHKeyName != "" && resolved.Lambda.SSHPrivateKey != ""
 }
 
 func gcpConfigFromConfig(cfg config.GCPConfig) gcpprovider.Config {
@@ -767,6 +1015,28 @@ func gcpConfigFromConfig(cfg config.GCPConfig) gcpprovider.Config {
 		PollIntervalSeconds:        cfg.PollIntervalSeconds,
 		EstimateHourlyUSD:          cfg.EstimateHourlyUSD,
 		ArtifactRegistryRepository: cfg.ArtifactRegistryRepository,
+	}
+}
+
+func lambdaConfigFromConfig(cfg config.LambdaConfig, credentialResolver credentials.Resolver) lambdaprovider.Config {
+	terminateOnCompletion := true
+	if cfg.TerminateOnCompletion != nil {
+		terminateOnCompletion = *cfg.TerminateOnCompletion
+	}
+	return lambdaprovider.Config{
+		RegionName:               cfg.RegionName,
+		InstanceTypeName:         cfg.InstanceTypeName,
+		SSHKeyName:               cfg.SSHKeyName,
+		SSHPrivateKey:            cfg.SSHPrivateKey,
+		ImageFamily:              cfg.ImageFamily,
+		PollIntervalSeconds:      cfg.PollIntervalSeconds,
+		TerminateOnCompletion:    terminateOnCompletion,
+		TerminateOnCompletionSet: cfg.TerminateOnCompletion != nil,
+		KeepInstanceOnFailure:    cfg.KeepInstanceOnFailure,
+		APITimeoutSeconds:        cfg.APITimeoutSeconds,
+		SSHConnectTimeoutSecs:    cfg.SSHConnectTimeoutSecs,
+		SSHReadyTimeoutSeconds:   cfg.SSHReadyTimeoutSeconds,
+		Credentials:              credentialResolver,
 	}
 }
 

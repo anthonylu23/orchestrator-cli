@@ -225,6 +225,68 @@ gcp:
 	}
 }
 
+func TestLoadTrainAcceptsLambdaImageJob(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "switchboard.yaml")
+	content := []byte(`
+job:
+  name: lambda-container
+  image: ghcr.io/example/switchboard-lambda-smoke:latest
+  command: ["python", "/app/train.py"]
+lambda:
+  region_name: us-west-1
+  instance_type_name: gpu_1x_a10
+  ssh_key_name: switchboard
+  ssh_private_key: ~/.ssh/id_ed25519
+`)
+	if err := os.WriteFile(configPath, content, 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	got, err := LoadTrain(TrainFlags{
+		ConfigPath:      configPath,
+		Provider:        "lambda",
+		SwitchboardHome: filepath.Join(dir, "home"),
+	})
+	if err != nil {
+		t.Fatalf("LoadTrain returned error: %v", err)
+	}
+	if got.Job.Image != "ghcr.io/example/switchboard-lambda-smoke:latest" || got.Lambda.RegionName != "us-west-1" {
+		t.Fatalf("resolved = %#v", got)
+	}
+	if strings.HasPrefix(got.Lambda.SSHPrivateKey, "~") {
+		t.Fatalf("ssh private key was not expanded: %#v", got.Lambda.SSHPrivateKey)
+	}
+	if got.Lambda.TerminateOnCompletion == nil || !*got.Lambda.TerminateOnCompletion {
+		t.Fatalf("lambda terminate default = %#v", got.Lambda.TerminateOnCompletion)
+	}
+	if got.Lambda.PollIntervalSeconds != 30 || got.Lambda.SSHReadyTimeoutSeconds != 600 {
+		t.Fatalf("lambda defaults = %#v", got.Lambda)
+	}
+}
+
+func TestLoadTrainRequiresLambdaImageAndFields(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "switchboard.yaml")
+	if err := os.WriteFile(configPath, []byte("job:\n  script: train.py\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	_, err := LoadTrain(TrainFlags{
+		ConfigPath:      configPath,
+		Provider:        "lambda",
+		SwitchboardHome: filepath.Join(dir, "home"),
+	})
+	if err == nil {
+		t.Fatal("expected lambda validation error")
+	}
+	for _, want := range []string{"lambda provider requires job.image", "lambda provider v1 does not package local scripts", "lambda.region_name is required", "lambda.ssh_private_key is required"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("expected %q in error: %v", want, err)
+		}
+	}
+}
+
 func TestLoadTrainRequiresGCPImageAndFields(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "switchboard.yaml")
