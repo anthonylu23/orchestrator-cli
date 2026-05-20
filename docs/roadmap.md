@@ -157,9 +157,36 @@ Exit criteria:
 4. Low-confidence sizing fails before submit with clear guidance instead of overprovisioning.
 5. The design is documented in [Auto Hardware Routing](auto-hardware-routing.md).
 
+## Phase 6 - Lambda Cloud Adapter
+
+Status: initial implementation complete; live Lambda smoke pending. The adapter can be configured as `provider=lambda`, validates Lambda image-first jobs, discovers instance types through the Lambda Cloud API, launches one on-demand instance with cloud-init, runs a Docker image, collects logs/events over SSH, records run artifacts, resolves Lambda API keys from the encrypted local credential store, and terminates the instance by default.
+
+Goals:
+
+1. Validate Lambda API auth with encrypted `lambda/api_key`.
+2. Map Lambda instance types, prices, regions, and capacity into provider capabilities.
+3. Launch one Lambda instance for a prebuilt container-image job.
+4. Collect `/tmp/switchboard/logs.txt`, `/tmp/switchboard/events.jsonl`, and `/tmp/switchboard/exit.json` over SSH.
+5. Terminate successful smoke instances automatically and support keeping failed instances for debugging.
+
+Exit criteria:
+
+1. A mock smoke job can run on real Lambda infrastructure through `switchboard-cli train --provider lambda`.
+2. The run produces SQLite state, `logs.txt`, `events.jsonl`, and `summary.json`.
+3. The test instance is terminated after successful completion.
+4. Lambda behavior passes fake-backed provider contract checks.
+5. Current limits and live-smoke workflow are documented in [Lambda Cloud Provider](lambda-provider.md).
+
+Next steps:
+
+1. Run the gated live Lambda smoke.
+2. Add private registry guidance if Docker pull auth is needed.
+3. Add S3 checkpoint examples for portable Lambda resume.
+4. Decide whether Lambda filesystems should become first-class staging or checkpoint backends.
+
 ## Later Phases
 
-1. Add Lambda and Hyperbolic adapters.
+1. Add Hyperbolic and/or RunPod adapters after the Lambda live smoke is stable.
 2. Add GCS and S3 checkpoint backends and provider examples that emit shared checkpoint URIs.
 4. Add multi-node and distributed training topology after single-node auto hardware proves useful.
 5. Add basic experiment fan-out.

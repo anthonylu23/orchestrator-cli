@@ -220,7 +220,7 @@ type RuntimeBundle struct {
 }
 ```
 
-Local execution may run scripts directly. Cloud execution uses images. For GCP, the CLI can build and push a Docker image before submit when `job.script` and `packaging` are configured, then hand an image job to the provider adapter.
+Local execution may run scripts directly. Cloud execution uses images. For GCP, the CLI can build and push a Docker image before submit when `job.script` and `packaging` are configured, then hand an image job to the provider adapter. For Lambda, the adapter launches an on-demand instance, uses cloud-init to run a prebuilt Docker image, and collects logs/events from remote `/tmp/switchboard` files over SSH.
 
 The local provider materializes bundled data into the workspace and executes the script from that workspace. The mock provider simulates data preparation, URI fetch success, configured logs/events, and retryable failures. Future cloud providers can upload bundled data to staging storage or use provider-native transfer behavior.
 
@@ -237,6 +237,8 @@ Artifacts:
 ~/.switchboard-cli/runs/<run-id>/logs.txt
 ~/.switchboard-cli/runs/<run-id>/workspace/
 ```
+
+Remote providers use remote-safe runtime paths rather than local artifact paths. GCP and Lambda jobs receive `/tmp/switchboard/checkpoints` and `/tmp/switchboard/events.jsonl`; provider adapters are responsible for mirroring remote logs and structured events back into local run artifacts.
 
 ## Data Failure Behavior
 

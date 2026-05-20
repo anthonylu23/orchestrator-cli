@@ -6,11 +6,11 @@ The project is designed as a systems engineering and ML infrastructure tool: the
 
 ## Status
 
-Switchboard now has a local orchestration vertical slice, deterministic mock-provider failover, and a first real GCP provider. The current implementation can run a local Python training script, persist SQLite run state, capture mixed logs and structured JSONL events, materialize local data bundles, cancel active local runs, route across mock providers, resume from the latest checkpoint after a simulated provider failure, and submit container-image jobs to Vertex AI CustomJob.
+Switchboard now has a local orchestration vertical slice, deterministic mock-provider failover, a first real GCP provider, and an initial Lambda Cloud adapter milestone. The current implementation can run a local Python training script, persist SQLite run state, capture mixed logs and structured JSONL events, materialize local data bundles, cancel active local runs, route across mock providers, resume from the latest checkpoint after a simulated provider failure, submit container-image jobs to Vertex AI CustomJob, and launch image-first smoke jobs on Lambda Cloud instances.
 
 Run artifacts redact secret-like keys and known secret environment values before persistence. Attempt history also records resume checkpoint provenance and provider cost estimates so failover decisions remain explainable after completion.
 
-GCP v1 is still image-submit-first at the provider boundary, but the CLI can now build and push a Docker image before submit when a GCP job uses `job.script` with `packaging` config. Live auth, a billable CPU-only Vertex AI CustomJob smoke test, a non-billable pricing/capacity smoke, and a PyTorch Iris Vertex container run have passed on the `switchboard-496606` project. `examples/gcp/iris` contains the first realistic PyTorch Iris container workflow with optional GCS checkpoint upload/resume. GCP capabilities can use live Cloud Billing pricing, Compute Engine machine/accelerator inventory, and regional quota facts with static fallback. GCP data staging beyond `gs://`, additional providers, and richer QoL workflows remain roadmap work.
+GCP v1 is still image-submit-first at the provider boundary, but the CLI can now build and push a Docker image before submit when a GCP job uses `job.script` with `packaging` config. Live auth, a billable CPU-only Vertex AI CustomJob smoke test, a non-billable pricing/capacity smoke, and a PyTorch Iris Vertex container run have passed on the `switchboard-496606` project. `examples/gcp/iris` contains the first realistic PyTorch Iris container workflow with optional GCS checkpoint upload/resume. GCP capabilities can use live Cloud Billing pricing, Compute Engine machine/accelerator inventory, and regional quota facts with static fallback. Lambda v1 launches one on-demand instance, runs a prebuilt Docker image through cloud-init, collects logs/events over SSH, and terminates the instance by default. GCP data staging beyond `gs://`, Lambda private-registry/staging support, additional providers, and richer QoL workflows remain roadmap work.
 
 ## Quick Start
 
@@ -115,6 +115,27 @@ The packaging layer runs `docker build` and `docker push`, derives an Artifact R
 
 See `examples/gcp-script-packaging.yaml` for a GCP Iris config that builds from the checked-in Dockerfile before submitting.
 
+Run a Lambda Cloud smoke job from a prebuilt container image:
+
+```sh
+SWITCHBOARD_CREDENTIALS_PASSPHRASE=... \
+SWITCHBOARD_CLI_HOME="$(mktemp -d)" \
+./bin/switchboard-cli train --provider lambda --config examples/lambda-smoke.yaml
+```
+
+The Lambda adapter requires encrypted `lambda/api_key`, plus `lambda.ssh_key_name` and `lambda.ssh_private_key` so Switchboard can collect remote logs, events, and the exit marker from the launched instance. See [Lambda Cloud Provider](docs/lambda-provider.md).
+
+Provider API keys can be stored in Switchboard's encrypted local credentials store:
+
+```sh
+SWITCHBOARD_CREDENTIALS_PASSPHRASE=... \
+./bin/switchboard-cli credentials set lambda api-key --from-env LAMBDA_API_KEY
+
+./bin/switchboard-cli credentials list
+```
+
+See [Credentials](docs/credentials.md).
+
 ## Product Wedge
 
 Given a training script, data inputs, sizing profile, and budget, Switchboard should choose compatible execution infrastructure, run the job, persist telemetry, and resume from the latest checkpoint if a provider fails.
@@ -135,13 +156,14 @@ The broader product direction extends `provider=auto` into auto hardware routing
 switchboard-cli train --provider local --script examples/train.py
 switchboard-cli train --provider auto --config examples/failover.yaml
 switchboard-cli train --provider gcp --config examples/gcp-container.yaml
+switchboard-cli train --provider lambda --config examples/lambda-smoke.yaml
 switchboard-cli status <run-id>
 switchboard-cli logs <run-id> --follow
 switchboard-cli cancel <run-id>
 switchboard-cli providers list --json
 ```
 
-Planned commands not implemented yet include explicit `resume`. Planned provider work now focuses on additional cloud adapters and richer provider-specific staging/checkpoint integrations.
+Planned commands not implemented yet include explicit `resume`. Planned provider work now focuses on live Lambda smoke validation, additional cloud adapters, and richer provider-specific staging/checkpoint integrations.
 
 ## Data Inputs
 
@@ -174,6 +196,8 @@ When a YAML config is loaded with `--config`, relative local paths in `job.scrip
 For local runs, bundled files and directories are copied into each run workspace under `runs/<run-id>/workspace`. Mounts must be under `/workspace`; for example, `/workspace/data/train` maps to `runs/<run-id>/workspace/data/train`. Job arguments and environment values that reference declared mounts are rewritten to host paths before the local process starts.
 
 For GCP runs, v1 accepts `job.image` directly or can package `job.script` into a Docker image before submit. Data inputs must still be `gs://` URI inputs. Bundled local data and non-GCS URI inputs are rejected before submit. GCP containers receive `SWITCHBOARD_CHECKPOINT_URI_PREFIX=gs://<output-prefix>/<run-id>/checkpoints`; training code can upload checkpoint files there and emit those shared `gs://` URIs for resume/failover. See [GCP Provider](docs/gcp-provider.md).
+
+For Lambda runs, v1 accepts `job.image` directly and runs it on a launched Lambda instance with Docker. Bundled local data and `job.script` are rejected before submit. URI data inputs are passed through for the container to handle itself. Lambda containers receive remote-safe Switchboard paths under `/tmp/switchboard`; portable resume requires emitted `s3://` or `gs://` checkpoint URIs. See [Lambda Cloud Provider](docs/lambda-provider.md).
 
 Example local data run:
 
@@ -242,5 +266,6 @@ By default Switchboard writes to `~/.switchboard-cli`. Set `SWITCHBOARD_CLI_HOME
 - [GCP Provider](docs/gcp-provider.md)
 - [GCP Live Smoke Test](docs/gcp-live-smoke.md)
 - [GCP Packaging Decision](docs/gcp-packaging-decision.md)
+- [Credentials](docs/credentials.md)
 - [Auto Hardware Routing](docs/auto-hardware-routing.md)
 - [Roadmap](docs/roadmap.md)

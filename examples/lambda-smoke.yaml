@@ -1,0 +1,16 @@
+job:
+  name: lambda-smoke
+  # Build and publish examples/lambda/smoke/Dockerfile to a public or
+  # Lambda-accessible registry, then replace this image.
+  image: ghcr.io/example/switchboard-lambda-smoke:latest
+  command: ["python", "/app/train.py"]
+  args: ["--epochs", "3"]
+
+lambda:
+  region_name: us-west-1
+  instance_type_name: gpu_1x_a10
+  ssh_key_name: switchboard
+  ssh_private_key: ~/.ssh/id_ed25519
+  poll_interval_seconds: 30
+  terminate_on_completion: true
+keep_instance_on_failure: false
