@@ -25,7 +25,7 @@ gcloud config set project <project-id>
 
 The caller needs permissions to create, read, and cancel Vertex AI CustomJobs and to read Cloud Logging entries for the project. If `gcp.service_account` is set, the caller also needs permission to act as that service account.
 
-Billing must be enabled on the target project. Live auth and a CPU-only Vertex AI CustomJob smoke test passed on 2026-05-17 for project `switchboard-496606`. See [GCP Live Smoke Test](gcp-live-smoke.md).
+Billing must be enabled on the target project. Live auth and a CPU-only Vertex AI CustomJob smoke test passed on 2026-05-17 for project `switchboard-496606`. A non-billable live pricing/capacity smoke and a PyTorch Iris Vertex container run passed on 2026-05-20. See [GCP Live Smoke Test](gcp-live-smoke.md).
 
 ## Config
 
@@ -146,8 +146,7 @@ switchboard-cli train --provider gcp --config examples/gcp-iris.yaml
 
 ## Next Steps
 
-1. Keep the live smoke path current with the `switchboard-496606` smoke bucket and a supported Vertex prebuilt image.
-2. Keep the containerized PyTorch Iris demo repeatable as the first realistic GCP training workload.
-3. Add provider-specific smoke coverage for live pricing/capacity API permissions.
-4. Expand data staging beyond `gs://` after GCS dataset behavior is stable.
-5. Add more shared-checkpoint examples as additional cloud providers come online.
+1. Keep the live smoke path current with the `switchboard-496606` smoke bucket and supported Artifact Registry images.
+2. Keep the PyTorch Iris image build repeatable on `linux/amd64` for Vertex CPU jobs.
+3. Expand data staging beyond `gs://` after GCS dataset behavior is stable.
+4. Add more shared-checkpoint examples as additional cloud providers come online.

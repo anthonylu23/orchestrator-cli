@@ -37,6 +37,9 @@ func TestSelectRecordsRejectedProvider(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected no eligible providers")
 	}
+	if !containsString(err.Error(), "excluded after retryable failure") {
+		t.Fatalf("error = %v", err)
+	}
 	if len(decision.RejectedProviders) != 1 {
 		t.Fatalf("rejected = %#v", decision.RejectedProviders)
 	}
@@ -257,6 +260,9 @@ func TestSelectFullAutoRejectsOverBudgetHardware(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected no eligible hardware")
+	}
+	if !containsString(err.Error(), "exceeds max budget") {
+		t.Fatalf("error = %v", err)
 	}
 	if len(decision.RejectedHardware) != 1 || decision.RejectedHardware[0].Reasons[0] == "" {
 		t.Fatalf("decision = %#v", decision)

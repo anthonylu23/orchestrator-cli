@@ -60,8 +60,10 @@ Update `examples/gcp-iris.yaml` with the project, bucket, and image URI, then ru
 SWITCHBOARD_CLI_HOME="$(mktemp -d)" ./bin/switchboard-cli train --provider gcp --config examples/gcp-iris.yaml
 ```
 
+Status: a CPU-only Vertex AI PyTorch Iris smoke passed on 2026-05-20 against `switchboard-496606` with a fresh `linux/amd64` Artifact Registry image and GCS CSV. Run `r_436315ff` validated GCS data download, Vertex execution, Cloud Logging metric ingestion, summaries, checkpoint event parsing, and `gs://` checkpoint upload to `gs://switchboard-496606-orchestrator-smoke/switchboard-outputs/r_436315ff/checkpoints`.
+
 ## Next Steps
 
 1. Keep local and GCP Iris workflows aligned as the provider evolves.
-2. Add Switchboard-managed Docker build/push so users do not have to build the Iris image manually.
+2. Keep the GCP container build repeatable on `linux/amd64` so Vertex CPU jobs do not receive ARM-only images from Apple Silicon machines.
 3. Consider adding an optional resume-focused version after explicit user-facing `resume` support exists and shared checkpoint storage is available.

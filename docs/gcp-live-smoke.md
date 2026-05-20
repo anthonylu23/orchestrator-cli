@@ -2,9 +2,19 @@
 
 ## Current Status
 
-Last checked: 2026-05-17.
+Last checked: 2026-05-20.
 
 The local environment has `gcloud` installed, Application Default Credentials available, and a configured project of `switchboard-496606`. Billing is enabled, the Vertex AI API is enabled, and the live auth check passes.
+
+On 2026-05-20, the Cloud Billing Catalog API and Compute Engine API were enabled for `switchboard-496606`, and the non-billable live pricing/capacity smoke passed:
+
+```sh
+SWITCHBOARD_GCP_LIVE=1 \
+SWITCHBOARD_GCP_PROJECT_ID=switchboard-496606 \
+go test -v ./internal/provider/gcp -run 'TestLive(ValidateAuth|CapabilitiesPricingCapacity)$' -count=1 -timeout=3m
+```
+
+The pricing/capacity check verifies Cloud Billing Catalog pricing, Compute Engine machine/accelerator inventory, and regional quota facts. It does not submit a Vertex AI job.
 
 A billable CPU-only Vertex AI CustomJob smoke test passed through the Switchboard CLI on 2026-05-17:
 
@@ -16,6 +26,22 @@ final val_accuracy: 0.91
 final val_loss: 0.25
 checkpoint_count: 1
 ```
+
+The realistic PyTorch Iris GCP container path also passed on 2026-05-20 using a freshly built Artifact Registry image and GCS Iris CSV:
+
+```text
+Cloud Build 7f4e8e77-f3c6-464a-87fc-c2e297821966
+image: us-central1-docker.pkg.dev/switchboard-496606/switchboard/iris-pytorch:codex-gcp-readiness-amd64
+image_digest: sha256:6559b60196134396ba4e9da8b3672b8b724a239d2455b24cefc4769b2c0a3065
+Run r_436315ff succeeded
+Vertex CustomJob projects/584014035394/locations/us-central1/customJobs/5003272394555523072
+state: JOB_STATE_SUCCEEDED
+final val_accuracy: 0.933333
+final val_loss: 0.130064
+checkpoint_prefix: gs://switchboard-496606-orchestrator-smoke/switchboard-outputs/r_436315ff/checkpoints
+```
+
+That run validated GCS dataset download, Vertex execution, Cloud Logging event ingestion, metrics, checkpoint event parsing, and `gs://` checkpoint upload from the current source tree. The local Docker daemon produced an ARM-only tag first, which was canceled while pending on Vertex; the passing image above was rebuilt through Cloud Build with `--platform linux/amd64`.
 
 An earlier Docker Hub image attempt stayed pending during Vertex provisioning and was canceled cleanly:
 
@@ -129,3 +155,62 @@ Provider capability reporting enriches shapes with Cloud Billing Catalog prices,
 3. Compute Engine region `get` for quota fields.
 
 If any of those calls fail, Switchboard keeps static estimates and marks the shape availability reason. A failed pricing/capacity lookup should not block container submission; submit-time quota or capacity failures are still normalized as retryable provider errors.
+
+Run the gated smoke with:
+
+```sh
+SWITCHBOARD_GCP_LIVE=1 \
+SWITCHBOARD_GCP_PROJECT_ID=<project-id> \
+go test ./internal/provider/gcp -run TestLiveCapabilitiesPricingCapacity -count=1 -timeout=3m
+```
+
+## Iris Container Check
+
+The passing 2026-05-20 Iris smoke used:
+
+```yaml
+job:
+  name: gcp-iris-pytorch-amd64
+  image: us-central1-docker.pkg.dev/switchboard-496606/switchboard/iris-pytorch:codex-gcp-readiness-amd64
+  args:
+    - --data-uri
+    - gs://switchboard-496606-orchestrator-smoke/switchboard-demo/iris/Iris.csv
+    - --epochs
+    - "40"
+
+data:
+  inputs:
+    - name: iris
+      source: gs://switchboard-496606-orchestrator-smoke/switchboard-demo/iris/Iris.csv
+      mode: uri
+
+gcp:
+  project_id: switchboard-496606
+  location: us-central1
+  output_uri_prefix: gs://switchboard-496606-orchestrator-smoke/switchboard-outputs
+  machine_type: n1-standard-4
+  boot_disk_type: pd-ssd
+  boot_disk_size_gb: 100
+  poll_interval_seconds: 15
+  estimate_hourly_usd: 0.25
+```
+
+The image was built with Cloud Build using:
+
+```sh
+gcloud builds submit . \
+  --project switchboard-496606 \
+  --config <cloudbuild-iris.yaml> \
+  --timeout=30m
+```
+
+where the build step ran:
+
+```sh
+docker build --platform linux/amd64 \
+  -f examples/gcp/iris/Dockerfile \
+  -t us-central1-docker.pkg.dev/switchboard-496606/switchboard/iris-pytorch:codex-gcp-readiness-amd64 \
+  .
+```
+
+On Apple Silicon, avoid pushing a local ARM-only image for Vertex `n1-standard-4` jobs. Build a `linux/amd64` image with Cloud Build or a local multi-platform builder before running this smoke.

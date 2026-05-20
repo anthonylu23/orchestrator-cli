@@ -485,6 +485,53 @@ func TestLiveValidateAuth(t *testing.T) {
 	}
 }
 
+func TestLiveCapabilitiesPricingCapacity(t *testing.T) {
+	if envAny("SWITCHBOARD_GCP_LIVE", "ORCHESTRATOR_GCP_LIVE") != "1" {
+		t.Skip("set SWITCHBOARD_GCP_LIVE=1 to run live GCP capability checks")
+	}
+	projectID := requireEnv(t, "SWITCHBOARD_GCP_PROJECT_ID", "ORCHESTRATOR_GCP_PROJECT_ID")
+	provider := New(Config{
+		ProjectID:           projectID,
+		Location:            envDefault("SWITCHBOARD_GCP_LOCATION", "ORCHESTRATOR_GCP_LOCATION", "us-central1"),
+		OutputURIPrefix:     "gs://unused",
+		MachineType:         envDefault("SWITCHBOARD_GCP_MACHINE_TYPE", "ORCHESTRATOR_GCP_MACHINE_TYPE", "n1-standard-4"),
+		AcceleratorType:     envAny("SWITCHBOARD_GCP_ACCELERATOR_TYPE", "ORCHESTRATOR_GCP_ACCELERATOR_TYPE"),
+		AcceleratorCount:    envInt32Default("SWITCHBOARD_GCP_ACCELERATOR_COUNT", "ORCHESTRATOR_GCP_ACCELERATOR_COUNT", 0),
+		BootDiskType:        envDefault("SWITCHBOARD_GCP_BOOT_DISK_TYPE", "ORCHESTRATOR_GCP_BOOT_DISK_TYPE", "pd-ssd"),
+		BootDiskSizeGB:      envInt32Default("SWITCHBOARD_GCP_BOOT_DISK_SIZE_GB", "ORCHESTRATOR_GCP_BOOT_DISK_SIZE_GB", 100),
+		PollIntervalSeconds: int(envInt32Default("SWITCHBOARD_GCP_POLL_INTERVAL_SECONDS", "ORCHESTRATOR_GCP_POLL_INTERVAL_SECONDS", 15)),
+	}, &bytes.Buffer{}, &bytes.Buffer{})
+
+	capabilities, err := provider.Capabilities(context.Background())
+	if err != nil {
+		t.Fatalf("Capabilities returned error: %v", err)
+	}
+	if len(capabilities.HardwareShapes) == 0 {
+		t.Fatal("expected at least one GCP hardware shape")
+	}
+	var livePricing, liveInventory, quotaSeen bool
+	for _, shape := range capabilities.HardwareShapes {
+		if shape.OnDemandHourlyUSD > 0 && shape.AvailabilityHint != "static_estimate" {
+			livePricing = true
+		}
+		if len(shape.Zones) > 0 || shape.AvailabilityHint == "live_inventory" {
+			liveInventory = true
+		}
+		if shape.QuotaMetric != "" && shape.QuotaLimit > 0 {
+			quotaSeen = true
+		}
+	}
+	if !livePricing {
+		t.Fatalf("expected live pricing enrichment in at least one shape: %#v", capabilities.HardwareShapes)
+	}
+	if !liveInventory {
+		t.Fatalf("expected live machine or accelerator inventory in at least one shape: %#v", capabilities.HardwareShapes)
+	}
+	if !quotaSeen {
+		t.Fatalf("expected regional quota facts in at least one shape: %#v", capabilities.HardwareShapes)
+	}
+}
+
 func TestLiveSubmitContainerJob(t *testing.T) {
 	if envAny("SWITCHBOARD_GCP_LIVE", "ORCHESTRATOR_GCP_LIVE") != "1" {
 		t.Skip("set SWITCHBOARD_GCP_LIVE=1 to run live GCP checks")

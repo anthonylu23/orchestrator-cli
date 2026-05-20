@@ -27,5 +27,5 @@ Vertex AI source packaging remains deferred. It may still be useful later, but a
 ## Next Steps
 
 1. Add cleanup/pruning options for generated images after the first provider expansion.
-2. Add richer Docker auth diagnostics around Artifact Registry push failures.
+2. Expand Docker diagnostics beyond Artifact Registry auth, such as daemon availability and unsupported platform errors.
 3. Revisit source packaging only if image build/push proves too heavy for target users.

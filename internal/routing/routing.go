@@ -95,7 +95,7 @@ func Select(ctx context.Context, registry *provider.Registry, spec app.JobSpec, 
 		eligible = append(eligible, providerCandidate{provider: nameValue, score: estimate.HourlyUSD, capabilities: capabilities})
 	}
 	if len(eligible) == 0 {
-		return app.RoutingDecision{Objective: objective, RejectedProviders: rejected}, fmt.Errorf("no eligible providers")
+		return app.RoutingDecision{Objective: objective, RejectedProviders: rejected}, fmt.Errorf("no eligible providers: %s", formatRejectedProviders(rejected))
 	}
 	if hardwareRoutingEnabled(opts) {
 		return selectHardwareRoute(objective, eligible, rejected, opts)
@@ -164,7 +164,7 @@ func selectHardwareRoute(objective string, providers []providerCandidate, reject
 			RejectedProviders: rejectedProviders,
 			RejectedHardware:  rejectedHardware,
 			Confidence:        confidence,
-		}, fmt.Errorf("no eligible hardware shapes")
+		}, fmt.Errorf("no eligible hardware shapes: %s", formatRejectedHardware(rejectedHardware))
 	}
 	sortHardware(eligibleHardware, objective)
 	selected := eligibleHardware[0]
@@ -182,6 +182,36 @@ func selectHardwareRoute(objective string, providers []providerCandidate, reject
 		EstimatedTotalCostUSD:   floatPtr(selected.totalCostUSD),
 		Confidence:              confidence,
 	}, nil
+}
+
+func formatRejectedProviders(rejected []app.RoutingCandidate) string {
+	if len(rejected) == 0 {
+		return "no providers were registered"
+	}
+	parts := make([]string, 0, len(rejected))
+	for _, candidate := range rejected {
+		reason := strings.Join(candidate.Reasons, ", ")
+		if reason == "" {
+			reason = "no reason reported"
+		}
+		parts = append(parts, fmt.Sprintf("%s rejected: %s", candidate.Provider, reason))
+	}
+	return strings.Join(parts, "; ")
+}
+
+func formatRejectedHardware(rejected []app.HardwareCandidate) string {
+	if len(rejected) == 0 {
+		return "no hardware shapes were reported by eligible providers"
+	}
+	parts := make([]string, 0, len(rejected))
+	for _, candidate := range rejected {
+		reason := strings.Join(candidate.Reasons, ", ")
+		if reason == "" {
+			reason = "no reason reported"
+		}
+		parts = append(parts, fmt.Sprintf("%s/%s rejected: %s", candidate.Provider, candidate.ShapeID, reason))
+	}
+	return strings.Join(parts, "; ")
 }
 
 func selectManualHardware(objective string, providers []providerCandidate, rejectedProviders []app.RoutingCandidate, opts Options) (app.RoutingDecision, error) {

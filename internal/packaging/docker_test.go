@@ -60,6 +60,9 @@ func TestDockerBuilderReportsPushFailure(t *testing.T) {
 	if err == nil || !contains(err.Error(), "docker push failed") {
 		t.Fatalf("error = %v", err)
 	}
+	if !contains(err.Error(), "gcloud auth configure-docker") {
+		t.Fatalf("missing auth guidance: %v", err)
+	}
 }
 
 func TestArtifactRegistryImage(t *testing.T) {

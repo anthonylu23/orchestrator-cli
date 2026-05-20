@@ -582,6 +582,93 @@ func TestRunTrainPackagesLocalScriptForGCP(t *testing.T) {
 	}
 }
 
+func TestAutoProviderWithGCPConfigRoutesToGCPHardware(t *testing.T) {
+	dir := t.TempDir()
+	home := filepath.Join(dir, "home")
+	fakeGCP := &fakeGCPAdapter{
+		capabilities: app.ProviderCapabilities{
+			SupportsDockerImage:        true,
+			SupportedURISchemes:        []string{"gs"},
+			SupportedCheckpointSchemes: []string{"gs"},
+			HardwareShapes: []app.HardwareShape{{
+				ID:                "gcp-test-t4",
+				Provider:          "gcp",
+				Region:            "us-central1",
+				MachineType:       "n1-standard-8",
+				AcceleratorType:   "NVIDIA_TESLA_T4",
+				AcceleratorCount:  1,
+				GPUFamily:         "nvidia-tesla-t4",
+				VRAMGBPerGPU:      16,
+				TotalVRAMGB:       16,
+				OnDemandHourlyUSD: 2.5,
+				SupportsOnDemand:  true,
+			}},
+		},
+	}
+	var stdout bytes.Buffer
+	code, err := runTrain(context.Background(), Options{
+		Stdout: &stdout,
+		Stderr: &bytes.Buffer{},
+		GCPProviderFactory: func(cfg config.GCPConfig, stdout io.Writer, stderr io.Writer) app.ProviderAdapter {
+			return fakeGCP
+		},
+	}, config.ResolvedTrainConfig{
+		Provider:        string(app.ProviderAuto),
+		SwitchboardHome: home,
+		Job: app.JobSpec{
+			Name:  "gcp-auto",
+			Image: "us-docker.pkg.dev/project/repo/train:latest",
+			Data: []app.DataInput{{
+				Name:   "train",
+				Source: "gs://bucket/train",
+				Mode:   app.DataInputModeURI,
+			}},
+		},
+		Routing: config.RoutingConfig{
+			Mode:      "full_auto",
+			Objective: "fastest_within_budget",
+			Budget:    config.BudgetConfig{MaxRunCostUSD: 10},
+		},
+		Sizing: config.SizingConfig{Hints: config.SizingHintsConfig{
+			ModelParametersB: 1,
+			BatchSize:        1,
+			Precision:        "bf16",
+			Optimizer:        "sgd",
+		}},
+		Hardware: config.HardwareConfig{Constraints: config.HardwareConstraintsConfig{
+			AllowedGPUFamilies: []string{"nvidia-tesla-t4"},
+			Regions:            []string{"us-central1"},
+		}},
+		GCP: config.GCPConfig{
+			ProjectID:       "test-project",
+			Location:        "us-central1",
+			OutputURIPrefix: "gs://bucket/outputs",
+		},
+	})
+	if err != nil || code != 0 {
+		t.Fatalf("runTrain code=%d err=%v stdout=%s", code, err, stdout.String())
+	}
+	if fakeGCP.lastSubmit.SelectedHardware == nil || fakeGCP.lastSubmit.SelectedHardware.ShapeID != "gcp-test-t4" {
+		t.Fatalf("selected hardware = %#v", fakeGCP.lastSubmit.SelectedHardware)
+	}
+	if !strings.Contains(stdout.String(), "Selected gcp") {
+		t.Fatalf("stdout = %s", stdout.String())
+	}
+	runID := extractRunID(t, stdout.String())
+	store, err := state.Open(artifact.ForRun(home, runID).DB)
+	if err != nil {
+		t.Fatalf("open state: %v", err)
+	}
+	defer store.Close()
+	decision, err := store.GetRoutingDecision(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("GetRoutingDecision returned error: %v", err)
+	}
+	if decision.SelectedProvider != "gcp" || decision.SelectedHardware == nil || decision.SelectedHardware.ShapeID != "gcp-test-t4" {
+		t.Fatalf("decision = %#v", decision)
+	}
+}
+
 func TestGCPCancelStateIsNotOverwrittenBySubmitError(t *testing.T) {
 	home := filepath.Join(t.TempDir(), "home")
 	fake := &fakeGCPAdapter{
@@ -860,6 +947,7 @@ type fakeGCPAdapter struct {
 	releaseSubmit  chan struct{}
 	cancelCalled   chan struct{}
 	lastSubmit     app.SubmitRequest
+	capabilities   app.ProviderCapabilities
 }
 
 type fakeImageBuilder struct {
@@ -885,6 +973,9 @@ func (a *fakeGCPAdapter) ValidateAuth(ctx context.Context) error {
 }
 
 func (a *fakeGCPAdapter) Capabilities(ctx context.Context) (app.ProviderCapabilities, error) {
+	if len(a.capabilities.HardwareShapes) > 0 || a.capabilities.SupportsDockerImage || a.capabilities.SupportsLocalScript {
+		return a.capabilities, nil
+	}
 	return app.ProviderCapabilities{
 		SupportsDockerImage:     true,
 		SupportedURISchemes:     []string{"gs"},

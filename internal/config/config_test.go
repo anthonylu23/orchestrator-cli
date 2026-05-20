@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -245,7 +246,34 @@ gcp:
 	if err == nil {
 		t.Fatal("expected gcp validation error")
 	}
-	if err.Error() != "gcp provider requires job.image or packaging config for job.script" {
+	for _, want := range []string{"job.image or packaging", "gcp.output_uri_prefix is required"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("expected %q in error: %v", want, err)
+		}
+	}
+}
+
+func TestLoadTrainReportsAllMissingGCPFields(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "switchboard.yaml")
+	if err := os.WriteFile(configPath, []byte("job:\n  script: train.py\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	_, err := LoadTrain(TrainFlags{
+		ConfigPath:      configPath,
+		Provider:        "gcp",
+		SwitchboardHome: filepath.Join(dir, "home"),
+	})
+	if err == nil {
+		t.Fatal("expected gcp validation error")
+	}
+	for _, want := range []string{"job.image or packaging", "gcp.project_id is required", "gcp.output_uri_prefix is required"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("expected %q in error: %v", want, err)
+		}
+	}
+	if strings.Contains(err.Error(), "gcp.location is required") {
 		t.Fatalf("error = %v", err)
 	}
 }

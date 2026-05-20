@@ -107,6 +107,6 @@ Before writing logs, `events.jsonl`, summaries, or provider failure reasons, pro
 ## Next Steps
 
 1. Keep the gated billable container submit smoke test current with `SWITCHBOARD_GCP_LIVE=1` and `SWITCHBOARD_GCP_LIVE_SUBMIT=1`.
-2. Run the containerized PyTorch Iris demo from `examples/gcp/iris` when a GCS copy of the Iris CSV and an Artifact Registry image are available.
-3. Add live smoke coverage for GCP pricing/capacity API permissions, including the auto-routing path when GCP config is intentionally present.
-4. Add more cloud resume examples once additional providers can consume shared checkpoint URIs.
+2. Keep the PyTorch Iris GCP image build repeatable on `linux/amd64`, especially for Apple Silicon development machines.
+3. Add more cloud resume examples once additional providers can consume shared checkpoint URIs.
+4. Continue provider expansion planning for Lambda or Hyperbolic now that the GCP Iris rebuild and checkpoint upload path is validated.

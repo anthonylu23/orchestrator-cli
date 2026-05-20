@@ -335,17 +335,21 @@ func validateProviderConfig(provider string, job app.JobSpec, packaging Packagin
 	if provider != "gcp" {
 		return nil
 	}
+	var reasons []string
 	if job.Image == "" && !canPackageForGCP(job, packaging, gcp) {
-		return errors.New("gcp provider requires job.image or packaging config for job.script")
+		reasons = append(reasons, "gcp provider requires job.image or packaging config for job.script")
 	}
 	if gcp.ProjectID == "" {
-		return errors.New("gcp.project_id is required")
+		reasons = append(reasons, "gcp.project_id is required")
 	}
 	if gcp.Location == "" {
-		return errors.New("gcp.location is required")
+		reasons = append(reasons, "gcp.location is required")
 	}
 	if gcp.OutputURIPrefix == "" {
-		return errors.New("gcp.output_uri_prefix is required")
+		reasons = append(reasons, "gcp.output_uri_prefix is required")
+	}
+	if len(reasons) > 0 {
+		return errors.New(strings.Join(reasons, "; "))
 	}
 	return nil
 }

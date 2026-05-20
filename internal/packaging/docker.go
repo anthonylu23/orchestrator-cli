@@ -80,7 +80,7 @@ func (b DockerBuilder) BuildAndPush(ctx context.Context, req BuildRequest) (Buil
 		return BuildResult{}, fmt.Errorf("docker build failed for %s: %w", cfg.Image, err)
 	}
 	if err := b.runner().Run(ctx, "docker", []string{"push", cfg.Image}, b.stdout(), b.stderr()); err != nil {
-		return BuildResult{}, fmt.Errorf("docker push failed for %s: %w", cfg.Image, err)
+		return BuildResult{}, fmt.Errorf("docker push failed for %s: %w; for Artifact Registry, run gcloud auth configure-docker <location>-docker.pkg.dev and verify repository write access", cfg.Image, err)
 	}
 	return BuildResult{Image: cfg.Image}, nil
 }

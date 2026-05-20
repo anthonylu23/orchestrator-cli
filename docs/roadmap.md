@@ -29,7 +29,7 @@ Next steps:
 
 1. Harden diagnostics and exit codes around provider and data preparation failures.
 2. Add broader provider adapter contract tests before the first real cloud adapter.
-3. Containerize or package the PyTorch Iris demo after the GCP container-image path is validated.
+3. Keep the PyTorch Iris GCP image build repeatable on `linux/amd64` after the successful Cloud Build and Vertex smoke.
 
 Goals:
 
@@ -113,7 +113,7 @@ Exit criteria:
 
 ## Phase 4 - First Real Provider: GCP
 
-Status: substantially complete for the first provider milestone. The GCP adapter submits container images to Vertex AI CustomJob through the Google Cloud Go client, polls job status, records provider refs and estimates, reads Cloud Logging payloads into run artifacts, supports best-effort cancel, and rejects unsupported local bundles or non-GCS URI inputs before submit. Live auth and a billable CPU-only Vertex AI CustomJob smoke test passed on 2026-05-17 for project `switchboard-496606`. The PyTorch Iris container example provides the first realistic GCP training workload, the CLI can now build/push Docker images before submit for GCP script jobs, and GCP capability reporting can use live Cloud Billing/Compute pricing, inventory, and regional quota facts with static fallback.
+Status: substantially complete for the first provider milestone. The GCP adapter submits container images to Vertex AI CustomJob through the Google Cloud Go client, polls job status, records provider refs and estimates, reads Cloud Logging payloads into run artifacts, supports best-effort cancel, and rejects unsupported local bundles or non-GCS URI inputs before submit. Live auth and a billable CPU-only Vertex AI CustomJob smoke test passed on 2026-05-17 for project `switchboard-496606`; live pricing/capacity and PyTorch Iris container smokes passed on 2026-05-20. The PyTorch Iris container example provides the first realistic GCP training workload, the CLI can now build/push Docker images before submit for GCP script jobs, and GCP capability reporting can use live Cloud Billing/Compute pricing, inventory, and regional quota facts with static fallback.
 
 Goals:
 
@@ -133,9 +133,9 @@ Exit criteria:
 Next steps:
 
 1. Keep the GCP live smoke path repeatable against `switchboard-496606`.
-2. Run and keep the PyTorch Iris container demo repeatable against a GCS data object and Artifact Registry image.
+2. Keep the PyTorch Iris image build repeatable on `linux/amd64` and rerun it when GCP provider behavior changes.
 3. Keep Switchboard-managed image build/push covered by fake-runner tests and documented Artifact Registry auth guidance.
-4. Add a gated live smoke check for Cloud Billing/Compute pricing and capacity permissions.
+4. Keep the gated Cloud Billing/Compute pricing and capacity smoke current.
 
 ## Phase 5 - Auto Hardware Routing
 
