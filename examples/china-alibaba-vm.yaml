@@ -1,0 +1,33 @@
+# China VM integration fixture. The train path is config-gated and code-ready,
+# but live verification is pending the China colleague smoke.
+job:
+  name: china-alibaba-vm-smoke
+  image: registry.cn-hangzhou.aliyuncs.com/example/switchboard-smoke:latest
+  command: ["python", "/app/train.py"]
+  args: ["--train-data", "oss://my-bucket/switchboard-smoke/train"]
+  env:
+    SWITCHBOARD_INPUT_URI: oss://my-bucket/switchboard-smoke/train
+
+china_cloud:
+  common:
+    ssh_user: root
+    ssh_key_name: switchboard-smoke
+    ssh_private_key: ~/.ssh/switchboard-china-smoke
+    poll_interval_seconds: 30
+    ssh_connect_timeout_seconds: 10
+    ssh_ready_timeout_seconds: 600
+    terminate_on_completion: true
+    keep_instance_on_failure: false
+  alibaba_cloud:
+    endpoint: https://ecs.cn-hangzhou.aliyuncs.com/
+    region: cn-hangzhou
+    zone: cn-hangzhou-j
+    instance_type: ecs.gn7i-c8g1.2xlarge
+    image_id: m-bp000000000000000000
+    vpc_id: vpc-bp000000000000000
+    subnet_id: vsw-bp000000000000000
+    security_group_id: sg-bp000000000000000
+    system_disk_category: cloud_essd
+    system_disk_size_gb: 80
+    internet_bandwidth_mbps: 10
+    estimate_hourly_usd: 2.50

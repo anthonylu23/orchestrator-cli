@@ -1,16 +1,16 @@
 # China Cloud Provider Readiness
 
-This branch adds readiness adapters for five major China cloud providers:
+This branch adds readiness adapters for five major China cloud providers and code-ready VM client/runtime seams for the China compute path. Live VM execution is not marked verified yet; it is pending a China colleague smoke run against real accounts.
 
 | Provider name | Cloud | Status | What works now |
 | --- | --- | --- | --- |
-| `alibaba-cloud` | Alibaba Cloud | readiness-only | Built-in signed ECS `DescribeRegions` probe, credential env validation, public endpoint probe, and strict auth-command validation |
-| `huawei-cloud` | Huawei Cloud | readiness-only | Built-in AK/SK-signed IAM region probe, credential env validation, public endpoint probe, and strict auth-command validation |
-| `tencent-cloud` | Tencent Cloud | readiness-only | Built-in TC3-signed CVM `DescribeRegions` probe, credential env validation, public endpoint probe, and strict auth-command validation |
-| `tianyi-cloud` | China Telecom Tianyi Cloud / eSurfing Cloud | readiness-only | Built-in EOP-signed ECX region-cluster probe, credential env validation, public endpoint probe, and strict auth-command validation |
-| `baidu-ai-cloud` | Baidu AI Cloud | readiness-only | Built-in BCE-signed BOS probe, credential env validation, public endpoint probe, and strict auth-command validation |
+| `alibaba-cloud` | Alibaba Cloud | code-ready VM provider | Built-in signed ECS `DescribeRegions` probe plus config-gated VM create/describe/terminate runtime |
+| `huawei-cloud` | Huawei Cloud | code-ready VM provider | Built-in AK/SK-signed IAM region probe plus config-gated VM create/describe/terminate runtime |
+| `tencent-cloud` | Tencent Cloud | code-ready VM provider | Built-in TC3-signed CVM `DescribeRegions` probe plus config-gated VM create/describe/terminate runtime |
+| `tianyi-cloud` | China Telecom Tianyi Cloud / eSurfing Cloud | code-ready VM provider | Built-in EOP-signed ECX region-cluster probe plus config-gated VM create/describe/terminate runtime |
+| `baidu-ai-cloud` | Baidu AI Cloud | code-ready VM provider | Built-in BCE-signed BOS probe plus config-gated VM create/describe/terminate runtime |
 
-These are not training providers yet. They intentionally reject `train` submission until each cloud has a real compute adapter comparable to the GCP Vertex AI provider.
+`providers list`, `providers inspect`, and `providers check` expose readiness/auth behavior without needing train config. `switchboard-cli train --provider <china-provider> --config ...` registers the VM runtime when the matching `china_cloud.<provider>` block is configured. This is code-ready but not live verified; use the example configs as integration fixtures, not as a live-verification claim.
 
 ## Provider Selection
 
@@ -73,6 +73,16 @@ switchboard-cli providers check tencent-cloud --strict-auth --json
 ```
 
 Use official CLIs or a small internal smoke script when you want to override the built-in signed probes with a provider-maintained command.
+
+## VM Runtime Coverage
+
+The China VM runtime shape is image-first and mirrors the Lambda single-instance lifecycle: create a VM, run Docker through cloud-init/user-data, collect `/tmp/switchboard/logs.txt`, `/tmp/switchboard/events.jsonl`, and `/tmp/switchboard/exit.json` over SSH, then terminate according to cleanup policy.
+
+All five providers now have provider-specific VM clients that build signed create, describe, and terminate API requests from the shared `VMCreateRequest` shape. Tests use fake HTTP servers to verify request signing headers, payload fields, user-data propagation, status parsing, and terminate calls without requiring live China credentials.
+
+Live verification remains pending. Do not mark any China provider as live verified until the China colleague smoke in [China Live Smoke Guide](china-live-smoke.md) records a passing transcript against real cloud accounts.
+
+Example VM configs live under `examples/china-*-vm.yaml`. They pass provider object-storage URIs through job args/env for the container to resolve itself because first-class OSS/OBS/COS/OOS/BOS data staging is still roadmap work. They are integration fixtures for the code-ready VM path and should not be used as proof that live `train` execution has been verified.
 
 ## Manual GitHub Smoke
 
@@ -236,12 +246,12 @@ Baidu AI Cloud BOS SDK documentation: https://intl.cloud.baidu.com/en/doc/BOS/s/
 
 ## Current Limits
 
-This readiness layer does not:
+The public readiness provider path does not yet:
 
 1. submit managed training jobs.
-2. fetch provider logs.
-3. cancel provider jobs.
+2. expose China VM logs through the normal CLI registry path.
+3. cancel China VM jobs through the normal CLI registry path.
 4. stage local datasets into provider object storage.
 5. report live pricing, inventory, or quota.
 
-The next real implementation step should pick one China cloud provider, likely Alibaba Cloud or Huawei Cloud, and build a true image-based compute adapter with the same lifecycle expectations as GCP: auth, submit, poll status, logs, cancel, artifacts, and provider-specific error mapping.
+The next real implementation step is to run the colleague-owned live smoke, then mark only providers that pass create, poll, log/event collection, exit marker parsing, cleanup, and provider-specific error mapping as live verified.

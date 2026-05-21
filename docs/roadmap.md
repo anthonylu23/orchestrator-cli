@@ -187,9 +187,9 @@ Next steps:
 4. Decide whether retained Lambda instances should support explicit refresh/adoption.
 5. Decide whether Lambda filesystems should become first-class staging or checkpoint backends.
 
-## Phase 7 - China Cloud Readiness
+## Phase 7 - China Cloud VM Readiness
 
-Status: readiness-only provider adapters are implemented for `alibaba-cloud`, `huawei-cloud`, `tencent-cloud`, `tianyi-cloud`, and `baidu-ai-cloud`.
+Status: readiness provider adapters and config-gated VM + Docker execution paths are implemented for `alibaba-cloud`, `huawei-cloud`, `tencent-cloud`, `tianyi-cloud`, and `baidu-ai-cloud`. Live VM verification is pending a China colleague smoke and must not be marked complete yet.
 
 Current scope:
 
@@ -197,26 +197,35 @@ Current scope:
 2. Expose static capability metadata through `providers inspect`.
 3. Validate credential environment variables, optional auth commands, public endpoint reachability, and built-in signed auth probes for all five selected China clouds through `providers check`.
 4. Add `providers check --strict-auth` so China cloud checks can fail closed unless built-in signed auth or an official CLI/SDK smoke command succeeds.
-5. Reject training submission explicitly until a real compute adapter exists.
+5. Build the shared image-first VM runtime shape for create, poll, SSH log/event/exit collection, status, cancel, and cleanup.
+6. Add fake-backed signed VM create/describe/terminate client tests for Alibaba ECS, Huawei ECS, Tencent CVM, Tianyi ECS, and Baidu BCC.
+7. Enable `train --provider <china-provider>` only when the matching `china_cloud.<provider>` VM config block is present.
 
 Non-goals for this phase:
 
-1. Submitting managed training jobs.
-2. Reading cloud logs.
-3. Canceling cloud jobs.
-4. Staging datasets into object storage.
-5. Reporting live pricing, inventory, or quota.
+1. Claiming live China VM execution support before colleague smoke evidence exists.
+2. Staging datasets into provider object storage.
+3. Reporting live pricing, inventory, or quota.
+4. Multi-node or distributed China cloud topologies.
+
+Pending live smoke criteria:
+
+1. Create one short-lived VM from a configured image.
+2. Run a deterministic Docker workload through user-data/cloud-init.
+3. Read logs, structured events, and exit marker from `/tmp/switchboard`.
+4. Confirm cleanup policy terminates or intentionally retains the VM.
+5. Record the transcript in [China Live Smoke Guide](china-live-smoke.md) before updating provider status.
 
 Next steps:
 
-1. Pick one China cloud provider for a true GCP-equivalent compute adapter.
-2. Define its image execution model, object storage path, logging API, cancel API, and error taxonomy.
-3. Add live-gated tests before claiming execution support.
+1. Have the China colleague run smoke tests from the example configs.
+2. Update provider status from pending to live verified only for providers with passing transcripts.
+3. Add provider-specific pricing, capacity, and quota enrichment after lifecycle correctness is proven.
 
 ## Later Phases
 
 1. Add Hyperbolic and/or RunPod adapters after the Lambda live smoke is stable.
-2. Add China cloud compute adapters after readiness checks are proven.
+2. Promote China cloud VM adapters from code-ready to live-supported after colleague smoke evidence exists.
 3. Add GCS, S3, OSS, OBS, COS, CTYun OOS, and BOS checkpoint backends and provider examples that emit shared checkpoint URIs.
 4. Add multi-node and distributed training topology after single-node auto hardware proves useful.
 5. Add basic experiment fan-out.

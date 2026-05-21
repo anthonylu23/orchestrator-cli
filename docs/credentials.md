@@ -75,11 +75,27 @@ switchboard-cli credentials delete lambda api-key
 
 Providers resolve credentials in this order:
 
-1. Encrypted local store.
-2. Provider-native auth, where applicable.
-3. Actionable auth error.
+1. Explicit provider environment variables when supported.
+2. Encrypted local store.
+3. Provider-native auth, where applicable.
+4. Actionable auth error.
 
 Lambda resolves API auth only from encrypted `lambda/api_key`.
+
+China VM providers accept environment variables for CI/live smoke and canonical encrypted-store keys for local use:
+
+```txt
+alibaba_cloud/access_key_id
+alibaba_cloud/access_key_secret
+huawei_cloud/access_key_id
+huawei_cloud/secret_access_key
+tencent_cloud/secret_id
+tencent_cloud/secret_key
+tianyi_cloud/access_key
+tianyi_cloud/secret_key
+baidu_ai_cloud/access_key_id
+baidu_ai_cloud/secret_access_key
+```
 
 GCP continues to use Application Default Credentials.
 

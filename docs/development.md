@@ -15,7 +15,7 @@ The implementation is a Go CLI with a small internal package split:
 9. `internal/provider/local`: local script execution provider.
 10. `internal/provider/gcp`: Vertex AI CustomJob provider for prebuilt container images.
 11. `internal/provider/lambda`: Lambda Cloud instance provider for image-first jobs with SSH artifact collection.
-12. `internal/provider/chinacloud`: readiness-only adapters for Alibaba Cloud, Huawei Cloud, Tencent Cloud, Tianyi Cloud, and Baidu AI Cloud.
+12. `internal/provider/chinacloud`: readiness/auth adapters plus config-gated VM + Docker execution for Alibaba Cloud, Huawei Cloud, Tencent Cloud, Tianyi Cloud, and Baidu AI Cloud.
 13. `internal/packaging`: Docker build/push helpers used before provider submit.
 14. `internal/event`: mixed stdout parsing and JSONL helpers.
 15. `internal/artifact` and `internal/summary`: durable artifact paths and summary generation.

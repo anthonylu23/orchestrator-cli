@@ -1,0 +1,33 @@
+# China VM integration fixture. Baidu BCC client/runtime coverage is
+# code-ready, but live verification is pending the China colleague smoke.
+job:
+  name: china-baidu-vm-smoke
+  image: registry.baidubce.com/example/switchboard-smoke:latest
+  command: ["python", "/app/train.py"]
+  args: ["--train-data", "bos://my-bucket/switchboard-smoke/train"]
+  env:
+    SWITCHBOARD_INPUT_URI: bos://my-bucket/switchboard-smoke/train
+
+china_cloud:
+  common:
+    ssh_user: root
+    ssh_key_name: switchboard-smoke
+    ssh_private_key: ~/.ssh/switchboard-china-smoke
+    poll_interval_seconds: 30
+    ssh_connect_timeout_seconds: 10
+    ssh_ready_timeout_seconds: 600
+    terminate_on_completion: true
+    keep_instance_on_failure: false
+  baidu_ai_cloud:
+    endpoint: https://bcc.bj.baidubce.com
+    region: bj
+    zone: cn-bj-a
+    instance_type: bcc.g1.c1m4
+    image_id: m-00000000
+    vpc_id: vpc-00000000
+    subnet_id: subnet-00000000
+    security_group_id: sg-00000000
+    system_disk_category: enhanced_ssd_pl1
+    system_disk_size_gb: 80
+    internet_bandwidth_mbps: 10
+    estimate_hourly_usd: 2.50

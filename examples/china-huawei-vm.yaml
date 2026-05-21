@@ -1,0 +1,34 @@
+# China VM integration fixture. The train path is config-gated and code-ready,
+# but live verification is pending the China colleague smoke.
+job:
+  name: china-huawei-vm-smoke
+  image: swr.cn-north-4.myhuaweicloud.com/example/switchboard-smoke:latest
+  command: ["python", "/app/train.py"]
+  args: ["--train-data", "obs://my-bucket/switchboard-smoke/train"]
+  env:
+    SWITCHBOARD_INPUT_URI: obs://my-bucket/switchboard-smoke/train
+
+china_cloud:
+  common:
+    ssh_user: root
+    ssh_key_name: switchboard-smoke
+    ssh_private_key: ~/.ssh/switchboard-china-smoke
+    poll_interval_seconds: 30
+    ssh_connect_timeout_seconds: 10
+    ssh_ready_timeout_seconds: 600
+    terminate_on_completion: true
+    keep_instance_on_failure: false
+  huawei_cloud:
+    endpoint: https://ecs.cn-north-4.myhuaweicloud.com/
+    project_id: "00000000000000000000000000000000"
+    region: cn-north-4
+    zone: cn-north-4a
+    instance_type: pi2.2xlarge.4
+    image_id: ims-00000000-0000-0000-0000-000000000000
+    vpc_id: vpc-00000000
+    subnet_id: subnet-00000000
+    security_group_id: sg-00000000
+    system_disk_category: GPSSD
+    system_disk_size_gb: 80
+    internet_bandwidth_mbps: 10
+    estimate_hourly_usd: 2.50
