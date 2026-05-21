@@ -2,6 +2,7 @@ package chinacloud
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -127,6 +128,114 @@ func TestValidateAuthUsesAuthCommandWhenConfigured(t *testing.T) {
 	}
 }
 
+func TestValidateConnectionUsesAlibabaBuiltInSignedAuth(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Fatalf("method = %s, want GET", r.Method)
+		}
+		query := r.URL.Query()
+		if query.Get("Action") != "DescribeRegions" || query.Get("AccessKeyId") != "ak-value" || query.Get("Signature") == "" {
+			t.Fatalf("query = %s", r.URL.RawQuery)
+		}
+		if strings.Contains(r.URL.RawQuery, "secret-value") {
+			t.Fatalf("request leaked secret: %s", r.URL.RawQuery)
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"Regions":{"Region":[]}}`))
+	}))
+	defer server.Close()
+
+	def := mustDefinition(t, "alibaba-cloud")
+	def.Endpoint = server.URL + "/"
+	t.Setenv("ALIBABA_CLOUD_ACCESS_KEY_ID", "ak-value")
+	t.Setenv("ALIBABA_CLOUD_ACCESS_KEY_SECRET", "secret-value")
+	report, err := New(def).ValidateConnection(context.Background(), ConnectionOptions{RequireAuthenticated: true})
+	if err != nil {
+		t.Fatalf("ValidateConnection returned error: %v", err)
+	}
+	if report.Mode != "built_in_signed_request" || !report.Authenticated || !report.BuiltInAuth {
+		t.Fatalf("report = %#v", report)
+	}
+}
+
+func TestValidateConnectionUsesTencentBuiltInSignedAuth(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		if r.Method != http.MethodPost || string(body) != "{}" {
+			t.Fatalf("method/body = %s/%q", r.Method, string(body))
+		}
+		if got := r.Header.Get("X-TC-Action"); got != "DescribeRegions" {
+			t.Fatalf("X-TC-Action = %q", got)
+		}
+		if auth := r.Header.Get("Authorization"); !strings.HasPrefix(auth, "TC3-HMAC-SHA256 Credential=secret-id/") || strings.Contains(auth, "secret-key") {
+			t.Fatalf("Authorization = %q", auth)
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"Response":{"RegionSet":[],"RequestId":"req"}}`))
+	}))
+	defer server.Close()
+
+	def := mustDefinition(t, "tencent-cloud")
+	def.Endpoint = server.URL + "/"
+	t.Setenv("TENCENTCLOUD_SECRET_ID", "secret-id")
+	t.Setenv("TENCENTCLOUD_SECRET_KEY", "secret-key")
+	report, err := New(def).ValidateConnection(context.Background(), ConnectionOptions{RequireAuthenticated: true})
+	if err != nil {
+		t.Fatalf("ValidateConnection returned error: %v", err)
+	}
+	if report.Mode != "built_in_signed_request" || !report.Authenticated || !report.BuiltInAuth {
+		t.Fatalf("report = %#v", report)
+	}
+}
+
+func TestValidateConnectionUsesBaiduBuiltInSignedAuth(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Fatalf("method = %s, want GET", r.Method)
+		}
+		if auth := r.Header.Get("Authorization"); !strings.HasPrefix(auth, "bce-auth-v1/ak-value/") || strings.Contains(auth, "secret-value") {
+			t.Fatalf("Authorization = %q", auth)
+		}
+		if r.Header.Get("x-bce-date") == "" {
+			t.Fatalf("missing x-bce-date")
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`<ListAllMyBucketsResult/>`))
+	}))
+	defer server.Close()
+
+	def := mustDefinition(t, "baidu-ai-cloud")
+	def.Endpoint = server.URL + "/"
+	t.Setenv("BAIDU_CLOUD_ACCESS_KEY_ID", "ak-value")
+	t.Setenv("BAIDU_CLOUD_SECRET_ACCESS_KEY", "secret-value")
+	report, err := New(def).ValidateConnection(context.Background(), ConnectionOptions{RequireAuthenticated: true})
+	if err != nil {
+		t.Fatalf("ValidateConnection returned error: %v", err)
+	}
+	if report.Mode != "built_in_signed_request" || !report.Authenticated || !report.BuiltInAuth {
+		t.Fatalf("report = %#v", report)
+	}
+}
+
+func TestValidateConnectionBuiltInSignedAuthFailure(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"Response":{"Error":{"Code":"AuthFailure.SecretIdNotFound"}}}`, http.StatusUnauthorized)
+	}))
+	defer server.Close()
+
+	def := mustDefinition(t, "tencent-cloud")
+	def.Endpoint = server.URL + "/"
+	t.Setenv("TENCENTCLOUD_SECRET_ID", "secret-id")
+	t.Setenv("TENCENTCLOUD_SECRET_KEY", "secret-key")
+	_, err := New(def).ValidateConnection(context.Background(), ConnectionOptions{RequireAuthenticated: true})
+	if err == nil {
+		t.Fatal("expected built-in auth failure")
+	}
+	if app.ProviderErrorKindOf(err) != app.ProviderErrorAuth {
+		t.Fatalf("kind = %s, err = %v", app.ProviderErrorKindOf(err), err)
+	}
+}
+
 func TestValidateJobRejectsSubmission(t *testing.T) {
 	provider := New(Definitions()[0])
 	report := provider.ValidateJob(context.Background(), app.JobSpec{Name: "train", Image: "image"})
@@ -152,6 +261,15 @@ func TestEndpointOverride(t *testing.T) {
 	if got := provider.endpoint(); got != "https://example.invalid/" {
 		t.Fatalf("endpoint = %q", got)
 	}
+}
+
+func mustDefinition(t *testing.T, name string) Definition {
+	t.Helper()
+	def, err := DefinitionFor(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return def
 }
 
 func TestMain(m *testing.M) {

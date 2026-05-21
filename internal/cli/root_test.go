@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -424,16 +426,42 @@ func TestProvidersCheckChinaCloudReportsMissingCredentials(t *testing.T) {
 }
 
 func TestProvidersCheckChinaCloudStrictAuthRequiresAuthenticatedValidation(t *testing.T) {
+	t.Setenv("HUAWEICLOUD_SDK_AK", "test-ak")
+	t.Setenv("HUAWEICLOUD_SDK_SK", "test-sk")
+	var stdout bytes.Buffer
+	cmd := NewRootCommand(Options{Stdout: &stdout, Stderr: &bytes.Buffer{}})
+	cmd.SetArgs([]string{"providers", "check", "huawei-cloud", "--strict-auth", "--json"})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected strict auth error")
+	}
+	for _, want := range []string{`"ready":false`, `"authenticated":false`, "authenticated validation requires SWITCHBOARD_HUAWEI_CLOUD_AUTH_COMMAND"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("%q missing from %s", want, stdout.String())
+		}
+	}
+}
+
+func TestProvidersCheckChinaCloudStrictBuiltInAuthPasses(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("Action") != "DescribeRegions" {
+			t.Fatalf("query = %s", r.URL.RawQuery)
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"Regions":{"Region":[]}}`))
+	}))
+	defer server.Close()
+
+	t.Setenv("SWITCHBOARD_ALIBABA_CLOUD_ENDPOINT", server.URL+"/")
 	t.Setenv("ALIBABA_CLOUD_ACCESS_KEY_ID", "test-ak")
 	t.Setenv("ALIBABA_CLOUD_ACCESS_KEY_SECRET", "test-sk")
 	var stdout bytes.Buffer
 	cmd := NewRootCommand(Options{Stdout: &stdout, Stderr: &bytes.Buffer{}})
 	cmd.SetArgs([]string{"providers", "check", "alibaba-cloud", "--strict-auth", "--json"})
-	err := cmd.Execute()
-	if err == nil {
-		t.Fatal("expected strict auth error")
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("providers check returned error: %v\nstdout=%s", err, stdout.String())
 	}
-	for _, want := range []string{`"ready":false`, `"authenticated":false`, "authenticated validation requires SWITCHBOARD_ALIBABA_CLOUD_AUTH_COMMAND"} {
+	for _, want := range []string{`"ready":true`, `"auth_mode":"built_in_signed_request"`, `"authenticated":true`, `"built_in_auth":true`} {
 		if !strings.Contains(stdout.String(), want) {
 			t.Fatalf("%q missing from %s", want, stdout.String())
 		}

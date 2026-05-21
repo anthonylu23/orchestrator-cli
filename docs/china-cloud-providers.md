@@ -4,11 +4,11 @@ This branch adds readiness adapters for five major China cloud providers:
 
 | Provider name | Cloud | Status | What works now |
 | --- | --- | --- | --- |
-| `alibaba-cloud` | Alibaba Cloud | readiness-only | Credential env validation, public endpoint probe, and strict auth-command validation |
+| `alibaba-cloud` | Alibaba Cloud | readiness-only | Built-in signed ECS `DescribeRegions` probe, credential env validation, public endpoint probe, and strict auth-command validation |
 | `huawei-cloud` | Huawei Cloud | readiness-only | Credential env validation, public endpoint probe, and strict auth-command validation |
-| `tencent-cloud` | Tencent Cloud | readiness-only | Credential env validation, public endpoint probe, and strict auth-command validation |
+| `tencent-cloud` | Tencent Cloud | readiness-only | Built-in TC3-signed CVM `DescribeRegions` probe, credential env validation, public endpoint probe, and strict auth-command validation |
 | `tianyi-cloud` | China Telecom Tianyi Cloud / eSurfing Cloud | readiness-only | Credential env validation, public endpoint probe, and strict auth-command validation |
-| `baidu-ai-cloud` | Baidu AI Cloud | readiness-only | Credential env validation, public endpoint probe, and strict auth-command validation |
+| `baidu-ai-cloud` | Baidu AI Cloud | readiness-only | Built-in BCE-signed BOS probe, credential env validation, public endpoint probe, and strict auth-command validation |
 
 These are not training providers yet. They intentionally reject `train` submission until each cloud has a real compute adapter comparable to the GCP Vertex AI provider.
 
@@ -52,7 +52,9 @@ Check credentials and endpoint reachability:
 switchboard-cli providers check alibaba-cloud
 ```
 
-`providers check` returns nonzero if required credential environment variables are missing or the public endpoint cannot be reached. For China cloud providers, the default success mode is reported as `auth_mode: endpoint_probe` with `authenticated: false`, because an endpoint probe does not prove the credentials can call that cloud API.
+`providers check` returns nonzero if required credential environment variables are missing or the public endpoint cannot be reached. Alibaba Cloud, Tencent Cloud, and Baidu AI Cloud use built-in signed API probes when their credential environment variables are present. Huawei Cloud and Tianyi Cloud currently fall back to endpoint readiness unless a strict auth command is configured.
+
+For China cloud providers, endpoint-only success is reported as `auth_mode: endpoint_probe` with `authenticated: false`, because an endpoint probe does not prove the credentials can call that cloud API. Built-in signed checks and auth-command checks report `authenticated: true`.
 
 For stronger live validation, set a provider-specific auth command. When this variable is present, `providers check` runs the command and requires it to exit successfully instead of using the fallback env-plus-endpoint probe. The command output is not persisted by Switchboard.
 
@@ -63,20 +65,20 @@ export SWITCHBOARD_ALIBABA_CLOUD_AUTH_COMMAND='aliyun ecs DescribeRegions --Regi
 export SWITCHBOARD_TENCENT_CLOUD_AUTH_COMMAND='tccli cvm DescribeRegions --region ap-guangzhou'
 ```
 
-Require authenticated validation and fail closed if no auth command is configured:
+Require authenticated validation and fail closed if neither built-in signed auth nor an auth command is available:
 
 ```sh
 switchboard-cli providers check alibaba-cloud --strict-auth
 switchboard-cli providers check tencent-cloud --strict-auth --json
 ```
 
-Use official CLIs or a small internal smoke script for providers where SDK-backed auth has not been implemented yet.
+Use official CLIs or a small internal smoke script for providers where SDK-backed auth has not been implemented yet. This is currently required for strict Huawei Cloud and Tianyi Cloud validation.
 
 ## Manual GitHub Smoke
 
 The repository includes a manual-only GitHub Actions workflow at `.github/workflows/china-cloud-integration.yml`. It does not run on pull requests or pushes because these checks depend on live cloud credentials and optional provider CLI/SDK setup.
 
-Configure the relevant repository secrets, then run **China Cloud Strict Auth Smoke** from GitHub Actions:
+Configure the relevant repository secrets, then run **China Cloud Strict Auth Smoke** from GitHub Actions. Alibaba Cloud, Tencent Cloud, and Baidu AI Cloud can run with their credential secrets alone because Switchboard has built-in signed probes for those providers. Huawei Cloud and Tianyi Cloud need provider-specific auth command secrets until their built-in signers are added:
 
 ```txt
 SWITCHBOARD_ALIBABA_CLOUD_AUTH_COMMAND
@@ -86,13 +88,13 @@ SWITCHBOARD_TIANYI_CLOUD_AUTH_COMMAND
 SWITCHBOARD_BAIDU_AI_CLOUD_AUTH_COMMAND
 ```
 
-Credential secrets such as `ALIBABA_CLOUD_ACCESS_KEY_ID`, `TENCENTCLOUD_SECRET_ID`, and the provider-specific secret keys can also be configured when the auth command needs them. The workflow builds the CLI and runs:
+Credential secrets such as `ALIBABA_CLOUD_ACCESS_KEY_ID`, `TENCENTCLOUD_SECRET_ID`, and the provider-specific secret keys can also be configured when the auth command needs them or when built-in auth is available. The workflow builds the CLI and runs:
 
 ```sh
 switchboard-cli providers check <provider> --strict-auth --json
 ```
 
-If no strict auth command secret is configured for the selected provider, the workflow fails instead of reporting a false live validation.
+If no strict auth command secret or built-in credential pair is configured for the selected provider, the workflow fails instead of reporting a false live validation.
 
 ## Credential Environment Variables
 
@@ -236,7 +238,7 @@ Baidu AI Cloud BOS SDK documentation: https://intl.cloud.baidu.com/en/doc/BOS/s/
 
 This readiness layer does not:
 
-1. sign provider API requests unless a user-supplied auth command does so; use `providers check --strict-auth` to require that mode.
+1. sign Huawei Cloud or Tianyi Cloud API requests unless a user-supplied auth command does so; use `providers check --strict-auth` to require authenticated validation.
 2. submit managed training jobs.
 3. fetch provider logs.
 4. cancel provider jobs.

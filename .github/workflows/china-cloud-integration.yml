@@ -80,11 +80,28 @@ jobs:
             esac
           }
 
+          has_builtin_credentials() {
+            case "$1" in
+              alibaba-cloud)
+                [[ -n "${ALIBABA_CLOUD_ACCESS_KEY_ID:-}" && -n "${ALIBABA_CLOUD_ACCESS_KEY_SECRET:-}" ]]
+                ;;
+              tencent-cloud)
+                [[ -n "${TENCENTCLOUD_SECRET_ID:-}" && -n "${TENCENTCLOUD_SECRET_KEY:-}" ]]
+                ;;
+              baidu-ai-cloud)
+                [[ ( -n "${BAIDU_CLOUD_ACCESS_KEY_ID:-}" && -n "${BAIDU_CLOUD_SECRET_ACCESS_KEY:-}" ) || ( -n "${BCE_ACCESS_KEY_ID:-}" && -n "${BCE_SECRET_ACCESS_KEY:-}" ) ]]
+                ;;
+              *)
+                return 1
+                ;;
+            esac
+          }
+
           checked=0
           for provider in "${providers[@]}"; do
             auth_var="$(auth_var_for "${provider}")"
-            if [[ -z "${!auth_var:-}" ]]; then
-              echo "::notice title=${provider} skipped::${auth_var} is not configured"
+            if [[ -z "${!auth_var:-}" ]] && ! has_builtin_credentials "${provider}"; then
+              echo "::notice title=${provider} skipped::${auth_var} or built-in credential env vars are not configured"
               continue
             fi
             echo "Checking ${provider} with strict authenticated validation"

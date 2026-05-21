@@ -1,14 +1,23 @@
 package chinacloud
 
 import (
+	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/sha1"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"hash"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -48,6 +57,7 @@ type ConnectionReport struct {
 	Authenticated   bool
 	Endpoint        string
 	AuthCommandEnv  string
+	BuiltInAuth     bool
 	Documentation   string
 	Warnings        []string
 	CredentialNames []string
@@ -174,6 +184,7 @@ func (p *Provider) ValidateConnection(ctx context.Context, opts ConnectionOption
 	report := ConnectionReport{
 		Endpoint:        p.endpoint(),
 		AuthCommandEnv:  p.definition.AuthCommandEnv,
+		BuiltInAuth:     p.hasBuiltInAuth(),
 		Documentation:   p.definition.Documentation,
 		CredentialNames: p.credentialNames(),
 	}
@@ -193,6 +204,14 @@ func (p *Provider) ValidateConnection(ctx context.Context, opts ConnectionOption
 			Kind:    app.ProviderErrorAuth,
 			Message: fmt.Sprintf("%s credentials are not configured; missing %s", p.definition.DisplayName, strings.Join(missing, ", ")),
 		}
+	}
+	if p.hasBuiltInAuth() {
+		if err := p.runBuiltInAuth(ctx, report.Endpoint); err != nil {
+			return report, err
+		}
+		report.Mode = "built_in_signed_request"
+		report.Authenticated = true
+		return report, nil
 	}
 	if opts.RequireAuthenticated {
 		return report, &app.ProviderError{
@@ -240,6 +259,207 @@ func (p *Provider) runAuthCommand(ctx context.Context, command string) error {
 		}
 	}
 	return nil
+}
+
+func (p *Provider) hasBuiltInAuth() bool {
+	switch p.definition.Name {
+	case "alibaba-cloud", "tencent-cloud", "baidu-ai-cloud":
+		return true
+	default:
+		return false
+	}
+}
+
+func (p *Provider) runBuiltInAuth(ctx context.Context, endpoint string) error {
+	switch p.definition.Name {
+	case "alibaba-cloud":
+		return p.runAlibabaAuth(ctx, endpoint)
+	case "tencent-cloud":
+		return p.runTencentAuth(ctx, endpoint)
+	case "baidu-ai-cloud":
+		return p.runBaiduAuth(ctx, endpoint)
+	default:
+		return &app.ProviderError{
+			Kind:    app.ProviderErrorInvalidSpec,
+			Message: fmt.Sprintf("%s has no built-in authenticated validation", p.definition.DisplayName),
+		}
+	}
+}
+
+func (p *Provider) runAlibabaAuth(ctx context.Context, endpoint string) error {
+	accessKeyID := envValue("ALIBABA_CLOUD_ACCESS_KEY_ID")
+	accessKeySecret := envValue("ALIBABA_CLOUD_ACCESS_KEY_SECRET")
+	values := map[string]string{
+		"AccessKeyId":      accessKeyID,
+		"Action":           "DescribeRegions",
+		"Format":           "JSON",
+		"SignatureMethod":  "HMAC-SHA1",
+		"SignatureNonce":   strconv.FormatInt(time.Now().UnixNano(), 10),
+		"SignatureVersion": "1.0",
+		"Timestamp":        time.Now().UTC().Format("2006-01-02T15:04:05Z"),
+		"Version":          "2014-05-26",
+	}
+	canonicalQuery := alibabaCanonicalQuery(values)
+	stringToSign := "GET&%2F&" + alibabaPercentEncode(canonicalQuery)
+	signature := base64.StdEncoding.EncodeToString(hmacDigest(sha1.New, []byte(accessKeySecret+"&"), []byte(stringToSign)))
+
+	requestURL, err := url.Parse(endpoint)
+	if err != nil {
+		return &app.ProviderError{Kind: app.ProviderErrorInvalidSpec, Message: fmt.Sprintf("Alibaba Cloud endpoint is invalid: %v", err), Err: err}
+	}
+	query := requestURL.Query()
+	for key, value := range values {
+		query.Set(key, value)
+	}
+	query.Set("Signature", signature)
+	requestURL.RawQuery = query.Encode()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL.String(), nil)
+	if err != nil {
+		return &app.ProviderError{Kind: app.ProviderErrorInvalidSpec, Message: fmt.Sprintf("create Alibaba Cloud request: %v", err), Err: err}
+	}
+	return p.doAuthRequest(req)
+}
+
+func (p *Provider) runTencentAuth(ctx context.Context, endpoint string) error {
+	secretID := envValue("TENCENTCLOUD_SECRET_ID")
+	secretKey := envValue("TENCENTCLOUD_SECRET_KEY")
+	service := "cvm"
+	action := "DescribeRegions"
+	version := "2017-03-12"
+	region := "ap-guangzhou"
+	body := []byte("{}")
+	requestURL, err := url.Parse(endpoint)
+	if err != nil {
+		return &app.ProviderError{Kind: app.ProviderErrorInvalidSpec, Message: fmt.Sprintf("Tencent Cloud endpoint is invalid: %v", err), Err: err}
+	}
+	if requestURL.Path == "" {
+		requestURL.Path = "/"
+	}
+
+	now := time.Now().UTC()
+	timestamp := strconv.FormatInt(now.Unix(), 10)
+	date := now.Format("2006-01-02")
+	contentType := "application/json; charset=utf-8"
+	hashedPayload := sha256Hex(body)
+	canonicalHeaders := fmt.Sprintf("content-type:%s\nhost:%s\nx-tc-action:%s\n", contentType, requestURL.Host, strings.ToLower(action))
+	signedHeaders := "content-type;host;x-tc-action"
+	canonicalRequest := strings.Join([]string{
+		http.MethodPost,
+		"/",
+		"",
+		canonicalHeaders,
+		signedHeaders,
+		hashedPayload,
+	}, "\n")
+	credentialScope := fmt.Sprintf("%s/%s/tc3_request", date, service)
+	stringToSign := strings.Join([]string{
+		"TC3-HMAC-SHA256",
+		timestamp,
+		credentialScope,
+		sha256Hex([]byte(canonicalRequest)),
+	}, "\n")
+	secretDate := hmacDigest(sha256.New, []byte("TC3"+secretKey), []byte(date))
+	secretService := hmacDigest(sha256.New, secretDate, []byte(service))
+	secretSigning := hmacDigest(sha256.New, secretService, []byte("tc3_request"))
+	signature := hex.EncodeToString(hmacDigest(sha256.New, secretSigning, []byte(stringToSign)))
+	authorization := fmt.Sprintf(
+		"TC3-HMAC-SHA256 Credential=%s/%s, SignedHeaders=%s, Signature=%s",
+		secretID,
+		credentialScope,
+		signedHeaders,
+		signature,
+	)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, requestURL.String(), bytes.NewReader(body))
+	if err != nil {
+		return &app.ProviderError{Kind: app.ProviderErrorInvalidSpec, Message: fmt.Sprintf("create Tencent Cloud request: %v", err), Err: err}
+	}
+	req.Header.Set("Authorization", authorization)
+	req.Header.Set("Content-Type", contentType)
+	req.Host = requestURL.Host
+	req.Header.Set("X-TC-Action", action)
+	req.Header.Set("X-TC-Timestamp", timestamp)
+	req.Header.Set("X-TC-Version", version)
+	req.Header.Set("X-TC-Region", region)
+	return p.doAuthRequest(req)
+}
+
+func (p *Provider) runBaiduAuth(ctx context.Context, endpoint string) error {
+	accessKeyID := firstEnvValue("BAIDU_CLOUD_ACCESS_KEY_ID", "BCE_ACCESS_KEY_ID")
+	secretAccessKey := firstEnvValue("BAIDU_CLOUD_SECRET_ACCESS_KEY", "BCE_SECRET_ACCESS_KEY")
+	requestURL, err := url.Parse(endpoint)
+	if err != nil {
+		return &app.ProviderError{Kind: app.ProviderErrorInvalidSpec, Message: fmt.Sprintf("Baidu AI Cloud endpoint is invalid: %v", err), Err: err}
+	}
+	if requestURL.Path == "" {
+		requestURL.Path = "/"
+	}
+	now := time.Now().UTC().Format("2006-01-02T15:04:05Z")
+	expirationSeconds := "1800"
+	signedHeaders := "host;x-bce-date"
+	authPrefix := fmt.Sprintf("bce-auth-v1/%s/%s/%s", accessKeyID, now, expirationSeconds)
+	signingKey := hex.EncodeToString(hmacDigest(sha256.New, []byte(secretAccessKey), []byte(authPrefix)))
+	canonicalHeaders := fmt.Sprintf("host:%s\nx-bce-date:%s", requestURL.Host, now)
+	canonicalRequest := strings.Join([]string{
+		http.MethodGet,
+		requestURL.EscapedPath(),
+		requestURL.RawQuery,
+		canonicalHeaders,
+	}, "\n")
+	signature := hex.EncodeToString(hmacDigest(sha256.New, []byte(signingKey), []byte(canonicalRequest)))
+	authorization := fmt.Sprintf("%s/%s/%s", authPrefix, signedHeaders, signature)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL.String(), nil)
+	if err != nil {
+		return &app.ProviderError{Kind: app.ProviderErrorInvalidSpec, Message: fmt.Sprintf("create Baidu AI Cloud request: %v", err), Err: err}
+	}
+	req.Header.Set("Authorization", authorization)
+	req.Host = requestURL.Host
+	req.Header.Set("x-bce-date", now)
+	return p.doAuthRequest(req)
+}
+
+func (p *Provider) doAuthRequest(req *http.Request) error {
+	ctx, cancel := context.WithTimeout(req.Context(), defaultAuthTimeout)
+	defer cancel()
+	req = req.WithContext(ctx)
+	resp, err := p.client.Do(req)
+	if err != nil {
+		return &app.ProviderError{Kind: app.ProviderErrorNetwork, Message: fmt.Sprintf("%s signed auth request failed: %v", p.definition.DisplayName, err), Err: err}
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		return nil
+	}
+	if resp.StatusCode >= 500 {
+		return &app.ProviderError{Kind: app.ProviderErrorInternal, Message: fmt.Sprintf("%s signed auth request returned HTTP %d", p.definition.DisplayName, resp.StatusCode)}
+	}
+	if isAuthFailureBody(body) || resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		return &app.ProviderError{Kind: app.ProviderErrorAuth, Message: fmt.Sprintf("%s signed auth request was rejected with HTTP %d", p.definition.DisplayName, resp.StatusCode)}
+	}
+	return &app.ProviderError{Kind: app.ProviderErrorUnknown, Message: fmt.Sprintf("%s signed auth request returned HTTP %d", p.definition.DisplayName, resp.StatusCode)}
+}
+
+func isAuthFailureBody(body []byte) bool {
+	lower := strings.ToLower(string(body))
+	for _, marker := range []string{
+		"authfailure",
+		"signature",
+		"invalidaccesskey",
+		"invalid_access_key",
+		"invalidcredential",
+		"invalid credential",
+		"secretid",
+		"accesskeyidnotfound",
+		"invalidaccesskeyid",
+		"signaturedoesnotmatch",
+	} {
+		if strings.Contains(lower, strings.ToLower(marker)) {
+			return true
+		}
+	}
+	return false
 }
 
 func (p *Provider) Capabilities(ctx context.Context) (app.ProviderCapabilities, error) {
@@ -352,6 +572,19 @@ func anyEnvSet(names []string) bool {
 	return false
 }
 
+func envValue(name string) string {
+	return strings.TrimSpace(os.Getenv(name))
+}
+
+func firstEnvValue(names ...string) string {
+	for _, name := range names {
+		if value := envValue(name); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
 func (p *Provider) credentialNames() []string {
 	var names []string
 	for _, req := range p.definition.Requirements {
@@ -373,4 +606,36 @@ func DefinitionFor(name string) (Definition, error) {
 		}
 	}
 	return Definition{}, errors.New("unknown China cloud provider")
+}
+
+func alibabaCanonicalQuery(values map[string]string) string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, key := range keys {
+		parts = append(parts, alibabaPercentEncode(key)+"="+alibabaPercentEncode(values[key]))
+	}
+	return strings.Join(parts, "&")
+}
+
+func alibabaPercentEncode(value string) string {
+	escaped := url.QueryEscape(value)
+	escaped = strings.ReplaceAll(escaped, "+", "%20")
+	escaped = strings.ReplaceAll(escaped, "*", "%2A")
+	escaped = strings.ReplaceAll(escaped, "%7E", "~")
+	return escaped
+}
+
+func hmacDigest(hash func() hash.Hash, key []byte, data []byte) []byte {
+	mac := hmac.New(hash, key)
+	_, _ = mac.Write(data)
+	return mac.Sum(nil)
+}
+
+func sha256Hex(data []byte) string {
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
 }
