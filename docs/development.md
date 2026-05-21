@@ -15,11 +15,12 @@ The implementation is a Go CLI with a small internal package split:
 9. `internal/provider/local`: local script execution provider.
 10. `internal/provider/gcp`: Vertex AI CustomJob provider for prebuilt container images.
 11. `internal/provider/lambda`: Lambda Cloud instance provider for image-first jobs with SSH artifact collection.
-12. `internal/packaging`: Docker build/push helpers used before provider submit.
-13. `internal/event`: mixed stdout parsing and JSONL helpers.
-14. `internal/artifact` and `internal/summary`: durable artifact paths and summary generation.
-15. `internal/redact`: redaction of secret-like keys and known secret environment values before persistence.
-16. `internal/provider/contract`: reusable adapter contract checks for local, mock, GCP, Lambda, and future providers.
+12. `internal/provider/chinacloud`: readiness-only adapters for Alibaba Cloud, Huawei Cloud, Tencent Cloud, Tianyi Cloud, and Baidu AI Cloud.
+13. `internal/packaging`: Docker build/push helpers used before provider submit.
+14. `internal/event`: mixed stdout parsing and JSONL helpers.
+15. `internal/artifact` and `internal/summary`: durable artifact paths and summary generation.
+16. `internal/redact`: redaction of secret-like keys and known secret environment values before persistence.
+17. `internal/provider/contract`: reusable adapter contract checks for local, mock, GCP, Lambda, and future providers.
 
 ## Local Workflow
 
@@ -84,7 +85,7 @@ The CLI keeps stable exit categories for automation:
 
 ## Current Limits
 
-The `local` provider, deterministic mock providers, a GCP Vertex AI CustomJob provider, and an initial Lambda Cloud instance provider are implemented. GCP v1 accepts a prebuilt `job.image` or a packageable `job.script` that is built and pushed through the Docker packaging layer before submit. Lambda v1 accepts a prebuilt `job.image`, launches one Lambda instance, runs the image through Docker via cloud-init, collects logs/events over SSH, and terminates by default. GCP data inputs still support only `gs://` URI inputs; Lambda URI data inputs are container-handled and local bundles are not staged. Source distribution upload, non-GCS cloud data staging, Lambda private registry auth, Lambda filesystem staging, and multi-worker training are deferred. GCP capabilities use Cloud Billing Catalog pricing, Compute Engine machine/accelerator inventory, and regional quota facts when available, with static estimates as fallback. Lambda capabilities use the instance-types API when available, with configured fallback. `logs --follow` follows active run artifacts until the run reaches a terminal state and drains newly appended logs before returning. Explicit user-facing `resume` is still roadmap work, but provider failover passes compatible checkpoint events into later attempts.
+The `local` provider, deterministic mock providers, a GCP Vertex AI CustomJob provider, an initial Lambda Cloud instance provider, and China cloud readiness adapters are implemented. GCP v1 accepts a prebuilt `job.image` or a packageable `job.script` that is built and pushed through the Docker packaging layer before submit. Lambda v1 accepts a prebuilt `job.image`, launches one Lambda instance, runs the image through Docker via cloud-init, collects logs/events over SSH, and terminates by default. China cloud adapters currently stop at credential, endpoint, and optional auth-command readiness for Alibaba Cloud, Huawei Cloud, Tencent Cloud, Tianyi Cloud, and Baidu AI Cloud; they do not submit jobs yet. GCP data inputs still support only `gs://` URI inputs; Lambda URI data inputs are container-handled and local bundles are not staged. Source distribution upload, non-GCS cloud data staging, Lambda private registry auth, Lambda filesystem staging, China cloud compute submission, and multi-worker training are deferred. GCP capabilities use Cloud Billing Catalog pricing, Compute Engine machine/accelerator inventory, and regional quota facts when available, with static estimates as fallback. Lambda capabilities use the instance-types API when available, with configured fallback. `logs --follow` follows active run artifacts until the run reaches a terminal state and drains newly appended logs before returning. Explicit user-facing `resume` is still roadmap work, but provider failover passes compatible checkpoint events into later attempts.
 
 ## Runtime Workspace
 
@@ -113,5 +114,6 @@ Before writing logs, `events.jsonl`, summaries, or provider failure reasons, pro
 1. Run and document the first gated Lambda live smoke against real Lambda Cloud infrastructure.
 2. Keep the gated billable GCP container submit smoke test current with `SWITCHBOARD_GCP_LIVE=1` and `SWITCHBOARD_GCP_LIVE_SUBMIT=1`.
 3. Keep the PyTorch Iris GCP image build repeatable on `linux/amd64`, especially for Apple Silicon development machines.
-4. Add more cloud resume examples once additional providers can consume shared checkpoint URIs.
-5. Add Lambda private-registry and S3 checkpoint examples if the live smoke path is stable.
+4. Promote one China cloud readiness adapter into a real image-based compute adapter only after auth, submit, status, logs, cancel, and artifact semantics are specified.
+5. Add more cloud resume examples once additional providers can consume shared checkpoint URIs.
+6. Add Lambda private-registry and S3 checkpoint examples if the live smoke path is stable.

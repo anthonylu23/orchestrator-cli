@@ -10,7 +10,7 @@ Switchboard now has a local orchestration vertical slice, deterministic mock-pro
 
 Run artifacts redact secret-like keys and known secret environment values before persistence. Attempt history also records resume checkpoint provenance and provider cost estimates so failover decisions remain explainable after completion.
 
-GCP v1 is still image-submit-first at the provider boundary, but the CLI can now build and push a Docker image before submit when a GCP job uses `job.script` with `packaging` config. Live auth, a billable CPU-only Vertex AI CustomJob smoke test, a non-billable pricing/capacity smoke, and a PyTorch Iris Vertex container run have passed on the `switchboard-496606` project. `examples/gcp/iris` contains the first realistic PyTorch Iris container workflow with optional GCS checkpoint upload/resume. GCP capabilities can use live Cloud Billing pricing, Compute Engine machine/accelerator inventory, and regional quota facts with static fallback. Lambda v1 launches one on-demand instance, runs a prebuilt Docker image through cloud-init, collects logs/events over SSH, and terminates the instance by default. GCP data staging beyond `gs://`, Lambda private-registry/staging support, additional providers, and richer QoL workflows remain roadmap work.
+GCP v1 is still image-submit-first at the provider boundary, but the CLI can now build and push a Docker image before submit when a GCP job uses `job.script` with `packaging` config. Live auth, a billable CPU-only Vertex AI CustomJob smoke test, a non-billable pricing/capacity smoke, and a PyTorch Iris Vertex container run have passed on the `switchboard-496606` project. `examples/gcp/iris` contains the first realistic PyTorch Iris container workflow with optional GCS checkpoint upload/resume. GCP capabilities can use live Cloud Billing pricing, Compute Engine machine/accelerator inventory, and regional quota facts with static fallback. Lambda v1 launches one on-demand instance, runs a prebuilt Docker image through cloud-init, collects logs/events over SSH, and terminates the instance by default. China cloud provider readiness adapters are available for `alibaba-cloud`, `huawei-cloud`, `tencent-cloud`, `tianyi-cloud`, and `baidu-ai-cloud`; these validate credential/env readiness and optional auth commands but intentionally do not submit jobs yet. GCP data staging beyond `gs://`, Lambda private-registry/staging support, China cloud compute submission, additional providers, and richer QoL workflows remain roadmap work.
 
 ## Quick Start
 
@@ -39,6 +39,8 @@ Inspect a run:
 ./bin/switchboard-cli logs <run-id>
 ./bin/switchboard-cli cancel <run-id>
 ./bin/switchboard-cli providers list --json
+./bin/switchboard-cli providers inspect alibaba-cloud
+./bin/switchboard-cli providers check alibaba-cloud
 ```
 
 Run the mock failover demo:
@@ -256,7 +258,8 @@ By default Switchboard writes to `~/.switchboard-cli`. Set `SWITCHBOARD_CLI_HOME
 4. Provider extensibility hardening.
 5. GCP as the first real provider: container-image CustomJob support, managed Docker build/push, live pricing/capacity enrichment, and GCS checkpoint resume are implemented; richer data staging remains.
 6. Auto hardware routing for fastest compatible single-node GPU selection within a max run cost is implemented with provider-reported facts, including live GCP pricing/inventory/quota enrichment when available.
-7. Later: Lambda, Hyperbolic, shared checkpoint backends, fan-out sweeps, richer terminal UI, and optional hosted control plane.
+7. China cloud readiness adapters for Alibaba Cloud, Huawei Cloud, Tencent Cloud, Tianyi Cloud, and Baidu AI Cloud are implemented as non-submitting connectivity checks.
+8. Later: Lambda, Hyperbolic, China cloud compute adapters, shared checkpoint backends, fan-out sweeps, richer terminal UI, and optional hosted control plane.
 
 ## Docs
 
@@ -267,5 +270,6 @@ By default Switchboard writes to `~/.switchboard-cli`. Set `SWITCHBOARD_CLI_HOME
 - [GCP Live Smoke Test](docs/gcp-live-smoke.md)
 - [GCP Packaging Decision](docs/gcp-packaging-decision.md)
 - [Credentials](docs/credentials.md)
+- [China Cloud Provider Readiness](docs/china-cloud-providers.md)
 - [Auto Hardware Routing](docs/auto-hardware-routing.md)
 - [Roadmap](docs/roadmap.md)

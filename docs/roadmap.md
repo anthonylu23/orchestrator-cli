@@ -184,10 +184,37 @@ Next steps:
 3. Add S3 checkpoint examples for portable Lambda resume.
 4. Decide whether Lambda filesystems should become first-class staging or checkpoint backends.
 
+## Phase 7 - China Cloud Readiness
+
+Status: readiness-only provider adapters are implemented for `alibaba-cloud`, `huawei-cloud`, `tencent-cloud`, `tianyi-cloud`, and `baidu-ai-cloud`.
+
+Current scope:
+
+1. Register the five China cloud providers in `providers list`.
+2. Expose static capability metadata through `providers inspect`.
+3. Validate credential environment variables, optional auth commands, and public endpoint reachability through `providers check`.
+4. Reject training submission explicitly until a real compute adapter exists.
+
+Non-goals for this phase:
+
+1. Built-in signing for every provider OpenAPI.
+2. Submitting managed training jobs.
+3. Reading cloud logs.
+4. Canceling cloud jobs.
+5. Staging datasets into object storage.
+6. Reporting live pricing, inventory, or quota.
+
+Next steps:
+
+1. Pick one China cloud provider for a true GCP-equivalent compute adapter.
+2. Define its image execution model, object storage path, logging API, cancel API, and error taxonomy.
+3. Add live-gated tests before claiming execution support.
+
 ## Later Phases
 
 1. Add Hyperbolic and/or RunPod adapters after the Lambda live smoke is stable.
-2. Add GCS and S3 checkpoint backends and provider examples that emit shared checkpoint URIs.
+2. Add China cloud compute adapters after readiness checks are proven.
+3. Add GCS, S3, OSS, OBS, COS, CTYun OOS, and BOS checkpoint backends and provider examples that emit shared checkpoint URIs.
 4. Add multi-node and distributed training topology after single-node auto hardware proves useful.
 5. Add basic experiment fan-out.
 6. Add richer terminal attach views.
