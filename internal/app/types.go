@@ -304,7 +304,7 @@ func (e *ProviderError) Retryable() bool {
 		return false
 	}
 	switch e.Kind {
-	case ProviderErrorCapacity, ProviderErrorNetwork, ProviderErrorInternal:
+	case ProviderErrorCapacity, ProviderErrorQuota, ProviderErrorNetwork, ProviderErrorInternal:
 		return true
 	default:
 		return false

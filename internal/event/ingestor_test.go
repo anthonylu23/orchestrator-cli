@@ -58,6 +58,24 @@ func TestWriteJSONL(t *testing.T) {
 	}
 }
 
+func TestWriteJSONLSanitizesCheckpointURI(t *testing.T) {
+	var buf bytes.Buffer
+	uri := "https://example.com/ckpt.pt?X-Amz-Signature=secret-signature"
+	if err := WriteJSONL(&buf, app.Event{
+		Type:          app.EventTypeCheckpoint,
+		CheckpointURI: uri,
+		Fields:        map[string]interface{}{"checkpoint_uri": uri},
+	}); err != nil {
+		t.Fatalf("WriteJSONL returned error: %v", err)
+	}
+	if strings.Contains(buf.String(), "secret-signature") {
+		t.Fatalf("event leaked signed URI: %s", buf.String())
+	}
+	if !strings.Contains(buf.String(), "REDACTED") {
+		t.Fatalf("event missing redaction marker: %s", buf.String())
+	}
+}
+
 func TestReadJSONLHandlesLongLines(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "events.jsonl")
 	longState := strings.Repeat("x", 70000)

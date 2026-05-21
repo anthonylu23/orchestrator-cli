@@ -111,6 +111,9 @@ func localSize(path string) (int64, error) {
 		return 0, fmt.Errorf("data input path %q is a symlink; bundled data inputs must not contain symlinks", path)
 	}
 	if !info.IsDir() {
+		if !info.Mode().IsRegular() {
+			return 0, fmt.Errorf("data input path %q is not a regular file; bundled data inputs must contain only regular files and directories", path)
+		}
 		return info.Size(), nil
 	}
 	var total int64
@@ -127,6 +130,9 @@ func localSize(path string) (int64, error) {
 		info, err := d.Info()
 		if err != nil {
 			return err
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("data input path %q is not a regular file; bundled data inputs must contain only regular files and directories", p)
 		}
 		total += info.Size()
 		return nil

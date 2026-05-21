@@ -46,3 +46,42 @@ func TestLineRedactsStructuredSecretKeys(t *testing.T) {
 		t.Fatalf("line = %q", got)
 	}
 }
+
+func TestSanitizeURIRedactsSignedQueryAndUserinfo(t *testing.T) {
+	got := SanitizeURI("https://user:pass@example.com/checkpoint.pt?X-Amz-Credential=cred&X-Amz-Signature=sig&part=1#token")
+	for _, leaked := range []string{"user", "pass", "cred", "sig", "token"} {
+		if strings.Contains(got, leaked) {
+			t.Fatalf("sanitized uri leaked %q: %s", leaked, got)
+		}
+	}
+	if !strings.Contains(got, "REDACTED") || strings.Contains(got, "part=1") {
+		t.Fatalf("sanitized uri = %s", got)
+	}
+}
+
+func TestStringRedactsSignedURIReferencesInPlainText(t *testing.T) {
+	redactor := FromEnvironment()
+	got := redactor.String("resume from https://example.com/ckpt.pt?X-Goog-Signature=secret-signature")
+	if strings.Contains(got, "secret-signature") {
+		t.Fatalf("string leaked signed URI: %s", got)
+	}
+	if !strings.Contains(got, "REDACTED") {
+		t.Fatalf("string missing redaction marker: %s", got)
+	}
+}
+
+func TestEventRedactsCheckpointURIInTypedAndFieldCopies(t *testing.T) {
+	redactor := FromEnvironment()
+	uri := "s3://bucket/ckpt.pt?token=secret-token-value"
+	ev := redactor.Event(app.Event{
+		Type:          app.EventTypeCheckpoint,
+		CheckpointURI: uri,
+		Fields:        map[string]interface{}{"checkpoint_uri": uri},
+	})
+	if strings.Contains(ev.CheckpointURI, "secret-token-value") {
+		t.Fatalf("checkpoint uri = %q", ev.CheckpointURI)
+	}
+	if strings.Contains(ev.Fields["checkpoint_uri"].(string), "secret-token-value") {
+		t.Fatalf("fields = %#v", ev.Fields)
+	}
+}

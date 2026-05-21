@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/anthonylu23/switchboard-cli/internal/app"
+	"github.com/anthonylu23/switchboard-cli/internal/redact"
 )
 
 type ParsedLine struct {
@@ -57,6 +58,7 @@ func ParseLine(line string, runID string, attemptID string, now time.Time) Parse
 }
 
 func WriteJSONL(w io.Writer, ev app.Event) error {
+	ev = redact.SanitizeEventURIs(ev)
 	encoded, err := json.Marshal(ev)
 	if err != nil {
 		return err

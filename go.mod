@@ -2,6 +2,8 @@ module github.com/anthonylu23/switchboard-cli
 
 go 1.25.0
 
+toolchain go1.26.3
+
 require (
 	cloud.google.com/go/aiplatform v1.125.0
 	cloud.google.com/go/logging v1.17.0

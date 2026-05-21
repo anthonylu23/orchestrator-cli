@@ -1,6 +1,7 @@
 package summary
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -70,5 +71,21 @@ func TestBuildSummaryIncludesRoutingDecision(t *testing.T) {
 	got := Build(run, nil, nil, decision)
 	if got.Routing == nil || got.Routing.SelectedProvider != "gcp" || got.Routing.SelectedHardware.ShapeID != "gcp-a100" {
 		t.Fatalf("summary routing = %#v", got.Routing)
+	}
+}
+
+func TestBuildSummarySanitizesResumeCheckpointURI(t *testing.T) {
+	run := app.Run{ID: "r_1", State: app.RunStateSucceeded}
+	got := Build(run, []app.Attempt{{
+		ID:            "a_1",
+		RunID:         "r_1",
+		State:         app.AttemptStateSucceeded,
+		ResumeFromURI: "https://example.com/ckpt.pt?X-Goog-Signature=secret-signature",
+	}}, nil)
+	if len(got.ProviderAttempts) != 1 {
+		t.Fatalf("attempts = %#v", got.ProviderAttempts)
+	}
+	if strings.Contains(got.ProviderAttempts[0].ResumeFromURI, "secret-signature") {
+		t.Fatalf("resume uri leaked secret: %q", got.ProviderAttempts[0].ResumeFromURI)
 	}
 }

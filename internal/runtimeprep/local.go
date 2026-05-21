@@ -23,7 +23,7 @@ func PrepareLocal(job app.JobSpec, manifest app.DataManifest, workspace string) 
 		return PreparedJob{}, fmt.Errorf("workspace is required")
 	}
 	prepared := job
-	prepared.WorkDir = workspace
+	prepared.WorkDir = prepareWorkDir(job.WorkDir, workspace)
 	prepared.Script = absPath(job.Script)
 	prepared.Data = append([]app.DataInput(nil), manifest.Inputs...)
 
@@ -43,6 +43,7 @@ func PrepareLocal(job app.JobSpec, manifest app.DataManifest, workspace string) 
 
 	prepared.Args = rewriteStrings(prepared.Args, mounts)
 	prepared.Env = rewriteEnv(prepared.Env, mounts)
+	prepared.WorkDir = RewriteValue(prepared.WorkDir, mounts)
 	return PreparedJob{Job: prepared, Mounts: mounts, Workspace: workspace}, nil
 }
 
@@ -82,7 +83,7 @@ func RewriteValue(value string, mounts map[string]string) string {
 		}
 	}
 	for _, mount := range keys {
-		out = strings.ReplaceAll(out, mount, mounts[mount])
+		out = replacePathToken(out, mount, mounts[mount])
 	}
 	return out
 }
@@ -117,6 +118,9 @@ func materializeBundle(source string, dest string) error {
 	if info.IsDir() {
 		return copyDir(source, dest)
 	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("bundle source %q is not a regular file; bundled data inputs must contain only regular files and directories", source)
+	}
 	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
 		return err
 	}
@@ -142,6 +146,9 @@ func copyDir(source string, dest string) error {
 		}
 		if d.IsDir() {
 			return os.MkdirAll(target, info.Mode())
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("bundle source %q is not a regular file; bundled data inputs must contain only regular files and directories", path)
 		}
 		return copyFile(path, target, info.Mode())
 	})
@@ -176,4 +183,63 @@ func absPath(path string) string {
 		return path
 	}
 	return abs
+}
+
+func prepareWorkDir(workDir string, workspace string) string {
+	if workDir == "" || workDir == "." {
+		return workspace
+	}
+	clean := filepath.Clean(filepath.FromSlash(workDir))
+	prefix := filepath.Clean(filepath.FromSlash(WorkspacePrefix))
+	if clean == prefix || strings.HasPrefix(clean, prefix+string(os.PathSeparator)) {
+		if hostPath, err := HostPathForMount(workspace, workDir); err == nil {
+			return hostPath
+		}
+	}
+	return workDir
+}
+
+func replacePathToken(value string, needle string, replacement string) string {
+	if value == "" || needle == "" {
+		return value
+	}
+	var out strings.Builder
+	searchStart := 0
+	for {
+		index := strings.Index(value[searchStart:], needle)
+		if index < 0 {
+			out.WriteString(value[searchStart:])
+			break
+		}
+		index += searchStart
+		end := index + len(needle)
+		if pathTokenBoundary(value, index, end) {
+			out.WriteString(value[searchStart:index])
+			out.WriteString(replacement)
+			searchStart = end
+			continue
+		}
+		out.WriteString(value[searchStart:end])
+		searchStart = end
+	}
+	return out.String()
+}
+
+func pathTokenBoundary(value string, start int, end int) bool {
+	if start > 0 && !isPathBoundary(value[start-1]) {
+		return false
+	}
+	if end < len(value) && !isPathBoundary(value[end]) {
+		return false
+	}
+	return true
+}
+
+func isPathBoundary(ch byte) bool {
+	switch ch {
+	case '/', '\\', ':', ';', ',', ' ', '\t', '\n', '\r', '"', '\'', ')', ']', '}', '?', '&', '#', '=':
+		return true
+	default:
+		return false
+	}
 }

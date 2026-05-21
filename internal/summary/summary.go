@@ -4,9 +4,11 @@ import (
 	"strings"
 
 	"github.com/anthonylu23/switchboard-cli/internal/app"
+	"github.com/anthonylu23/switchboard-cli/internal/redact"
 )
 
 func Build(run app.Run, attempts []app.Attempt, events []app.Event, routingDecisions ...app.RoutingDecision) app.Summary {
+	attempts = sanitizeAttempts(attempts)
 	out := app.Summary{
 		RunID:            run.ID,
 		State:            run.State,
@@ -53,6 +55,14 @@ func Build(run app.Run, attempts []app.Attempt, events []app.Event, routingDecis
 	if len(best) > 0 {
 		out.BestMetrics = best
 		out.BestStep = bestStep
+	}
+	return out
+}
+
+func sanitizeAttempts(attempts []app.Attempt) []app.Attempt {
+	out := make([]app.Attempt, len(attempts))
+	for i, attempt := range attempts {
+		out[i] = redact.SanitizeAttemptURIs(attempt)
 	}
 	return out
 }

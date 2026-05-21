@@ -48,9 +48,10 @@ func TestPrepareLocalMaterializesFileAndDirectory(t *testing.T) {
 	}}
 
 	prepared, err := PrepareLocal(app.JobSpec{
-		Script: "examples/train.py",
-		Args:   []string{"--train", "/workspace/data/train.txt"},
-		Env:    map[string]string{"TEST_DIR": "/workspace/data/test"},
+		Script:  "examples/train.py",
+		Args:    []string{"--train", "/workspace/data/train.txt"},
+		Env:     map[string]string{"TEST_DIR": "/workspace/data/test"},
+		WorkDir: "/workspace/project",
 	}, manifest, workspace)
 	if err != nil {
 		t.Fatalf("PrepareLocal returned error: %v", err)
@@ -69,6 +70,9 @@ func TestPrepareLocalMaterializesFileAndDirectory(t *testing.T) {
 	}
 	if len(prepared.Job.Data) != len(manifest.Inputs) || prepared.Job.Data[0].Mode != app.DataInputModeBundle {
 		t.Fatalf("prepared data = %#v", prepared.Job.Data)
+	}
+	if prepared.Job.WorkDir != filepath.Join(workspace, "project") {
+		t.Fatalf("work dir = %q", prepared.Job.WorkDir)
 	}
 }
 
@@ -93,6 +97,44 @@ func TestPrepareLocalRejectsSymlinkInsideBundle(t *testing.T) {
 		Mode:   app.DataInputModeBundle,
 	}}}, filepath.Join(dir, "workspace"))
 	if err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestPrepareLocalPreservesExternalWorkDir(t *testing.T) {
+	dir := t.TempDir()
+	workDir := filepath.Join(dir, "custom")
+	prepared, err := PrepareLocal(app.JobSpec{Script: "train.py", WorkDir: workDir}, app.DataManifest{}, filepath.Join(dir, "workspace"))
+	if err != nil {
+		t.Fatalf("PrepareLocal returned error: %v", err)
+	}
+	if prepared.Job.WorkDir != workDir {
+		t.Fatalf("work dir = %q, want %q", prepared.Job.WorkDir, workDir)
+	}
+}
+
+func TestRewriteValueRequiresPathBoundary(t *testing.T) {
+	workspace := filepath.Join(t.TempDir(), "workspace")
+	mounts := map[string]string{"/workspace/data/test": filepath.Join(workspace, "data", "test")}
+	got := RewriteValue("/workspace/data/test:/workspace/data/tester:/workspace/data/test/file", mounts)
+	want := filepath.Join(workspace, "data", "test") + ":/workspace/data/tester:" + filepath.Join(workspace, "data", "test", "file")
+	if got != want {
+		t.Fatalf("rewritten = %q, want %q", got, want)
+	}
+}
+
+func TestPrepareLocalRejectsNonRegularBundledFile(t *testing.T) {
+	source := "/dev/null"
+	if _, err := os.Stat(source); err != nil {
+		t.Skipf("%s unavailable: %v", source, err)
+	}
+	_, err := PrepareLocal(app.JobSpec{Script: "train.py"}, app.DataManifest{Inputs: []app.DataInput{{
+		Name:   "device",
+		Source: source,
+		Mount:  "/workspace/data/device",
+		Mode:   app.DataInputModeBundle,
+	}}}, filepath.Join(t.TempDir(), "workspace"))
+	if err == nil || !strings.Contains(err.Error(), "regular file") {
 		t.Fatalf("error = %v", err)
 	}
 }

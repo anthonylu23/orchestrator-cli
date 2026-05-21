@@ -6,6 +6,7 @@ import (
 	"github.com/anthonylu23/switchboard-cli/internal/app"
 	"github.com/anthonylu23/switchboard-cli/internal/artifact"
 	"github.com/anthonylu23/switchboard-cli/internal/event"
+	"github.com/anthonylu23/switchboard-cli/internal/redact"
 )
 
 type Resolver struct {
@@ -27,7 +28,7 @@ func (r Resolver) Latest(ctx context.Context, runID string) (*app.CheckpointRef,
 			step = *ev.Step
 		}
 		if latest == nil || step >= latest.Step {
-			latest = &app.CheckpointRef{URI: ev.CheckpointURI, Step: step}
+			latest = &app.CheckpointRef{URI: redact.SanitizeURI(ev.CheckpointURI), Step: step}
 		}
 	}
 	return latest, nil

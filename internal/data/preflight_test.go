@@ -108,3 +108,14 @@ func TestPrepareRejectsSymlinkInsideBundledDirectory(t *testing.T) {
 		t.Fatalf("error = %v", err)
 	}
 }
+
+func TestPrepareRejectsNonRegularBundledFile(t *testing.T) {
+	source := "/dev/null"
+	if _, err := os.Stat(source); err != nil {
+		t.Skipf("%s unavailable: %v", source, err)
+	}
+	_, err := Prepare(app.JobSpec{Data: []app.DataInput{{Name: "device", Source: source}}}, PreflightOptions{})
+	if err == nil || !strings.Contains(err.Error(), "regular file") {
+		t.Fatalf("error = %v", err)
+	}
+}

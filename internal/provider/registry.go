@@ -14,7 +14,11 @@ type Registry struct {
 func NewRegistry(adapters ...app.ProviderAdapter) *Registry {
 	reg := &Registry{providers: map[app.ProviderName]app.ProviderAdapter{}}
 	for _, adapter := range adapters {
-		reg.providers[adapter.Name()] = adapter
+		name := adapter.Name()
+		if _, exists := reg.providers[name]; exists {
+			panic(fmt.Sprintf("duplicate provider %q", name))
+		}
+		reg.providers[name] = adapter
 	}
 	return reg
 }

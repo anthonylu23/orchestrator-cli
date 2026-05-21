@@ -6,7 +6,7 @@ import (
 )
 
 func TestProviderErrorRetryabilityCategories(t *testing.T) {
-	retryable := []ProviderErrorKind{ProviderErrorCapacity, ProviderErrorNetwork, ProviderErrorInternal}
+	retryable := []ProviderErrorKind{ProviderErrorCapacity, ProviderErrorQuota, ProviderErrorNetwork, ProviderErrorInternal}
 	for _, kind := range retryable {
 		err := &ProviderError{Kind: kind}
 		if !err.Retryable() || !IsRetryableProviderError(err) {
@@ -19,7 +19,6 @@ func TestProviderErrorRetryabilityCategories(t *testing.T) {
 
 	terminal := []ProviderErrorKind{
 		ProviderErrorAuth,
-		ProviderErrorQuota,
 		ProviderErrorInvalidSpec,
 		ProviderErrorRuntime,
 		ProviderErrorUnknown,
