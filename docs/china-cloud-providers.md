@@ -72,6 +72,28 @@ switchboard-cli providers check tencent-cloud --strict-auth --json
 
 Use official CLIs or a small internal smoke script for providers where SDK-backed auth has not been implemented yet.
 
+## Manual GitHub Smoke
+
+The repository includes a manual-only GitHub Actions workflow at `.github/workflows/china-cloud-integration.yml`. It does not run on pull requests or pushes because these checks depend on live cloud credentials and optional provider CLI/SDK setup.
+
+Configure the relevant repository secrets, then run **China Cloud Strict Auth Smoke** from GitHub Actions:
+
+```txt
+SWITCHBOARD_ALIBABA_CLOUD_AUTH_COMMAND
+SWITCHBOARD_HUAWEI_CLOUD_AUTH_COMMAND
+SWITCHBOARD_TENCENT_CLOUD_AUTH_COMMAND
+SWITCHBOARD_TIANYI_CLOUD_AUTH_COMMAND
+SWITCHBOARD_BAIDU_AI_CLOUD_AUTH_COMMAND
+```
+
+Credential secrets such as `ALIBABA_CLOUD_ACCESS_KEY_ID`, `TENCENTCLOUD_SECRET_ID`, and the provider-specific secret keys can also be configured when the auth command needs them. The workflow builds the CLI and runs:
+
+```sh
+switchboard-cli providers check <provider> --strict-auth --json
+```
+
+If no strict auth command secret is configured for the selected provider, the workflow fails instead of reporting a false live validation.
+
 ## Credential Environment Variables
 
 ### Alibaba Cloud

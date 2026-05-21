@@ -202,7 +202,7 @@ For GCP runs, v1 accepts `job.image` directly or can package `job.script` into a
 
 For Lambda runs, v1 accepts `job.image` directly and runs it on a launched Lambda instance with Docker. Bundled local data and `job.script` are rejected before submit. URI data inputs are passed through for the container to handle itself. Lambda containers receive remote-safe Switchboard paths under `/tmp/switchboard`; portable resume requires emitted `s3://` or `gs://` checkpoint URIs. See [Lambda Cloud Provider](docs/lambda-provider.md).
 
-For China cloud readiness checks, `providers check <provider>` validates required credential variables and endpoint reachability. This default mode reports `authenticated: false` for China clouds because an endpoint probe does not prove the account can call the provider API. Use `providers check <provider> --strict-auth` with the provider-specific auth command environment variable to require an authenticated official CLI or SDK smoke command before reporting ready. See [China Cloud Provider Readiness](docs/china-cloud-providers.md).
+For China cloud readiness checks, `providers check <provider>` validates required credential variables and endpoint reachability. This default mode reports `authenticated: false` for China clouds because an endpoint probe does not prove the account can call the provider API. Use `providers check <provider> --strict-auth` with the provider-specific auth command environment variable to require an authenticated official CLI or SDK smoke command before reporting ready. A manual-only GitHub Actions workflow can run those strict checks with repository secrets. See [China Cloud Provider Readiness](docs/china-cloud-providers.md).
 
 Example local data run:
 
