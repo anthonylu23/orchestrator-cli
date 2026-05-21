@@ -1,0 +1,121 @@
+name: China Cloud Strict Auth Smoke
+
+on:
+  workflow_dispatch:
+    inputs:
+      provider:
+        description: China cloud provider to check
+        required: true
+        default: all
+        type: choice
+        options:
+          - all
+          - alibaba-cloud
+          - huawei-cloud
+          - tencent-cloud
+          - tianyi-cloud
+          - baidu-ai-cloud
+
+permissions:
+  contents: read
+
+jobs:
+  strict-auth:
+    name: Strict auth check
+    runs-on: ubuntu-latest
+    env:
+      ALIBABA_CLOUD_ACCESS_KEY_ID: ${{ secrets.ALIBABA_CLOUD_ACCESS_KEY_ID }}
+      ALIBABA_CLOUD_ACCESS_KEY_SECRET: ${{ secrets.ALIBABA_CLOUD_ACCESS_KEY_SECRET }}
+      HUAWEICLOUD_SDK_AK: ${{ secrets.HUAWEICLOUD_SDK_AK }}
+      HUAWEICLOUD_SDK_SK: ${{ secrets.HUAWEICLOUD_SDK_SK }}
+      HUAWEI_CLOUD_ACCESS_KEY_ID: ${{ secrets.HUAWEI_CLOUD_ACCESS_KEY_ID }}
+      HUAWEI_CLOUD_SECRET_ACCESS_KEY: ${{ secrets.HUAWEI_CLOUD_SECRET_ACCESS_KEY }}
+      TENCENTCLOUD_SECRET_ID: ${{ secrets.TENCENTCLOUD_SECRET_ID }}
+      TENCENTCLOUD_SECRET_KEY: ${{ secrets.TENCENTCLOUD_SECRET_KEY }}
+      CTYUN_ACCESS_KEY: ${{ secrets.CTYUN_ACCESS_KEY }}
+      CTYUN_SECRET_KEY: ${{ secrets.CTYUN_SECRET_KEY }}
+      TIANYI_CLOUD_ACCESS_KEY: ${{ secrets.TIANYI_CLOUD_ACCESS_KEY }}
+      TIANYI_CLOUD_SECRET_KEY: ${{ secrets.TIANYI_CLOUD_SECRET_KEY }}
+      BAIDU_CLOUD_ACCESS_KEY_ID: ${{ secrets.BAIDU_CLOUD_ACCESS_KEY_ID }}
+      BAIDU_CLOUD_SECRET_ACCESS_KEY: ${{ secrets.BAIDU_CLOUD_SECRET_ACCESS_KEY }}
+      BCE_ACCESS_KEY_ID: ${{ secrets.BCE_ACCESS_KEY_ID }}
+      BCE_SECRET_ACCESS_KEY: ${{ secrets.BCE_SECRET_ACCESS_KEY }}
+      SWITCHBOARD_ALIBABA_CLOUD_AUTH_COMMAND: ${{ secrets.SWITCHBOARD_ALIBABA_CLOUD_AUTH_COMMAND }}
+      SWITCHBOARD_HUAWEI_CLOUD_AUTH_COMMAND: ${{ secrets.SWITCHBOARD_HUAWEI_CLOUD_AUTH_COMMAND }}
+      SWITCHBOARD_TENCENT_CLOUD_AUTH_COMMAND: ${{ secrets.SWITCHBOARD_TENCENT_CLOUD_AUTH_COMMAND }}
+      SWITCHBOARD_TIANYI_CLOUD_AUTH_COMMAND: ${{ secrets.SWITCHBOARD_TIANYI_CLOUD_AUTH_COMMAND }}
+      SWITCHBOARD_BAIDU_AI_CLOUD_AUTH_COMMAND: ${{ secrets.SWITCHBOARD_BAIDU_AI_CLOUD_AUTH_COMMAND }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build CLI
+        run: go build -o bin/switchboard-cli ./cmd/switchboard-cli
+
+      - name: Run strict China cloud auth checks
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          selected="${{ inputs.provider }}"
+          providers=(alibaba-cloud huawei-cloud tencent-cloud tianyi-cloud baidu-ai-cloud)
+          if [[ "${selected}" != "all" ]]; then
+            providers=("${selected}")
+          fi
+
+          auth_var_for() {
+            case "$1" in
+              alibaba-cloud) echo "SWITCHBOARD_ALIBABA_CLOUD_AUTH_COMMAND" ;;
+              huawei-cloud) echo "SWITCHBOARD_HUAWEI_CLOUD_AUTH_COMMAND" ;;
+              tencent-cloud) echo "SWITCHBOARD_TENCENT_CLOUD_AUTH_COMMAND" ;;
+              tianyi-cloud) echo "SWITCHBOARD_TIANYI_CLOUD_AUTH_COMMAND" ;;
+              baidu-ai-cloud) echo "SWITCHBOARD_BAIDU_AI_CLOUD_AUTH_COMMAND" ;;
+              *) return 1 ;;
+            esac
+          }
+
+          has_builtin_credentials() {
+            case "$1" in
+              alibaba-cloud)
+                [[ -n "${ALIBABA_CLOUD_ACCESS_KEY_ID:-}" && -n "${ALIBABA_CLOUD_ACCESS_KEY_SECRET:-}" ]]
+                ;;
+              huawei-cloud)
+                [[ ( -n "${HUAWEICLOUD_SDK_AK:-}" && -n "${HUAWEICLOUD_SDK_SK:-}" ) || ( -n "${HUAWEI_CLOUD_ACCESS_KEY_ID:-}" && -n "${HUAWEI_CLOUD_SECRET_ACCESS_KEY:-}" ) ]]
+                ;;
+              tencent-cloud)
+                [[ -n "${TENCENTCLOUD_SECRET_ID:-}" && -n "${TENCENTCLOUD_SECRET_KEY:-}" ]]
+                ;;
+              tianyi-cloud)
+                [[ ( -n "${CTYUN_ACCESS_KEY:-}" && -n "${CTYUN_SECRET_KEY:-}" ) || ( -n "${TIANYI_CLOUD_ACCESS_KEY:-}" && -n "${TIANYI_CLOUD_SECRET_KEY:-}" ) ]]
+                ;;
+              baidu-ai-cloud)
+                [[ ( -n "${BAIDU_CLOUD_ACCESS_KEY_ID:-}" && -n "${BAIDU_CLOUD_SECRET_ACCESS_KEY:-}" ) || ( -n "${BCE_ACCESS_KEY_ID:-}" && -n "${BCE_SECRET_ACCESS_KEY:-}" ) ]]
+                ;;
+              *)
+                return 1
+                ;;
+            esac
+          }
+
+          checked=0
+          for provider in "${providers[@]}"; do
+            auth_var="$(auth_var_for "${provider}")"
+            if [[ -z "${!auth_var:-}" ]] && ! has_builtin_credentials "${provider}"; then
+              echo "::notice title=${provider} skipped::${auth_var} or built-in credential env vars are not configured"
+              continue
+            fi
+            echo "Checking ${provider} with strict authenticated validation"
+            ./bin/switchboard-cli providers check "${provider}" --strict-auth --json
+            checked=$((checked + 1))
+          done
+
+          if [[ "${checked}" -eq 0 ]]; then
+            echo "No strict auth commands were configured for selected provider(s)." >&2
+            exit 1
+          fi

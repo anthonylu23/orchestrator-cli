@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -171,8 +173,9 @@ func TestLocalTrainRunsPyTorchIrisDemo(t *testing.T) {
 func TestCancelRunningLocalRun(t *testing.T) {
 	repo := repoRoot(t)
 	home := filepath.Join(t.TempDir(), "home")
-	var trainStdout, trainStderr bytes.Buffer
-	trainCmd := NewRootCommand(Options{Stdout: &trainStdout, Stderr: &trainStderr})
+	trainStdout := &lockedBuffer{}
+	var trainStderr bytes.Buffer
+	trainCmd := NewRootCommand(Options{Stdout: trainStdout, Stderr: &trainStderr})
 	trainCmd.SetArgs([]string{"--home", home, "train", "--provider", "local", "--script", filepath.Join(repo, "examples", "slow.py")})
 
 	var wg sync.WaitGroup
@@ -196,7 +199,7 @@ func TestCancelRunningLocalRun(t *testing.T) {
 		_ = followCmd.Execute()
 	}()
 
-	waitForText(t, &trainStdout, "slow start")
+	waitForText(t, trainStdout, "slow start")
 	var cancelStdout bytes.Buffer
 	cancelCmd := NewRootCommand(Options{Stdout: &cancelStdout, Stderr: &bytes.Buffer{}})
 	cancelCmd.SetArgs([]string{"--home", home, "cancel", runID})
@@ -386,9 +389,118 @@ func TestProvidersListIncludesMocks(t *testing.T) {
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("providers list returned error: %v", err)
 	}
-	for _, name := range []string{"local", "mock-lambda", "mock-gcp", "gcp", "lambda"} {
+	for _, name := range []string{"local", "mock-lambda", "mock-gcp", "gcp", "lambda", "alibaba-cloud", "huawei-cloud", "tencent-cloud", "tianyi-cloud", "baidu-ai-cloud"} {
 		if !strings.Contains(stdout.String(), name) {
 			t.Fatalf("%q missing from %s", name, stdout.String())
+		}
+	}
+}
+
+func TestProvidersInspectChinaCloudReadinessProvider(t *testing.T) {
+	var stdout bytes.Buffer
+	cmd := NewRootCommand(Options{Stdout: &stdout, Stderr: &bytes.Buffer{}})
+	cmd.SetArgs([]string{"providers", "inspect", "alibaba-cloud", "--json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("providers inspect returned error: %v", err)
+	}
+	for _, want := range []string{`"name":"alibaba-cloud"`, `"oss"`, `"cn-hangzhou"`} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("%q missing from %s", want, stdout.String())
+		}
+	}
+}
+
+func TestProvidersCheckChinaCloudReportsMissingCredentials(t *testing.T) {
+	t.Setenv("ALIBABA_CLOUD_ACCESS_KEY_ID", "")
+	t.Setenv("ALIBABA_CLOUD_ACCESS_KEY_SECRET", "")
+	var stdout bytes.Buffer
+	cmd := NewRootCommand(Options{Stdout: &stdout, Stderr: &bytes.Buffer{}})
+	cmd.SetArgs([]string{"providers", "check", "alibaba-cloud", "--json"})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected missing credentials error")
+	}
+	if !strings.Contains(stdout.String(), `"ready":false`) || !strings.Contains(stdout.String(), "credentials are not configured") {
+		t.Fatalf("stdout = %s err=%v", stdout.String(), err)
+	}
+}
+
+func TestProvidersCheckChinaCloudStrictAuthRequiresAuthenticatedValidation(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"error_code":"APIGW.0301","error_msg":"Incorrect IAM authentication information"}`, http.StatusUnauthorized)
+	}))
+	defer server.Close()
+
+	t.Setenv("HUAWEICLOUD_SDK_AK", "test-ak")
+	t.Setenv("HUAWEICLOUD_SDK_SK", "test-sk")
+	t.Setenv("SWITCHBOARD_HUAWEI_CLOUD_IAM_ENDPOINT", server.URL+"/v3/regions/cn-north-4")
+	var stdout bytes.Buffer
+	cmd := NewRootCommand(Options{Stdout: &stdout, Stderr: &bytes.Buffer{}})
+	cmd.SetArgs([]string{"providers", "check", "huawei-cloud", "--strict-auth", "--json"})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected strict auth error")
+	}
+	for _, want := range []string{`"ready":false`, `"authenticated":false`, `"built_in_auth":true`, "signed auth request was rejected"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("%q missing from %s", want, stdout.String())
+		}
+	}
+}
+
+func TestProvidersCheckChinaCloudStrictBuiltInAuthPasses(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("Action") != "DescribeRegions" {
+			t.Fatalf("query = %s", r.URL.RawQuery)
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"Regions":{"Region":[]}}`))
+	}))
+	defer server.Close()
+
+	t.Setenv("SWITCHBOARD_ALIBABA_CLOUD_ENDPOINT", server.URL+"/")
+	t.Setenv("ALIBABA_CLOUD_ACCESS_KEY_ID", "test-ak")
+	t.Setenv("ALIBABA_CLOUD_ACCESS_KEY_SECRET", "test-sk")
+	var stdout bytes.Buffer
+	cmd := NewRootCommand(Options{Stdout: &stdout, Stderr: &bytes.Buffer{}})
+	cmd.SetArgs([]string{"providers", "check", "alibaba-cloud", "--strict-auth", "--json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("providers check returned error: %v\nstdout=%s", err, stdout.String())
+	}
+	for _, want := range []string{`"ready":true`, `"auth_mode":"built_in_signed_request"`, `"authenticated":true`, `"built_in_auth":true`} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("%q missing from %s", want, stdout.String())
+		}
+	}
+}
+
+func TestProvidersCheckChinaCloudStrictAuthCommandPasses(t *testing.T) {
+	t.Setenv("SWITCHBOARD_ALIBABA_CLOUD_AUTH_COMMAND", "exit 0")
+	var stdout bytes.Buffer
+	cmd := NewRootCommand(Options{Stdout: &stdout, Stderr: &bytes.Buffer{}})
+	cmd.SetArgs([]string{"providers", "check", "alibaba-cloud", "--strict-auth", "--json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("providers check returned error: %v\nstdout=%s", err, stdout.String())
+	}
+	for _, want := range []string{`"ready":true`, `"auth_mode":"auth_command"`, `"authenticated":true`} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("%q missing from %s", want, stdout.String())
+		}
+	}
+}
+
+func TestProvidersCheckChinaCloudStrictAuthCommandFailureIsUnauthenticated(t *testing.T) {
+	t.Setenv("SWITCHBOARD_ALIBABA_CLOUD_AUTH_COMMAND", "exit 3")
+	var stdout bytes.Buffer
+	cmd := NewRootCommand(Options{Stdout: &stdout, Stderr: &bytes.Buffer{}})
+	cmd.SetArgs([]string{"providers", "check", "alibaba-cloud", "--strict-auth", "--json"})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected auth command failure")
+	}
+	for _, want := range []string{`"ready":false`, `"auth_mode":"auth_command"`, `"authenticated":false`, "auth command failed"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("%q missing from %s", want, stdout.String())
 		}
 	}
 }
@@ -1114,7 +1226,7 @@ func waitForRunID(t *testing.T, home string) string {
 	return ""
 }
 
-func waitForText(t *testing.T, buf *bytes.Buffer, text string) {
+func waitForText(t *testing.T, buf interface{ String() string }, text string) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
@@ -1124,6 +1236,23 @@ func waitForText(t *testing.T, buf *bytes.Buffer, text string) {
 		time.Sleep(25 * time.Millisecond)
 	}
 	t.Fatalf("%q not found in %q", text, buf.String())
+}
+
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }
 
 func requirePythonTorch(t *testing.T) {

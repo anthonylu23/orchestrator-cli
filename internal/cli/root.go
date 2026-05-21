@@ -21,6 +21,7 @@ import (
 	"github.com/anthonylu23/switchboard-cli/internal/home"
 	"github.com/anthonylu23/switchboard-cli/internal/packaging"
 	"github.com/anthonylu23/switchboard-cli/internal/provider"
+	chinacloudprovider "github.com/anthonylu23/switchboard-cli/internal/provider/chinacloud"
 	gcpprovider "github.com/anthonylu23/switchboard-cli/internal/provider/gcp"
 	lambdaprovider "github.com/anthonylu23/switchboard-cli/internal/provider/lambda"
 	localprovider "github.com/anthonylu23/switchboard-cli/internal/provider/local"
@@ -959,7 +960,137 @@ func newProvidersCommand(opts Options) *cobra.Command {
 	}
 	list.Flags().BoolVar(&asJSON, "json", false, "Print JSON")
 	cmd.AddCommand(list)
+	inspect := &cobra.Command{
+		Use:   "inspect <provider>",
+		Short: "Inspect provider capabilities without validating credentials",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			registry := buildProviderRegistry(opts, config.MockConfig{}, config.GCPConfig{})
+			adapter, err := registry.Get(args[0])
+			if err != nil {
+				return err
+			}
+			capabilities, err := adapter.Capabilities(cmd.Context())
+			if err != nil {
+				return err
+			}
+			if asJSON {
+				return json.NewEncoder(opts.Stdout).Encode(providerInspectReport{
+					Name:         string(adapter.Name()),
+					Capabilities: capabilities,
+				})
+			}
+			printProviderCapabilities(opts.Stdout, string(adapter.Name()), capabilities)
+			return nil
+		},
+	}
+	inspect.Flags().BoolVar(&asJSON, "json", false, "Print JSON")
+	var strictAuth bool
+	check := &cobra.Command{
+		Use:   "check <provider>",
+		Short: "Validate provider credentials and endpoint readiness",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			registry := buildProviderRegistry(opts, config.MockConfig{}, config.GCPConfig{})
+			adapter, err := registry.Get(args[0])
+			if err != nil {
+				return err
+			}
+			report := providerCheckReport{Name: string(adapter.Name()), Ready: true}
+			capabilities, capErr := adapter.Capabilities(cmd.Context())
+			if capErr != nil {
+				report.Ready = false
+				report.Error = capErr.Error()
+			} else {
+				report.Capabilities = capabilities
+			}
+			if chinaProvider, ok := adapter.(interface {
+				ValidateConnection(context.Context, chinacloudprovider.ConnectionOptions) (chinacloudprovider.ConnectionReport, error)
+			}); ok {
+				connection, authErr := chinaProvider.ValidateConnection(cmd.Context(), chinacloudprovider.ConnectionOptions{RequireAuthenticated: strictAuth})
+				report.AuthMode = connection.Mode
+				report.Authenticated = connection.Authenticated
+				report.Endpoint = connection.Endpoint
+				report.AuthCommandEnv = connection.AuthCommandEnv
+				report.BuiltInAuth = connection.BuiltInAuth
+				report.BuiltInEndpoint = connection.BuiltInEndpoint
+				report.Documentation = connection.Documentation
+				report.Warnings = connection.Warnings
+				report.CredentialNames = connection.CredentialNames
+				if authErr != nil {
+					report.Ready = false
+					report.Error = authErr.Error()
+				}
+			} else if authErr := adapter.ValidateAuth(cmd.Context()); authErr != nil {
+				report.Ready = false
+				report.Error = authErr.Error()
+			} else {
+				report.AuthMode = "provider"
+				report.Authenticated = true
+			}
+			if asJSON {
+				if err := json.NewEncoder(opts.Stdout).Encode(report); err != nil {
+					return err
+				}
+			} else if report.Ready {
+				if report.Authenticated {
+					fmt.Fprintf(opts.Stdout, "%s ready", report.Name)
+				} else {
+					fmt.Fprintf(opts.Stdout, "%s ready; authenticated provider API was not verified", report.Name)
+				}
+				if report.AuthMode != "" {
+					fmt.Fprintf(opts.Stdout, " (%s)", report.AuthMode)
+				}
+				fmt.Fprintln(opts.Stdout)
+				for _, warning := range report.Warnings {
+					fmt.Fprintf(opts.Stdout, "warning: %s\n", warning)
+				}
+			} else {
+				fmt.Fprintf(opts.Stdout, "%s not ready: %s\n", report.Name, report.Error)
+			}
+			if !report.Ready {
+				return exitCodeError{code: exitCodeInternal}
+			}
+			return nil
+		},
+	}
+	check.Flags().BoolVar(&asJSON, "json", false, "Print JSON")
+	check.Flags().BoolVar(&strictAuth, "strict-auth", false, "Require authenticated provider validation instead of endpoint-only readiness checks when supported")
+	cmd.AddCommand(inspect, check)
 	return cmd
+}
+
+type providerInspectReport struct {
+	Name         string                   `json:"name"`
+	Capabilities app.ProviderCapabilities `json:"capabilities"`
+}
+
+type providerCheckReport struct {
+	Name            string                   `json:"name"`
+	Ready           bool                     `json:"ready"`
+	Error           string                   `json:"error,omitempty"`
+	AuthMode        string                   `json:"auth_mode,omitempty"`
+	Authenticated   bool                     `json:"authenticated"`
+	Endpoint        string                   `json:"endpoint,omitempty"`
+	AuthCommandEnv  string                   `json:"auth_command_env,omitempty"`
+	BuiltInAuth     bool                     `json:"built_in_auth"`
+	BuiltInEndpoint string                   `json:"built_in_endpoint,omitempty"`
+	Documentation   string                   `json:"documentation,omitempty"`
+	Warnings        []string                 `json:"warnings,omitempty"`
+	CredentialNames []string                 `json:"credential_names,omitempty"`
+	Capabilities    app.ProviderCapabilities `json:"capabilities,omitempty"`
+}
+
+func printProviderCapabilities(w io.Writer, name string, capabilities app.ProviderCapabilities) {
+	fmt.Fprintf(w, "name\t%s\n", name)
+	fmt.Fprintf(w, "regions\t%s\n", strings.Join(capabilities.Regions, ","))
+	fmt.Fprintf(w, "gpu_families\t%s\n", strings.Join(capabilities.GPUFamilies, ","))
+	fmt.Fprintf(w, "supports_docker_image\t%t\n", capabilities.SupportsDockerImage)
+	fmt.Fprintf(w, "supports_local_script\t%t\n", capabilities.SupportsLocalScript)
+	fmt.Fprintf(w, "supports_data_bundle\t%t\n", capabilities.SupportsDataBundle)
+	fmt.Fprintf(w, "supports_object_store_pull\t%t\n", capabilities.SupportsObjectStorePull)
+	fmt.Fprintf(w, "uri_schemes\t%s\n", strings.Join(capabilities.SupportedURISchemes, ","))
+	fmt.Fprintf(w, "checkpoint_schemes\t%s\n", strings.Join(capabilities.SupportedCheckpointSchemes, ","))
 }
 
 func newCredentialsCommand(opts Options, homeFlag *string) *cobra.Command {
@@ -1186,6 +1317,7 @@ func buildTrainProviderRegistry(opts Options, resolved config.ResolvedTrainConfi
 
 func buildProviderRegistryWithOptions(opts Options, mockConfig config.MockConfig, gcpConfig config.GCPConfig, lambdaConfig config.LambdaConfig, credentialResolver credentials.Resolver, includeGCP bool, includeLambda bool) *provider.Registry {
 	adapters := []app.ProviderAdapter{localprovider.New(opts.Stdout, opts.Stderr)}
+	adapters = append(adapters, chinacloudprovider.NewProviders()...)
 	for _, providerConfig := range mergedMockProviders(mockConfig) {
 		adapters = append(adapters, mockprovider.New(mockprovider.Config{
 			Name:           providerConfig.Name,
