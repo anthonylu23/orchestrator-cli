@@ -503,6 +503,13 @@ gcp:
 	if attempts[0].EstimatedHourlyUSD == nil || *attempts[0].EstimatedHourlyUSD != 2.5 {
 		t.Fatalf("estimate = %#v", attempts[0])
 	}
+	resources, err := store.ProviderResourcesByRun(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("resources: %v", err)
+	}
+	if len(resources) != 1 || resources[0].Kind != app.ProviderResourceKindCustomJob || resources[0].State != app.ProviderResourceStateSucceeded {
+		t.Fatalf("resources = %#v", resources)
+	}
 	if fake.lastSubmit.RuntimeEnv["SWITCHBOARD_CHECKPOINT_DIR"] != "/tmp/switchboard/checkpoints" {
 		t.Fatalf("gcp checkpoint env = %#v", fake.lastSubmit.RuntimeEnv)
 	}
@@ -585,11 +592,93 @@ lambda:
 	if attempts[0].Provider != "lambda" || attempts[0].ProviderRef != "lambda:i-fake" {
 		t.Fatalf("attempt = %#v", attempts[0])
 	}
+	resources, err := store.ProviderResourcesByRun(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("resources: %v", err)
+	}
+	if len(resources) != 1 || resources[0].Kind != app.ProviderResourceKindInstance || resources[0].State != app.ProviderResourceStateTerminating {
+		t.Fatalf("resources = %#v", resources)
+	}
 	if fake.lastSubmit.RuntimeEnv["SWITCHBOARD_CHECKPOINT_DIR"] != "/tmp/switchboard/checkpoints" {
 		t.Fatalf("lambda checkpoint env = %#v", fake.lastSubmit.RuntimeEnv)
 	}
 	if strings.Contains(fake.lastSubmit.RuntimeEnv["SWITCHBOARD_EVENTS_PATH"], home) {
 		t.Fatalf("lambda events path should not point at local artifact path: %#v", fake.lastSubmit.RuntimeEnv)
+	}
+}
+
+func TestResourcesListAndCleanup(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "home")
+	if err := artifact.EnsureHome(home); err != nil {
+		t.Fatalf("ensure home: %v", err)
+	}
+	store, err := state.Open(artifact.DBPath(home))
+	if err != nil {
+		t.Fatalf("open state: %v", err)
+	}
+	started := time.Now().UTC()
+	if err := store.CreateRun(context.Background(), app.Run{ID: "r_resources", JobName: "train", Image: "image", Provider: "lambda", State: app.RunStateFailed, StartedAt: started}); err != nil {
+		t.Fatalf("CreateRun returned error: %v", err)
+	}
+	if err := store.CreateAttempt(context.Background(), app.Attempt{ID: "a_resources", RunID: "r_resources", Provider: "lambda", State: app.AttemptStateFailed, StartedAt: started}); err != nil {
+		t.Fatalf("CreateAttempt returned error: %v", err)
+	}
+	if _, err := store.SaveProviderResource(context.Background(), app.ProviderResource{
+		ID:                   "res_resources",
+		RunID:                "r_resources",
+		AttemptID:            "a_resources",
+		Provider:             "lambda",
+		Kind:                 app.ProviderResourceKindInstance,
+		ExternalID:           "i-clean",
+		ProviderRef:          "lambda:i-clean",
+		Region:               "us-west-1",
+		State:                app.ProviderResourceStateRunning,
+		CreatedBySwitchboard: true,
+		CleanupPolicy:        app.ProviderResourceCleanupAlways,
+	}); err != nil {
+		t.Fatalf("SaveProviderResource returned error: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("close state: %v", err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	cmd := NewRootCommand(Options{Stdout: &stdout, Stderr: &stderr})
+	cmd.SetArgs([]string{"--home", home, "resources", "list", "--run", "r_resources"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("resources list returned error: %v", err)
+	}
+	if !strings.Contains(stdout.String(), "lambda:i-clean") {
+		t.Fatalf("resources list output = %s", stdout.String())
+	}
+
+	fake := &fakeLambdaAdapter{}
+	stdout.Reset()
+	cmd = NewRootCommand(Options{
+		Stdout: &stdout,
+		Stderr: &stderr,
+		LambdaProviderFactory: func(cfg config.LambdaConfig, stdout io.Writer, stderr io.Writer) app.ProviderAdapter {
+			return fake
+		},
+	})
+	cmd.SetArgs([]string{"--home", home, "resources", "cleanup", "--run", "r_resources"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("resources cleanup returned error: %v", err)
+	}
+	if fake.cancelRef != "lambda:i-clean" {
+		t.Fatalf("cancel ref = %q", fake.cancelRef)
+	}
+	store, err = state.Open(artifact.DBPath(home))
+	if err != nil {
+		t.Fatalf("reopen state: %v", err)
+	}
+	defer store.Close()
+	resources, err := store.ProviderResourcesByRun(context.Background(), "r_resources")
+	if err != nil {
+		t.Fatalf("resources: %v", err)
+	}
+	if len(resources) != 1 || resources[0].State != app.ProviderResourceStateTerminating {
+		t.Fatalf("resources = %#v", resources)
 	}
 }
 
@@ -1102,6 +1191,23 @@ func (a *fakeGCPAdapter) Estimate(ctx context.Context, spec app.JobSpec) (app.Co
 func (a *fakeGCPAdapter) Submit(ctx context.Context, req app.SubmitRequest) (app.SubmitResult, error) {
 	a.lastSubmit = req
 	ref := "projects/test-project/locations/us-central1/customJobs/fake"
+	if req.OnResourceCreated != nil {
+		if err := req.OnResourceCreated(app.ProviderResource{
+			RunID:                req.RunID,
+			AttemptID:            req.AttemptID,
+			Provider:             "gcp",
+			Kind:                 app.ProviderResourceKindCustomJob,
+			ExternalID:           ref,
+			ProviderRef:          ref,
+			Region:               "us-central1",
+			ProjectOrAccount:     "test-project",
+			State:                app.ProviderResourceStateRunning,
+			CreatedBySwitchboard: true,
+			CleanupPolicy:        app.ProviderResourceCleanupNever,
+		}); err != nil {
+			return app.SubmitResult{}, err
+		}
+	}
 	if req.OnStarted != nil {
 		if err := req.OnStarted(app.ProviderJobRef{ID: ref}); err != nil {
 			return app.SubmitResult{}, err
@@ -1114,11 +1220,43 @@ func (a *fakeGCPAdapter) Submit(ctx context.Context, req app.SubmitRequest) (app
 		<-a.releaseSubmit
 	}
 	if a.submitErr != nil {
+		if req.OnResourceUpdated != nil {
+			_ = req.OnResourceUpdated(app.ProviderResource{
+				RunID:                req.RunID,
+				AttemptID:            req.AttemptID,
+				Provider:             "gcp",
+				Kind:                 app.ProviderResourceKindCustomJob,
+				ExternalID:           ref,
+				ProviderRef:          ref,
+				Region:               "us-central1",
+				ProjectOrAccount:     "test-project",
+				State:                app.ProviderResourceStateFailed,
+				CreatedBySwitchboard: true,
+				CleanupPolicy:        app.ProviderResourceCleanupNever,
+			})
+		}
 		code := a.submitExitCode
 		if code == 0 {
 			code = 1
 		}
 		return app.SubmitResult{ProviderJobRef: ref, ExitCode: code, ExitReason: a.submitErr.Error()}, a.submitErr
+	}
+	if req.OnResourceUpdated != nil {
+		if err := req.OnResourceUpdated(app.ProviderResource{
+			RunID:                req.RunID,
+			AttemptID:            req.AttemptID,
+			Provider:             "gcp",
+			Kind:                 app.ProviderResourceKindCustomJob,
+			ExternalID:           ref,
+			ProviderRef:          ref,
+			Region:               "us-central1",
+			ProjectOrAccount:     "test-project",
+			State:                app.ProviderResourceStateSucceeded,
+			CreatedBySwitchboard: true,
+			CleanupPolicy:        app.ProviderResourceCleanupNever,
+		}); err != nil {
+			return app.SubmitResult{}, err
+		}
 	}
 	return app.SubmitResult{ProviderJobRef: ref, ExitCode: 0, ExitReason: "completed"}, nil
 }
@@ -1142,6 +1280,7 @@ var errUnsupportedFakeLogs = errors.New("unsupported")
 
 type fakeLambdaAdapter struct {
 	lastSubmit app.SubmitRequest
+	cancelRef  string
 }
 
 func (a *fakeLambdaAdapter) Name() app.ProviderName {
@@ -1187,8 +1326,40 @@ func (a *fakeLambdaAdapter) Estimate(ctx context.Context, spec app.JobSpec) (app
 func (a *fakeLambdaAdapter) Submit(ctx context.Context, req app.SubmitRequest) (app.SubmitResult, error) {
 	a.lastSubmit = req
 	ref := "lambda:i-fake"
+	if req.OnResourceCreated != nil {
+		if err := req.OnResourceCreated(app.ProviderResource{
+			RunID:                req.RunID,
+			AttemptID:            req.AttemptID,
+			Provider:             "lambda",
+			Kind:                 app.ProviderResourceKindInstance,
+			ExternalID:           "i-fake",
+			ProviderRef:          ref,
+			Region:               "us-west-1",
+			State:                app.ProviderResourceStateRunning,
+			CreatedBySwitchboard: true,
+			CleanupPolicy:        app.ProviderResourceCleanupAlways,
+		}); err != nil {
+			return app.SubmitResult{}, err
+		}
+	}
 	if req.OnStarted != nil {
 		if err := req.OnStarted(app.ProviderJobRef{ID: ref}); err != nil {
+			return app.SubmitResult{}, err
+		}
+	}
+	if req.OnResourceUpdated != nil {
+		if err := req.OnResourceUpdated(app.ProviderResource{
+			RunID:                req.RunID,
+			AttemptID:            req.AttemptID,
+			Provider:             "lambda",
+			Kind:                 app.ProviderResourceKindInstance,
+			ExternalID:           "i-fake",
+			ProviderRef:          ref,
+			Region:               "us-west-1",
+			State:                app.ProviderResourceStateTerminating,
+			CreatedBySwitchboard: true,
+			CleanupPolicy:        app.ProviderResourceCleanupAlways,
+		}); err != nil {
 			return app.SubmitResult{}, err
 		}
 	}
@@ -1204,5 +1375,6 @@ func (a *fakeLambdaAdapter) StreamLogs(ctx context.Context, req app.LogStreamReq
 }
 
 func (a *fakeLambdaAdapter) Cancel(ctx context.Context, ref app.ProviderJobRef) error {
+	a.cancelRef = ref.ID
 	return nil
 }

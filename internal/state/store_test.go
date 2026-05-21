@@ -134,6 +134,68 @@ func TestRoutingDecisionLifecycle(t *testing.T) {
 	}
 }
 
+func TestProviderResourceLifecycle(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(filepath.Join(t.TempDir(), "switchboard.db"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	defer store.Close()
+
+	started := time.Now().UTC()
+	run := app.Run{ID: "r_1", JobName: "train", Script: "train.py", Provider: "lambda", State: app.RunStateRunning, StartedAt: started}
+	if err := store.CreateRun(ctx, run); err != nil {
+		t.Fatalf("CreateRun returned error: %v", err)
+	}
+	attempt := app.Attempt{ID: "a_1", RunID: "r_1", Provider: "lambda", State: app.AttemptStateRunning, StartedAt: started}
+	if err := store.CreateAttempt(ctx, attempt); err != nil {
+		t.Fatalf("CreateAttempt returned error: %v", err)
+	}
+
+	observed := started.Add(time.Second)
+	resource, err := store.SaveProviderResource(ctx, app.ProviderResource{
+		RunID:                "r_1",
+		AttemptID:            "a_1",
+		Provider:             "lambda",
+		Kind:                 app.ProviderResourceKindInstance,
+		ExternalID:           "i-123",
+		ProviderRef:          "lambda:i-123",
+		Region:               "us-west-1",
+		State:                app.ProviderResourceStateBooting,
+		CreatedBySwitchboard: true,
+		CleanupPolicy:        app.ProviderResourceCleanupAlways,
+		Metadata:             map[string]string{"instance_type": "gpu_1x_a10"},
+		LastObservedAt:       &observed,
+	})
+	if err != nil {
+		t.Fatalf("SaveProviderResource returned error: %v", err)
+	}
+	if resource.ID == "" {
+		t.Fatal("expected generated provider resource ID")
+	}
+
+	resource.State = app.ProviderResourceStateRunning
+	resource.Metadata["native_status"] = "active"
+	if _, err := store.SaveProviderResource(ctx, resource); err != nil {
+		t.Fatalf("SaveProviderResource update returned error: %v", err)
+	}
+
+	resources, err := store.ProviderResourcesByRun(ctx, "r_1")
+	if err != nil {
+		t.Fatalf("ProviderResourcesByRun returned error: %v", err)
+	}
+	if len(resources) != 1 {
+		t.Fatalf("resources = %#v", resources)
+	}
+	got := resources[0]
+	if got.ID != resource.ID || got.State != app.ProviderResourceStateRunning || got.Metadata["instance_type"] != "gpu_1x_a10" || got.Metadata["native_status"] != "active" {
+		t.Fatalf("resource = %#v", got)
+	}
+	if got.LastObservedAt == nil || !got.LastObservedAt.Equal(observed) {
+		t.Fatalf("last observed = %#v", got.LastObservedAt)
+	}
+}
+
 func floatPtr(value float64) *float64 {
 	return &value
 }
@@ -228,5 +290,12 @@ VALUES (?, ?, ?, ?, ?, ?)`,
 	}
 	if len(attempts) != 1 || attempts[0].EstimatedHourlyUSD == nil || *attempts[0].EstimatedHourlyUSD != 2.5 {
 		t.Fatalf("attempts = %#v", attempts)
+	}
+	resources, err := store.ProviderResources(context.Background(), ProviderResourceFilter{})
+	if err != nil {
+		t.Fatalf("ProviderResources after migration returned error: %v", err)
+	}
+	if len(resources) != 0 {
+		t.Fatalf("resources = %#v", resources)
 	}
 }

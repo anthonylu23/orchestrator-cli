@@ -15,6 +15,10 @@ func NewAttemptID() string {
 	return newID("a")
 }
 
+func NewProviderResourceID() string {
+	return newID("res")
+}
+
 func newID(prefix string) string {
 	var b [4]byte
 	if _, err := rand.Read(b[:]); err != nil {

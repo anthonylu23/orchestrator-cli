@@ -246,8 +246,13 @@ func (p *Provider) Submit(ctx context.Context, req app.SubmitRequest) (app.Submi
 	if providerRef == "" {
 		providerRef = fmt.Sprintf("%s/customJobs/%s", p.parent(), req.AttemptID)
 	}
+	if err := p.notifyResource(req, providerRef, app.ProviderResourceStateRunning, true); err != nil {
+		_ = client.CancelCustomJob(ctx, providerRef)
+		return app.SubmitResult{ProviderJobRef: providerRef, ExitCode: 1, ExitReason: err.Error()}, err
+	}
 	if req.OnStarted != nil {
 		if err := req.OnStarted(app.ProviderJobRef{ID: providerRef}); err != nil {
+			_ = client.CancelCustomJob(ctx, providerRef)
 			return app.SubmitResult{}, err
 		}
 	}
@@ -265,9 +270,15 @@ func (p *Provider) Submit(ctx context.Context, req app.SubmitRequest) (app.Submi
 		case aiplatformpb.JobState_JOB_STATE_SUCCEEDED:
 			p.drainLogs(ctx, client, providerRef, seenLogs, logFile, eventFile, req.RunID, req.AttemptID, redactor)
 			p.writeLog(logFile, redactor.String("gcp custom job completed"))
+			if err := p.notifyResource(req, providerRef, app.ProviderResourceStateSucceeded, false); err != nil {
+				return app.SubmitResult{ProviderJobRef: providerRef, ExitCode: 1, ExitReason: err.Error()}, err
+			}
 			return app.SubmitResult{ProviderJobRef: providerRef, ExitCode: 0, ExitReason: "completed"}, nil
 		case aiplatformpb.JobState_JOB_STATE_FAILED, aiplatformpb.JobState_JOB_STATE_EXPIRED:
 			wrapped := providerErrorFromJob(current, app.ProviderErrorRuntime)
+			if err := p.notifyResource(req, providerRef, app.ProviderResourceStateFailed, false); err != nil {
+				return app.SubmitResult{ProviderJobRef: providerRef, ExitCode: 1, ExitReason: err.Error()}, err
+			}
 			return app.SubmitResult{ProviderJobRef: providerRef, ExitCode: exitCodeForProviderError(wrapped), ExitReason: redactor.String(wrapped.Error())}, wrapped
 		case aiplatformpb.JobState_JOB_STATE_CANCELLED:
 			reason := jobErrorMessage(current)
@@ -275,6 +286,9 @@ func (p *Provider) Submit(ctx context.Context, req app.SubmitRequest) (app.Submi
 				reason = "gcp custom job canceled"
 			}
 			wrapped := &app.ProviderError{Kind: app.ProviderErrorRuntime, Message: reason}
+			if err := p.notifyResource(req, providerRef, app.ProviderResourceStateCanceled, false); err != nil {
+				return app.SubmitResult{ProviderJobRef: providerRef, ExitCode: 1, ExitReason: err.Error()}, err
+			}
 			return app.SubmitResult{ProviderJobRef: providerRef, ExitCode: 130, ExitReason: redactor.String(reason)}, wrapped
 		default:
 			if err := p.sleep(ctx, p.pollInterval()); err != nil {
@@ -371,6 +385,34 @@ func (p *Provider) createRequest(req app.SubmitRequest) *aiplatformpb.CreateCust
 			},
 		},
 	}
+}
+
+func (p *Provider) notifyResource(req app.SubmitRequest, providerRef string, state app.ProviderResourceState, created bool) error {
+	callback := req.OnResourceUpdated
+	if created {
+		callback = req.OnResourceCreated
+	}
+	if callback == nil {
+		return nil
+	}
+	observedAt := p.now()
+	return callback(app.ProviderResource{
+		RunID:                req.RunID,
+		AttemptID:            req.AttemptID,
+		Provider:             ProviderName,
+		Kind:                 app.ProviderResourceKindCustomJob,
+		ExternalID:           providerRef,
+		ProviderRef:          providerRef,
+		Region:               p.config.Location,
+		ProjectOrAccount:     p.config.ProjectID,
+		State:                state,
+		CreatedBySwitchboard: true,
+		CleanupPolicy:        app.ProviderResourceCleanupNever,
+		Metadata: map[string]string{
+			"output_uri_prefix": p.gcpOutputDir(req.RunID),
+		},
+		LastObservedAt: &observedAt,
+	})
 }
 
 func (p *Provider) gcpRuntimeEnv(runID string) map[string]string {

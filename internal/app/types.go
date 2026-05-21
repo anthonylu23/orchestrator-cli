@@ -93,6 +93,55 @@ type Attempt struct {
 	EstimateCurrency   string       `json:"estimate_currency,omitempty"`
 }
 
+type ProviderResourceKind string
+
+const (
+	ProviderResourceKindCustomJob ProviderResourceKind = "custom_job"
+	ProviderResourceKindInstance  ProviderResourceKind = "instance"
+)
+
+type ProviderResourceState string
+
+const (
+	ProviderResourceStateCreating    ProviderResourceState = "creating"
+	ProviderResourceStateBooting     ProviderResourceState = "booting"
+	ProviderResourceStateRunning     ProviderResourceState = "running"
+	ProviderResourceStateSucceeded   ProviderResourceState = "succeeded"
+	ProviderResourceStateFailed      ProviderResourceState = "failed"
+	ProviderResourceStateCanceled    ProviderResourceState = "canceled"
+	ProviderResourceStateTerminating ProviderResourceState = "terminating"
+	ProviderResourceStateTerminated  ProviderResourceState = "terminated"
+	ProviderResourceStateUnknown     ProviderResourceState = "unknown"
+)
+
+type ProviderResourceCleanupPolicy string
+
+const (
+	ProviderResourceCleanupAlways    ProviderResourceCleanupPolicy = "always"
+	ProviderResourceCleanupOnSuccess ProviderResourceCleanupPolicy = "on_success"
+	ProviderResourceCleanupOnFailure ProviderResourceCleanupPolicy = "on_failure"
+	ProviderResourceCleanupNever     ProviderResourceCleanupPolicy = "never"
+)
+
+type ProviderResource struct {
+	ID                   string                        `json:"id"`
+	RunID                string                        `json:"run_id"`
+	AttemptID            string                        `json:"attempt_id"`
+	Provider             string                        `json:"provider"`
+	Kind                 ProviderResourceKind          `json:"kind"`
+	ExternalID           string                        `json:"external_id"`
+	ProviderRef          string                        `json:"provider_ref"`
+	Region               string                        `json:"region,omitempty"`
+	ProjectOrAccount     string                        `json:"project_or_account,omitempty"`
+	State                ProviderResourceState         `json:"state"`
+	CreatedBySwitchboard bool                          `json:"created_by_switchboard"`
+	CleanupPolicy        ProviderResourceCleanupPolicy `json:"cleanup_policy"`
+	Metadata             map[string]string             `json:"metadata,omitempty"`
+	CreatedAt            time.Time                     `json:"created_at"`
+	UpdatedAt            time.Time                     `json:"updated_at"`
+	LastObservedAt       *time.Time                    `json:"last_observed_at,omitempty"`
+}
+
 type EventType string
 
 const (
@@ -291,14 +340,16 @@ type CheckpointRef struct {
 }
 
 type SubmitRequest struct {
-	JobSpec          JobSpec
-	RunID            string
-	AttemptID        string
-	ResumeFrom       *CheckpointRef
-	SelectedHardware *HardwareSelection
-	RuntimeEnv       map[string]string
-	RunDir           string
-	OnStarted        func(ref ProviderJobRef) error
+	JobSpec           JobSpec
+	RunID             string
+	AttemptID         string
+	ResumeFrom        *CheckpointRef
+	SelectedHardware  *HardwareSelection
+	RuntimeEnv        map[string]string
+	RunDir            string
+	OnStarted         func(ref ProviderJobRef) error
+	OnResourceCreated func(resource ProviderResource) error
+	OnResourceUpdated func(resource ProviderResource) error
 }
 
 type SubmitResult struct {

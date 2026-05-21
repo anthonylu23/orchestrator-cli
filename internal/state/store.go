@@ -79,7 +79,27 @@ CREATE TABLE IF NOT EXISTS routing_decisions (
   confidence TEXT NOT NULL DEFAULT '',
   FOREIGN KEY(run_id) REFERENCES runs(id)
 );
-`); err != nil {
+CREATE TABLE IF NOT EXISTS provider_resources (
+  id TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL,
+  attempt_id TEXT NOT NULL,
+  provider TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  external_id TEXT NOT NULL,
+  provider_ref TEXT NOT NULL,
+  region TEXT NOT NULL DEFAULT '',
+  project_or_account TEXT NOT NULL DEFAULT '',
+  state TEXT NOT NULL,
+  created_by_switchboard INTEGER NOT NULL DEFAULT 1,
+  cleanup_policy TEXT NOT NULL DEFAULT 'never',
+  metadata_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  last_observed_at TEXT,
+  FOREIGN KEY(run_id) REFERENCES runs(id),
+  FOREIGN KEY(attempt_id) REFERENCES attempts(id)
+);
+	`); err != nil {
 		return err
 	}
 	if err := s.addColumnIfMissing(ctx, "runs", "image", "TEXT NOT NULL DEFAULT ''"); err != nil {
@@ -185,6 +205,96 @@ func (s *Store) UpdateAttemptProviderRef(ctx context.Context, attemptID string, 
 func (s *Store) UpdateAttemptEstimate(ctx context.Context, attemptID string, estimate app.CostEstimate) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE attempts SET estimated_hourly_usd = ?, estimate_currency = ? WHERE id = ?`, estimate.HourlyUSD, estimate.Currency, attemptID)
 	return err
+}
+
+type ProviderResourceFilter struct {
+	RunID    string
+	Provider string
+}
+
+func (s *Store) SaveProviderResource(ctx context.Context, resource app.ProviderResource) (app.ProviderResource, error) {
+	now := time.Now().UTC()
+	if resource.ID == "" {
+		resource.ID = app.NewProviderResourceID()
+	}
+	if resource.CreatedAt.IsZero() {
+		resource.CreatedAt = now
+	}
+	if resource.UpdatedAt.IsZero() {
+		resource.UpdatedAt = now
+	}
+	metadataJSON, err := marshalResourceMetadata(resource.Metadata)
+	if err != nil {
+		return app.ProviderResource{}, err
+	}
+	_, err = s.db.ExecContext(ctx, `
+	INSERT INTO provider_resources (
+	  id, run_id, attempt_id, provider, kind, external_id, provider_ref, region, project_or_account,
+	  state, created_by_switchboard, cleanup_policy, metadata_json, created_at, updated_at, last_observed_at
+	)
+	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	ON CONFLICT(id) DO UPDATE SET
+	  run_id = excluded.run_id,
+	  attempt_id = excluded.attempt_id,
+	  provider = excluded.provider,
+	  kind = excluded.kind,
+	  external_id = excluded.external_id,
+	  provider_ref = excluded.provider_ref,
+	  region = excluded.region,
+	  project_or_account = excluded.project_or_account,
+	  state = excluded.state,
+	  created_by_switchboard = excluded.created_by_switchboard,
+	  cleanup_policy = excluded.cleanup_policy,
+	  metadata_json = excluded.metadata_json,
+	  updated_at = excluded.updated_at,
+	  last_observed_at = excluded.last_observed_at`,
+		resource.ID, resource.RunID, resource.AttemptID, resource.Provider, resource.Kind, resource.ExternalID, resource.ProviderRef,
+		resource.Region, resource.ProjectOrAccount, resource.State, boolInt(resource.CreatedBySwitchboard), resource.CleanupPolicy,
+		metadataJSON, resource.CreatedAt.Format(time.RFC3339Nano), resource.UpdatedAt.Format(time.RFC3339Nano), optionalTimeString(resource.LastObservedAt))
+	if err != nil {
+		return app.ProviderResource{}, err
+	}
+	return resource, nil
+}
+
+func (s *Store) ProviderResources(ctx context.Context, filter ProviderResourceFilter) ([]app.ProviderResource, error) {
+	var clauses []string
+	var args []interface{}
+	if filter.RunID != "" {
+		clauses = append(clauses, "run_id = ?")
+		args = append(args, filter.RunID)
+	}
+	if filter.Provider != "" {
+		clauses = append(clauses, "provider = ?")
+		args = append(args, filter.Provider)
+	}
+	query := `
+	SELECT id, run_id, attempt_id, provider, kind, external_id, provider_ref, region, project_or_account,
+	  state, created_by_switchboard, cleanup_policy, metadata_json, created_at, updated_at, COALESCE(last_observed_at, '')
+	FROM provider_resources`
+	if len(clauses) > 0 {
+		query += " WHERE " + strings.Join(clauses, " AND ")
+	}
+	query += " ORDER BY created_at, id"
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	resources := []app.ProviderResource{}
+	for rows.Next() {
+		resource, err := scanProviderResource(rows)
+		if err != nil {
+			return nil, err
+		}
+		resources = append(resources, resource)
+	}
+	return resources, rows.Err()
+}
+
+func (s *Store) ProviderResourcesByRun(ctx context.Context, runID string) ([]app.ProviderResource, error) {
+	return s.ProviderResources(ctx, ProviderResourceFilter{RunID: runID})
 }
 
 func (s *Store) SaveRoutingDecision(ctx context.Context, decision app.RoutingDecision) error {
@@ -349,6 +459,79 @@ FROM attempts WHERE run_id = ? ORDER BY started_at`, runID)
 		attempts = append(attempts, attempt)
 	}
 	return attempts, rows.Err()
+}
+
+type providerResourceScanner interface {
+	Scan(dest ...interface{}) error
+}
+
+func scanProviderResource(scanner providerResourceScanner) (app.ProviderResource, error) {
+	var resource app.ProviderResource
+	var kind, state, cleanupPolicy string
+	var metadataJSON string
+	var created, updated, lastObserved string
+	var createdBySwitchboard int
+	if err := scanner.Scan(
+		&resource.ID,
+		&resource.RunID,
+		&resource.AttemptID,
+		&resource.Provider,
+		&kind,
+		&resource.ExternalID,
+		&resource.ProviderRef,
+		&resource.Region,
+		&resource.ProjectOrAccount,
+		&state,
+		&createdBySwitchboard,
+		&cleanupPolicy,
+		&metadataJSON,
+		&created,
+		&updated,
+		&lastObserved,
+	); err != nil {
+		return app.ProviderResource{}, err
+	}
+	resource.Kind = app.ProviderResourceKind(kind)
+	resource.State = app.ProviderResourceState(state)
+	resource.CreatedBySwitchboard = createdBySwitchboard != 0
+	resource.CleanupPolicy = app.ProviderResourceCleanupPolicy(cleanupPolicy)
+	if metadataJSON != "" {
+		if err := json.Unmarshal([]byte(metadataJSON), &resource.Metadata); err != nil {
+			return app.ProviderResource{}, err
+		}
+	}
+	resource.CreatedAt = mustParseTime(created)
+	resource.UpdatedAt = mustParseTime(updated)
+	if lastObserved != "" {
+		parsed := mustParseTime(lastObserved)
+		resource.LastObservedAt = &parsed
+	}
+	return resource, nil
+}
+
+func marshalResourceMetadata(metadata map[string]string) (string, error) {
+	if metadata == nil {
+		metadata = map[string]string{}
+	}
+	content, err := json.Marshal(metadata)
+	if err != nil {
+		return "", err
+	}
+	return string(content), nil
+}
+
+func optionalTimeString(value *time.Time) interface{} {
+	if value == nil || value.IsZero() {
+		return nil
+	}
+	return value.UTC().Format(time.RFC3339Nano)
+}
+
+func boolInt(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
 }
 
 func mustParseTime(value string) time.Time {

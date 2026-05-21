@@ -320,6 +320,7 @@ func TestSubmitPollsAndWritesLogsAndEvents(t *testing.T) {
 	var stdout bytes.Buffer
 	provider := NewWithClient(testConfig(), client, &stdout, &bytes.Buffer{})
 	provider.Sleep = func(ctx context.Context, d time.Duration) error { return nil }
+	var resources []app.ProviderResource
 	result, err := provider.Submit(context.Background(), app.SubmitRequest{
 		JobSpec:   app.JobSpec{Name: "train", Image: "image", Env: map[string]string{"TOKEN": "secret-value"}},
 		RunID:     "r_123",
@@ -334,12 +335,23 @@ func TestSubmitPollsAndWritesLogsAndEvents(t *testing.T) {
 			}
 			return nil
 		},
+		OnResourceCreated: func(resource app.ProviderResource) error {
+			resources = append(resources, resource)
+			return nil
+		},
+		OnResourceUpdated: func(resource app.ProviderResource) error {
+			resources = append(resources, resource)
+			return nil
+		},
 	})
 	if err != nil {
 		t.Fatalf("Submit returned error: %v", err)
 	}
 	if result.ExitCode != 0 || result.ProviderJobRef == "" {
 		t.Fatalf("result = %#v", result)
+	}
+	if len(resources) != 2 || resources[0].Kind != app.ProviderResourceKindCustomJob || resources[0].State != app.ProviderResourceStateRunning || resources[1].State != app.ProviderResourceStateSucceeded {
+		t.Fatalf("resources = %#v", resources)
 	}
 	logs, err := os.ReadFile(paths.Logs)
 	if err != nil {

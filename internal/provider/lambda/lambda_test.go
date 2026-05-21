@@ -107,6 +107,7 @@ func TestSubmitLaunchesCollectsArtifactsAndTerminates(t *testing.T) {
 	provider := NewWithClient(testConfig(), client, remote, &stdout, &bytes.Buffer{})
 	provider.Sleep = func(ctx context.Context, d time.Duration) error { return nil }
 	var started string
+	var resources []app.ProviderResource
 	result, err := provider.Submit(context.Background(), app.SubmitRequest{
 		JobSpec:    app.JobSpec{Name: "valid", Image: "ghcr.io/example/smoke:latest"},
 		RunID:      "r_lambda",
@@ -117,12 +118,26 @@ func TestSubmitLaunchesCollectsArtifactsAndTerminates(t *testing.T) {
 			started = ref.ID
 			return nil
 		},
+		OnResourceCreated: func(resource app.ProviderResource) error {
+			resources = append(resources, resource)
+			return nil
+		},
+		OnResourceUpdated: func(resource app.ProviderResource) error {
+			resources = append(resources, resource)
+			return nil
+		},
 	})
 	if err != nil {
 		t.Fatalf("Submit returned error: %v", err)
 	}
 	if result.ProviderJobRef != "lambda:i-123" || started != result.ProviderJobRef || result.ExitCode != 0 {
 		t.Fatalf("result=%#v started=%q", result, started)
+	}
+	if len(resources) != 3 || resources[0].State != app.ProviderResourceStateBooting || resources[1].State != app.ProviderResourceStateRunning || resources[2].State != app.ProviderResourceStateTerminating {
+		t.Fatalf("resources = %#v", resources)
+	}
+	if resources[0].CleanupPolicy != app.ProviderResourceCleanupAlways || resources[0].Metadata["instance_type"] == "" {
+		t.Fatalf("resource metadata = %#v", resources[0])
 	}
 	if len(client.launchReq.Tags) != 2 || client.launchReq.Tags[0].Key != "switchboard:run-id" || client.launchReq.Tags[1].Key != "switchboard:attempt-id" {
 		t.Fatalf("launch tags = %#v", client.launchReq.Tags)

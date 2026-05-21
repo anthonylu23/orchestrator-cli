@@ -178,16 +178,24 @@ func (p *Provider) Submit(ctx context.Context, req app.SubmitRequest) (app.Submi
 	}
 	instanceID := instanceIDs[0]
 	providerRef := providerRef(instanceID)
+	if err := p.notifyResource(req, instanceID, providerRef, app.ProviderResourceStateBooting, true, map[string]string{"native_status": "booting"}); err != nil {
+		_ = client.TerminateInstances(ctx, []string{instanceID})
+		return app.SubmitResult{ProviderJobRef: providerRef, ExitCode: 1, ExitReason: err.Error()}, err
+	}
 	if req.OnStarted != nil {
 		if err := req.OnStarted(app.ProviderJobRef{ID: providerRef}); err != nil {
-			return app.SubmitResult{}, err
+			_ = client.TerminateInstances(ctx, []string{instanceID})
+			return app.SubmitResult{ProviderJobRef: providerRef, ExitCode: 1, ExitReason: err.Error()}, err
 		}
 	}
 	p.writeLog(logFile, redactor.String(fmt.Sprintf("lambda instance started: %s", instanceID)))
 
 	instance, err := p.waitForActive(ctx, client, instanceID, logFile, redactor)
 	if err != nil {
-		return p.failureResult(ctx, client, instanceID, providerRef, err, redactor)
+		return p.failureResult(ctx, client, req, instanceID, providerRef, err, redactor)
+	}
+	if err := p.notifyResource(req, instanceID, providerRef, app.ProviderResourceStateRunning, false, map[string]string{"native_status": instance.Status}); err != nil {
+		return app.SubmitResult{ProviderJobRef: providerRef, ExitCode: 1, ExitReason: err.Error()}, err
 	}
 	target := RemoteTarget{
 		Host:           instance.IP,
@@ -197,19 +205,29 @@ func (p *Provider) Submit(ctx context.Context, req app.SubmitRequest) (app.Submi
 	}
 	if err := p.remote.WaitForReady(ctx, target, time.Duration(p.config.SSHReadyTimeoutSeconds)*time.Second, p.sleep); err != nil {
 		wrapped := &app.ProviderError{Kind: app.ProviderErrorNetwork, Message: fmt.Sprintf("lambda ssh not ready: %v", err), Err: err}
-		return p.failureResult(ctx, client, instanceID, providerRef, wrapped, redactor)
+		return p.failureResult(ctx, client, req, instanceID, providerRef, wrapped, redactor)
 	}
 
 	exitCode, exitReason, err := p.monitorRemote(ctx, client, instanceID, target, logFile, eventFile, req, redactor)
 	if err != nil {
-		return p.failureResult(ctx, client, instanceID, providerRef, err, redactor)
+		return p.failureResult(ctx, client, req, instanceID, providerRef, err, redactor)
 	}
+	finalState := app.ProviderResourceStateSucceeded
+	if exitCode != 0 {
+		finalState = app.ProviderResourceStateFailed
+	}
+	metadata := map[string]string{"exit_reason": exitReason}
 	if p.shouldTerminate(exitCode) {
 		if err := client.TerminateInstances(ctx, []string{instanceID}); err != nil {
 			p.writeLog(logFile, redactor.String(fmt.Sprintf("lambda terminate failed: %v", normalizeError(err))))
+			metadata["cleanup_error"] = normalizeError(err).Error()
 		} else {
 			p.writeLog(logFile, redactor.String(fmt.Sprintf("lambda instance terminated: %s", instanceID)))
+			finalState = app.ProviderResourceStateTerminating
 		}
+	}
+	if err := p.notifyResource(req, instanceID, providerRef, finalState, false, metadata); err != nil {
+		return app.SubmitResult{ProviderJobRef: providerRef, ExitCode: 1, ExitReason: err.Error()}, err
 	}
 	return app.SubmitResult{ProviderJobRef: providerRef, ExitCode: exitCode, ExitReason: redactor.String(exitReason)}, nil
 }
@@ -255,6 +273,57 @@ func (p *Provider) launchRequest(req app.SubmitRequest) LaunchInstanceRequest {
 		launchReq.Image = map[string]string{"family": p.config.ImageFamily}
 	}
 	return launchReq
+}
+
+func (p *Provider) notifyResource(req app.SubmitRequest, instanceID string, providerRef string, state app.ProviderResourceState, created bool, metadata map[string]string) error {
+	callback := req.OnResourceUpdated
+	if created {
+		callback = req.OnResourceCreated
+	}
+	if callback == nil {
+		return nil
+	}
+	observedAt := p.now()
+	return callback(app.ProviderResource{
+		RunID:                req.RunID,
+		AttemptID:            req.AttemptID,
+		Provider:             ProviderName,
+		Kind:                 app.ProviderResourceKindInstance,
+		ExternalID:           instanceID,
+		ProviderRef:          providerRef,
+		Region:               p.config.RegionName,
+		State:                state,
+		CreatedBySwitchboard: true,
+		CleanupPolicy:        p.cleanupPolicy(),
+		Metadata:             p.resourceMetadata(metadata),
+		LastObservedAt:       &observedAt,
+	})
+}
+
+func (p *Provider) resourceMetadata(extra map[string]string) map[string]string {
+	metadata := map[string]string{
+		"instance_type": p.config.InstanceTypeName,
+	}
+	if p.config.ImageFamily != "" {
+		metadata["image_family"] = p.config.ImageFamily
+	}
+	for key, value := range extra {
+		metadata[key] = value
+	}
+	return metadata
+}
+
+func (p *Provider) cleanupPolicy() app.ProviderResourceCleanupPolicy {
+	switch {
+	case p.config.TerminateOnCompletion && !p.config.KeepInstanceOnFailure:
+		return app.ProviderResourceCleanupAlways
+	case p.config.TerminateOnCompletion && p.config.KeepInstanceOnFailure:
+		return app.ProviderResourceCleanupOnSuccess
+	case !p.config.TerminateOnCompletion && !p.config.KeepInstanceOnFailure:
+		return app.ProviderResourceCleanupOnFailure
+	default:
+		return app.ProviderResourceCleanupNever
+	}
 }
 
 func (p *Provider) waitForActive(ctx context.Context, client Client, instanceID string, logFile io.Writer, redactor redact.Redactor) (Instance, error) {
@@ -382,10 +451,19 @@ func parseExit(content string) (int, string, error) {
 	return out.ExitCode, out.ExitReason, nil
 }
 
-func (p *Provider) failureResult(ctx context.Context, client Client, instanceID string, providerRef string, err error, redactor redact.Redactor) (app.SubmitResult, error) {
+func (p *Provider) failureResult(ctx context.Context, client Client, req app.SubmitRequest, instanceID string, providerRef string, err error, redactor redact.Redactor) (app.SubmitResult, error) {
 	wrapped := normalizeError(err)
+	state := app.ProviderResourceStateFailed
+	metadata := map[string]string{"error": wrapped.Error()}
 	if !p.config.KeepInstanceOnFailure {
-		_ = client.TerminateInstances(ctx, []string{instanceID})
+		if terminateErr := client.TerminateInstances(ctx, []string{instanceID}); terminateErr != nil {
+			metadata["cleanup_error"] = normalizeError(terminateErr).Error()
+		} else {
+			state = app.ProviderResourceStateTerminating
+		}
+	}
+	if resourceErr := p.notifyResource(req, instanceID, providerRef, state, false, metadata); resourceErr != nil {
+		return app.SubmitResult{ProviderJobRef: providerRef, ExitCode: 1, ExitReason: redactor.String(resourceErr.Error())}, resourceErr
 	}
 	return app.SubmitResult{ProviderJobRef: providerRef, ExitCode: exitCodeForProviderError(wrapped), ExitReason: redactor.String(wrapped.Error())}, wrapped
 }

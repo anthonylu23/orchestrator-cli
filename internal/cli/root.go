@@ -74,6 +74,7 @@ func NewRootCommand(opts Options) *cobra.Command {
 	root.AddCommand(newLogsCommand(opts, &home))
 	root.AddCommand(newCancelCommand(opts, &home))
 	root.AddCommand(newProvidersCommand(opts))
+	root.AddCommand(newResourcesCommand(opts, &home))
 	root.AddCommand(newCredentialsCommand(opts, &home))
 	return root
 }
@@ -396,6 +397,10 @@ func runAttempt(ctx context.Context, opts Options, store *state.Store, registry 
 	if err := store.UpdateAttemptEstimate(ctx, attemptID, estimate); err != nil {
 		return exitCodeInternal, false, err
 	}
+	resourceIDs := map[string]string{}
+	persistResource := func(resource app.ProviderResource) error {
+		return persistProviderResource(ctx, store, resourceIDs, attemptRedactor, resource)
+	}
 	result, err := adapter.Submit(ctx, app.SubmitRequest{
 		JobSpec:          attemptJob,
 		RunID:            runID,
@@ -407,6 +412,8 @@ func runAttempt(ctx context.Context, opts Options, store *state.Store, registry 
 		OnStarted: func(ref app.ProviderJobRef) error {
 			return store.UpdateAttemptProviderRef(ctx, attemptID, attemptRedactor.String(ref.ID))
 		},
+		OnResourceCreated: persistResource,
+		OnResourceUpdated: persistResource,
 	})
 	if err != nil {
 		currentRun, runErr := store.GetRun(ctx, runID)
@@ -469,6 +476,49 @@ func runAttempt(ctx context.Context, opts Options, store *state.Store, registry 
 	return result.ExitCode, false, nil
 }
 
+func persistProviderResource(ctx context.Context, store *state.Store, resourceIDs map[string]string, redactor redact.Redactor, resource app.ProviderResource) error {
+	resource = redactProviderResource(resource, redactor)
+	key := providerResourceKey(resource)
+	if key != "" {
+		if id := resourceIDs[key]; id != "" {
+			resource.ID = id
+		}
+	}
+	saved, err := store.SaveProviderResource(ctx, resource)
+	if err != nil {
+		return err
+	}
+	if key != "" {
+		resourceIDs[key] = saved.ID
+	}
+	return nil
+}
+
+func redactProviderResource(resource app.ProviderResource, redactor redact.Redactor) app.ProviderResource {
+	resource.ExternalID = redactor.String(resource.ExternalID)
+	resource.ProviderRef = redactor.String(resource.ProviderRef)
+	resource.ProjectOrAccount = redactor.String(resource.ProjectOrAccount)
+	if len(resource.Metadata) > 0 {
+		metadata := make(map[string]string, len(resource.Metadata))
+		for key, value := range resource.Metadata {
+			metadata[key] = redactor.String(value)
+		}
+		resource.Metadata = metadata
+	}
+	return resource
+}
+
+func providerResourceKey(resource app.ProviderResource) string {
+	externalID := resource.ExternalID
+	if externalID == "" {
+		externalID = resource.ProviderRef
+	}
+	if resource.Provider == "" || resource.Kind == "" || externalID == "" {
+		return ""
+	}
+	return resource.Provider + "|" + string(resource.Kind) + "|" + externalID
+}
+
 func runtimeEnvForProvider(selectedProvider string, runID string, attemptID string, resumeValue string, paths artifact.Paths) map[string]string {
 	checkpointDir := paths.Checkpoints
 	eventsPath := paths.EventsJSONL
@@ -520,6 +570,9 @@ func newStatusCommand(opts Options, home *string) *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			resolvedHome, err := resolveHome(*home)
 			if err != nil {
+				return err
+			}
+			if err := artifact.EnsureHome(resolvedHome); err != nil {
 				return err
 			}
 			store, err := state.Open(artifact.DBPath(resolvedHome))
@@ -695,6 +748,192 @@ func copyLogFromOffset(w io.Writer, path string, offset int64) (int64, error) {
 		return offset, err
 	}
 	return offset + written, nil
+}
+
+func newResourcesCommand(opts Options, home *string) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "resources",
+		Short: "Inspect and clean up provider resources",
+	}
+
+	var listRunID, listProvider string
+	var listJSON, listActive bool
+	list := &cobra.Command{
+		Use:   "list",
+		Short: "List tracked provider resources",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			resolvedHome, err := resolveHome(*home)
+			if err != nil {
+				return err
+			}
+			if err := artifact.EnsureHome(resolvedHome); err != nil {
+				return err
+			}
+			store, err := state.Open(artifact.DBPath(resolvedHome))
+			if err != nil {
+				return err
+			}
+			defer store.Close()
+			resources, err := store.ProviderResources(cmd.Context(), state.ProviderResourceFilter{RunID: listRunID, Provider: listProvider})
+			if err != nil {
+				return err
+			}
+			if listActive {
+				resources = filterActiveResources(resources)
+			}
+			if listJSON {
+				return json.NewEncoder(opts.Stdout).Encode(resources)
+			}
+			for _, resource := range resources {
+				fmt.Fprintf(opts.Stdout, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+					resource.ID, resource.Provider, resource.Kind, resource.State, resource.CleanupPolicy, resource.RunID, resource.ProviderRef)
+			}
+			return nil
+		},
+	}
+	list.Flags().StringVar(&listRunID, "run", "", "Filter resources by run ID")
+	list.Flags().StringVar(&listProvider, "provider", "", "Filter resources by provider")
+	list.Flags().BoolVar(&listActive, "active", false, "Only show active resources")
+	list.Flags().BoolVar(&listJSON, "json", false, "Print JSON")
+
+	var cleanupRunID, cleanupProvider string
+	var dryRun bool
+	cleanup := &cobra.Command{
+		Use:   "cleanup",
+		Short: "Request cleanup for tracked provider resources",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			resolvedHome, err := resolveHome(*home)
+			if err != nil {
+				return err
+			}
+			if err := artifact.EnsureHome(resolvedHome); err != nil {
+				return err
+			}
+			store, err := state.Open(artifact.DBPath(resolvedHome))
+			if err != nil {
+				return err
+			}
+			defer store.Close()
+			resources, err := store.ProviderResources(cmd.Context(), state.ProviderResourceFilter{RunID: cleanupRunID, Provider: cleanupProvider})
+			if err != nil {
+				return err
+			}
+			var lambdaResolver *credentials.Resolver
+			cleaned := 0
+			for _, resource := range resources {
+				if !resourceCleanupEligible(resource) {
+					continue
+				}
+				if dryRun {
+					fmt.Fprintf(opts.Stdout, "would cleanup\t%s\t%s\t%s\n", resource.ID, resource.Provider, resource.ProviderRef)
+					cleaned++
+					continue
+				}
+				adapter, err := cleanupAdapterForResource(opts, resolvedHome, resource, &lambdaResolver)
+				if err != nil {
+					return err
+				}
+				if err := adapter.Cancel(cmd.Context(), app.ProviderJobRef{ID: resource.ProviderRef}); err != nil {
+					return err
+				}
+				now := time.Now().UTC()
+				resource.State = cleanupRequestedState(resource)
+				resource.UpdatedAt = now
+				resource.LastObservedAt = &now
+				resource.Metadata = mergeResourceMetadata(resource.Metadata, map[string]string{"cleanup_requested_at": now.Format(time.RFC3339Nano)})
+				if _, err := store.SaveProviderResource(cmd.Context(), resource); err != nil {
+					return err
+				}
+				fmt.Fprintf(opts.Stdout, "cleanup requested\t%s\t%s\t%s\n", resource.ID, resource.Provider, resource.ProviderRef)
+				cleaned++
+			}
+			if cleaned == 0 {
+				fmt.Fprintln(opts.Stdout, "No eligible provider resources found")
+			}
+			return nil
+		},
+	}
+	cleanup.Flags().StringVar(&cleanupRunID, "run", "", "Clean resources for one run ID")
+	cleanup.Flags().StringVar(&cleanupProvider, "provider", "", "Clean resources for one provider")
+	cleanup.Flags().BoolVar(&dryRun, "dry-run", false, "Show resources that would be cleaned")
+
+	cmd.AddCommand(list, cleanup)
+	return cmd
+}
+
+func filterActiveResources(resources []app.ProviderResource) []app.ProviderResource {
+	filtered := make([]app.ProviderResource, 0, len(resources))
+	for _, resource := range resources {
+		if providerResourceStateActive(resource.State) {
+			filtered = append(filtered, resource)
+		}
+	}
+	return filtered
+}
+
+func resourceCleanupEligible(resource app.ProviderResource) bool {
+	if !resource.CreatedBySwitchboard || resource.ProviderRef == "" || !providerResourceStateActive(resource.State) {
+		return false
+	}
+	return resource.CleanupPolicy != app.ProviderResourceCleanupNever
+}
+
+func providerResourceStateActive(state app.ProviderResourceState) bool {
+	switch state {
+	case app.ProviderResourceStateCreating, app.ProviderResourceStateBooting, app.ProviderResourceStateRunning, app.ProviderResourceStateUnknown:
+		return true
+	default:
+		return false
+	}
+}
+
+func cleanupAdapterForResource(opts Options, resolvedHome string, resource app.ProviderResource, lambdaResolver **credentials.Resolver) (app.ProviderAdapter, error) {
+	switch resource.Provider {
+	case gcpprovider.ProviderName:
+		cfg := config.GCPConfig{ProjectID: resource.ProjectOrAccount, Location: resource.Region}
+		if opts.GCPProviderFactory != nil {
+			return opts.GCPProviderFactory(cfg, opts.Stdout, opts.Stderr), nil
+		}
+		return gcpprovider.New(gcpConfigFromConfig(cfg), opts.Stdout, opts.Stderr), nil
+	case lambdaprovider.ProviderName:
+		cfg := config.LambdaConfig{RegionName: resource.Region}
+		if opts.LambdaProviderFactory != nil {
+			return opts.LambdaProviderFactory(cfg, opts.Stdout, opts.Stderr), nil
+		}
+		if *lambdaResolver == nil {
+			store, _, err := openCredentialStoreAtHome(opts, resolvedHome)
+			if err != nil {
+				return nil, err
+			}
+			resolver := credentials.Resolver{Store: store}
+			*lambdaResolver = &resolver
+		}
+		return lambdaprovider.New(lambdaConfigFromConfig(cfg, **lambdaResolver), opts.Stdout, opts.Stderr), nil
+	default:
+		return nil, fmt.Errorf("resource cleanup is not supported for provider %q", resource.Provider)
+	}
+}
+
+func cleanupRequestedState(resource app.ProviderResource) app.ProviderResourceState {
+	switch resource.Provider {
+	case lambdaprovider.ProviderName:
+		return app.ProviderResourceStateTerminating
+	case gcpprovider.ProviderName:
+		return app.ProviderResourceStateCanceled
+	default:
+		return app.ProviderResourceStateUnknown
+	}
+}
+
+func mergeResourceMetadata(current map[string]string, extra map[string]string) map[string]string {
+	merged := make(map[string]string, len(current)+len(extra))
+	for key, value := range current {
+		merged[key] = value
+	}
+	for key, value := range extra {
+		merged[key] = value
+	}
+	return merged
 }
 
 func newProvidersCommand(opts Options) *cobra.Command {
