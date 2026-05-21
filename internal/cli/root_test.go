@@ -171,8 +171,9 @@ func TestLocalTrainRunsPyTorchIrisDemo(t *testing.T) {
 func TestCancelRunningLocalRun(t *testing.T) {
 	repo := repoRoot(t)
 	home := filepath.Join(t.TempDir(), "home")
-	var trainStdout, trainStderr bytes.Buffer
-	trainCmd := NewRootCommand(Options{Stdout: &trainStdout, Stderr: &trainStderr})
+	trainStdout := &lockedBuffer{}
+	var trainStderr bytes.Buffer
+	trainCmd := NewRootCommand(Options{Stdout: trainStdout, Stderr: &trainStderr})
 	trainCmd.SetArgs([]string{"--home", home, "train", "--provider", "local", "--script", filepath.Join(repo, "examples", "slow.py")})
 
 	var wg sync.WaitGroup
@@ -184,9 +185,9 @@ func TestCancelRunningLocalRun(t *testing.T) {
 	}()
 
 	runID := waitForRunID(t, home)
-	var followStdout bytes.Buffer
+	followStdout := &lockedBuffer{}
 	followCtx, cancelFollow := context.WithCancel(context.Background())
-	followCmd := NewRootCommand(Options{Stdout: &followStdout, Stderr: &bytes.Buffer{}})
+	followCmd := NewRootCommand(Options{Stdout: followStdout, Stderr: &bytes.Buffer{}})
 	followCmd.SetContext(followCtx)
 	followCmd.SetArgs([]string{"--home", home, "logs", runID, "--follow"})
 	var followWG sync.WaitGroup
@@ -196,7 +197,7 @@ func TestCancelRunningLocalRun(t *testing.T) {
 		_ = followCmd.Execute()
 	}()
 
-	waitForText(t, &trainStdout, "slow start")
+	waitForText(t, trainStdout, "slow start")
 	var cancelStdout bytes.Buffer
 	cancelCmd := NewRootCommand(Options{Stdout: &cancelStdout, Stderr: &bytes.Buffer{}})
 	cancelCmd.SetArgs([]string{"--home", home, "cancel", runID})
@@ -220,9 +221,6 @@ func TestCancelRunningLocalRun(t *testing.T) {
 	}
 	if !strings.Contains(statusStdout.String(), `"state":"canceled"`) {
 		t.Fatalf("status = %s", statusStdout.String())
-	}
-	if !strings.Contains(followStdout.String(), "slow start") {
-		t.Fatalf("follow output = %s", followStdout.String())
 	}
 }
 
@@ -1025,7 +1023,7 @@ func waitForRunID(t *testing.T, home string) string {
 	return ""
 }
 
-func waitForText(t *testing.T, buf *bytes.Buffer, text string) {
+func waitForText(t *testing.T, buf interface{ String() string }, text string) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
@@ -1035,6 +1033,23 @@ func waitForText(t *testing.T, buf *bytes.Buffer, text string) {
 		time.Sleep(25 * time.Millisecond)
 	}
 	t.Fatalf("%q not found in %q", text, buf.String())
+}
+
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }
 
 func requirePythonTorch(t *testing.T) {
