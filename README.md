@@ -281,5 +281,6 @@ By default Switchboard writes to `~/.switchboard-cli`. Set `SWITCHBOARD_CLI_HOME
 - [Lambda Cloud Provider](docs/lambda-provider.md)
 - [Credentials](docs/credentials.md)
 - [China Cloud Provider Readiness](docs/china-cloud-providers.md)
+- [Provider Status](docs/provider-status.md)
 - [Auto Hardware Routing](docs/auto-hardware-routing.md)
 - [Roadmap](docs/roadmap.md)
