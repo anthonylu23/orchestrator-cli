@@ -193,7 +193,8 @@ Current scope:
 1. Register the five China cloud providers in `providers list`.
 2. Expose static capability metadata through `providers inspect`.
 3. Validate credential environment variables, optional auth commands, and public endpoint reachability through `providers check`.
-4. Reject training submission explicitly until a real compute adapter exists.
+4. Add `providers check --strict-auth` so China cloud checks can fail closed unless an official CLI or SDK smoke command succeeds.
+5. Reject training submission explicitly until a real compute adapter exists.
 
 Non-goals for this phase:
 

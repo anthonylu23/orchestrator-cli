@@ -746,6 +746,7 @@ func newProvidersCommand(opts Options) *cobra.Command {
 		},
 	}
 	inspect.Flags().BoolVar(&asJSON, "json", false, "Print JSON")
+	var strictAuth bool
 	check := &cobra.Command{
 		Use:   "check <provider>",
 		Short: "Validate provider credentials and endpoint readiness",
@@ -764,16 +765,45 @@ func newProvidersCommand(opts Options) *cobra.Command {
 			} else {
 				report.Capabilities = capabilities
 			}
-			if authErr := adapter.ValidateAuth(cmd.Context()); authErr != nil {
+			if chinaProvider, ok := adapter.(interface {
+				ValidateConnection(context.Context, chinacloudprovider.ConnectionOptions) (chinacloudprovider.ConnectionReport, error)
+			}); ok {
+				connection, authErr := chinaProvider.ValidateConnection(cmd.Context(), chinacloudprovider.ConnectionOptions{RequireAuthenticated: strictAuth})
+				report.AuthMode = connection.Mode
+				report.Authenticated = connection.Authenticated
+				report.Endpoint = connection.Endpoint
+				report.AuthCommandEnv = connection.AuthCommandEnv
+				report.Documentation = connection.Documentation
+				report.Warnings = connection.Warnings
+				report.CredentialNames = connection.CredentialNames
+				if authErr != nil {
+					report.Ready = false
+					report.Error = authErr.Error()
+				}
+			} else if authErr := adapter.ValidateAuth(cmd.Context()); authErr != nil {
 				report.Ready = false
 				report.Error = authErr.Error()
+			} else {
+				report.AuthMode = "provider"
+				report.Authenticated = true
 			}
 			if asJSON {
 				if err := json.NewEncoder(opts.Stdout).Encode(report); err != nil {
 					return err
 				}
 			} else if report.Ready {
-				fmt.Fprintf(opts.Stdout, "%s ready\n", report.Name)
+				if report.Authenticated {
+					fmt.Fprintf(opts.Stdout, "%s ready", report.Name)
+				} else {
+					fmt.Fprintf(opts.Stdout, "%s ready; authenticated provider API was not verified", report.Name)
+				}
+				if report.AuthMode != "" {
+					fmt.Fprintf(opts.Stdout, " (%s)", report.AuthMode)
+				}
+				fmt.Fprintln(opts.Stdout)
+				for _, warning := range report.Warnings {
+					fmt.Fprintf(opts.Stdout, "warning: %s\n", warning)
+				}
 			} else {
 				fmt.Fprintf(opts.Stdout, "%s not ready: %s\n", report.Name, report.Error)
 			}
@@ -784,6 +814,7 @@ func newProvidersCommand(opts Options) *cobra.Command {
 		},
 	}
 	check.Flags().BoolVar(&asJSON, "json", false, "Print JSON")
+	check.Flags().BoolVar(&strictAuth, "strict-auth", false, "Require authenticated provider validation instead of endpoint-only readiness checks when supported")
 	cmd.AddCommand(inspect, check)
 	return cmd
 }
@@ -794,10 +825,17 @@ type providerInspectReport struct {
 }
 
 type providerCheckReport struct {
-	Name         string                   `json:"name"`
-	Ready        bool                     `json:"ready"`
-	Error        string                   `json:"error,omitempty"`
-	Capabilities app.ProviderCapabilities `json:"capabilities,omitempty"`
+	Name            string                   `json:"name"`
+	Ready           bool                     `json:"ready"`
+	Error           string                   `json:"error,omitempty"`
+	AuthMode        string                   `json:"auth_mode,omitempty"`
+	Authenticated   bool                     `json:"authenticated"`
+	Endpoint        string                   `json:"endpoint,omitempty"`
+	AuthCommandEnv  string                   `json:"auth_command_env,omitempty"`
+	Documentation   string                   `json:"documentation,omitempty"`
+	Warnings        []string                 `json:"warnings,omitempty"`
+	CredentialNames []string                 `json:"credential_names,omitempty"`
+	Capabilities    app.ProviderCapabilities `json:"capabilities,omitempty"`
 }
 
 func printProviderCapabilities(w io.Writer, name string, capabilities app.ProviderCapabilities) {

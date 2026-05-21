@@ -62,8 +62,38 @@ func TestValidateAuthProbesEndpointWhenCredentialsExist(t *testing.T) {
 	t.Setenv("TEST_CHINA_CLOUD_AK", "ak-value")
 	t.Setenv("TEST_CHINA_CLOUD_SK", "secret-value")
 	provider := New(def)
-	if err := provider.ValidateAuth(context.Background()); err != nil {
+	report, err := provider.ValidateConnection(context.Background(), ConnectionOptions{})
+	if err != nil {
 		t.Fatalf("ValidateAuth returned error: %v", err)
+	}
+	if report.Mode != "endpoint_probe" || report.Authenticated || report.Endpoint != server.URL || len(report.Warnings) == 0 {
+		t.Fatalf("report = %#v", report)
+	}
+}
+
+func TestValidateConnectionStrictAuthRequiresAuthCommand(t *testing.T) {
+	def := Definition{
+		Name:           "test-cloud",
+		DisplayName:    "Test Cloud",
+		Endpoint:       "https://example.invalid/",
+		AuthCommandEnv: "TEST_CHINA_CLOUD_AUTH_COMMAND",
+		Requirements: []EnvRequirement{
+			{Label: "ak", Names: []string{"TEST_CHINA_CLOUD_AK"}},
+			{Label: "sk", Names: []string{"TEST_CHINA_CLOUD_SK"}},
+		},
+	}
+	t.Setenv("TEST_CHINA_CLOUD_AK", "ak-value")
+	t.Setenv("TEST_CHINA_CLOUD_SK", "secret-value")
+	provider := New(def)
+	report, err := provider.ValidateConnection(context.Background(), ConnectionOptions{RequireAuthenticated: true})
+	if err == nil {
+		t.Fatal("expected strict auth failure")
+	}
+	if app.ProviderErrorKindOf(err) != app.ProviderErrorAuth {
+		t.Fatalf("kind = %s, err = %v", app.ProviderErrorKindOf(err), err)
+	}
+	if report.Authenticated || report.AuthCommandEnv != "TEST_CHINA_CLOUD_AUTH_COMMAND" {
+		t.Fatalf("report = %#v", report)
 	}
 }
 
@@ -79,12 +109,16 @@ func TestValidateAuthUsesAuthCommandWhenConfigured(t *testing.T) {
 	}
 	t.Setenv("TEST_CHINA_CLOUD_AUTH_COMMAND", "exit 0")
 	provider := New(def)
-	if err := provider.ValidateAuth(context.Background()); err != nil {
+	report, err := provider.ValidateConnection(context.Background(), ConnectionOptions{RequireAuthenticated: true})
+	if err != nil {
 		t.Fatalf("ValidateAuth returned error: %v", err)
+	}
+	if report.Mode != "auth_command" || !report.Authenticated {
+		t.Fatalf("report = %#v", report)
 	}
 
 	t.Setenv("TEST_CHINA_CLOUD_AUTH_COMMAND", "exit 7")
-	err := provider.ValidateAuth(context.Background())
+	err = provider.ValidateAuth(context.Background())
 	if err == nil {
 		t.Fatal("expected auth command failure")
 	}

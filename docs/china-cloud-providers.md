@@ -4,11 +4,11 @@ This branch adds readiness adapters for five major China cloud providers:
 
 | Provider name | Cloud | Status | What works now |
 | --- | --- | --- | --- |
-| `alibaba-cloud` | Alibaba Cloud | readiness-only | Credential env validation and public endpoint probe |
-| `huawei-cloud` | Huawei Cloud | readiness-only | Credential env validation and public endpoint probe |
-| `tencent-cloud` | Tencent Cloud | readiness-only | Credential env validation and public endpoint probe |
-| `tianyi-cloud` | China Telecom Tianyi Cloud / eSurfing Cloud | readiness-only | Credential env validation and public endpoint probe |
-| `baidu-ai-cloud` | Baidu AI Cloud | readiness-only | Credential env validation and public endpoint probe |
+| `alibaba-cloud` | Alibaba Cloud | readiness-only | Credential env validation, public endpoint probe, and strict auth-command validation |
+| `huawei-cloud` | Huawei Cloud | readiness-only | Credential env validation, public endpoint probe, and strict auth-command validation |
+| `tencent-cloud` | Tencent Cloud | readiness-only | Credential env validation, public endpoint probe, and strict auth-command validation |
+| `tianyi-cloud` | China Telecom Tianyi Cloud / eSurfing Cloud | readiness-only | Credential env validation, public endpoint probe, and strict auth-command validation |
+| `baidu-ai-cloud` | Baidu AI Cloud | readiness-only | Credential env validation, public endpoint probe, and strict auth-command validation |
 
 These are not training providers yet. They intentionally reject `train` submission until each cloud has a real compute adapter comparable to the GCP Vertex AI provider.
 
@@ -52,7 +52,7 @@ Check credentials and endpoint reachability:
 switchboard-cli providers check alibaba-cloud
 ```
 
-`providers check` returns nonzero if required credential environment variables are missing or the public endpoint cannot be reached.
+`providers check` returns nonzero if required credential environment variables are missing or the public endpoint cannot be reached. For China cloud providers, the default success mode is reported as `auth_mode: endpoint_probe` with `authenticated: false`, because an endpoint probe does not prove the credentials can call that cloud API.
 
 For stronger live validation, set a provider-specific auth command. When this variable is present, `providers check` runs the command and requires it to exit successfully instead of using the fallback env-plus-endpoint probe. The command output is not persisted by Switchboard.
 
@@ -61,6 +61,13 @@ Examples:
 ```sh
 export SWITCHBOARD_ALIBABA_CLOUD_AUTH_COMMAND='aliyun ecs DescribeRegions --RegionId cn-hangzhou'
 export SWITCHBOARD_TENCENT_CLOUD_AUTH_COMMAND='tccli cvm DescribeRegions --region ap-guangzhou'
+```
+
+Require authenticated validation and fail closed if no auth command is configured:
+
+```sh
+switchboard-cli providers check alibaba-cloud --strict-auth
+switchboard-cli providers check tencent-cloud --strict-auth --json
 ```
 
 Use official CLIs or a small internal smoke script for providers where SDK-backed auth has not been implemented yet.
@@ -207,7 +214,7 @@ Baidu AI Cloud BOS SDK documentation: https://intl.cloud.baidu.com/en/doc/BOS/s/
 
 This readiness layer does not:
 
-1. sign provider API requests unless a user-supplied auth command does so.
+1. sign provider API requests unless a user-supplied auth command does so; use `providers check --strict-auth` to require that mode.
 2. submit managed training jobs.
 3. fetch provider logs.
 4. cancel provider jobs.

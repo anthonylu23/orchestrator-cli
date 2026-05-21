@@ -10,7 +10,7 @@ Switchboard now has a local orchestration vertical slice, deterministic mock-pro
 
 Run artifacts redact secret-like keys and known secret environment values before persistence. Attempt history also records resume checkpoint provenance and provider cost estimates so failover decisions remain explainable after completion.
 
-GCP v1 is still image-submit-first at the provider boundary, but the CLI can now build and push a Docker image before submit when a GCP job uses `job.script` with `packaging` config. Live auth, a billable CPU-only Vertex AI CustomJob smoke test, a non-billable pricing/capacity smoke, and a PyTorch Iris Vertex container run have passed on the `switchboard-496606` project. `examples/gcp/iris` contains the first realistic PyTorch Iris container workflow with optional GCS checkpoint upload/resume. GCP capabilities can use live Cloud Billing pricing, Compute Engine machine/accelerator inventory, and regional quota facts with static fallback. Lambda v1 launches one on-demand instance, runs a prebuilt Docker image through cloud-init, collects logs/events over SSH, and terminates the instance by default. China cloud provider readiness adapters are available for `alibaba-cloud`, `huawei-cloud`, `tencent-cloud`, `tianyi-cloud`, and `baidu-ai-cloud`; these validate credential/env readiness and optional auth commands but intentionally do not submit jobs yet. GCP data staging beyond `gs://`, Lambda private-registry/staging support, China cloud compute submission, additional providers, and richer QoL workflows remain roadmap work.
+GCP v1 is still image-submit-first at the provider boundary, but the CLI can now build and push a Docker image before submit when a GCP job uses `job.script` with `packaging` config. Live auth, a billable CPU-only Vertex AI CustomJob smoke test, a non-billable pricing/capacity smoke, and a PyTorch Iris Vertex container run have passed on the `switchboard-496606` project. `examples/gcp/iris` contains the first realistic PyTorch Iris container workflow with optional GCS checkpoint upload/resume. GCP capabilities can use live Cloud Billing pricing, Compute Engine machine/accelerator inventory, and regional quota facts with static fallback. Lambda v1 launches one on-demand instance, runs a prebuilt Docker image through cloud-init, collects logs/events over SSH, and terminates the instance by default. China cloud provider readiness adapters are available for `alibaba-cloud`, `huawei-cloud`, `tencent-cloud`, `tianyi-cloud`, and `baidu-ai-cloud`; these validate credential/env readiness, public endpoint reachability, and strict user-supplied auth commands, but intentionally do not submit jobs yet. GCP data staging beyond `gs://`, Lambda private-registry/staging support, China cloud compute submission, additional providers, and richer QoL workflows remain roadmap work.
 
 ## Quick Start
 
@@ -41,6 +41,7 @@ Inspect a run:
 ./bin/switchboard-cli providers list --json
 ./bin/switchboard-cli providers inspect alibaba-cloud
 ./bin/switchboard-cli providers check alibaba-cloud
+./bin/switchboard-cli providers check alibaba-cloud --strict-auth
 ```
 
 Run the mock failover demo:
@@ -200,6 +201,8 @@ For local runs, bundled files and directories are copied into each run workspace
 For GCP runs, v1 accepts `job.image` directly or can package `job.script` into a Docker image before submit. Data inputs must still be `gs://` URI inputs. Bundled local data and non-GCS URI inputs are rejected before submit. GCP containers receive `SWITCHBOARD_CHECKPOINT_URI_PREFIX=gs://<output-prefix>/<run-id>/checkpoints`; training code can upload checkpoint files there and emit those shared `gs://` URIs for resume/failover. See [GCP Provider](docs/gcp-provider.md).
 
 For Lambda runs, v1 accepts `job.image` directly and runs it on a launched Lambda instance with Docker. Bundled local data and `job.script` are rejected before submit. URI data inputs are passed through for the container to handle itself. Lambda containers receive remote-safe Switchboard paths under `/tmp/switchboard`; portable resume requires emitted `s3://` or `gs://` checkpoint URIs. See [Lambda Cloud Provider](docs/lambda-provider.md).
+
+For China cloud readiness checks, `providers check <provider>` validates required credential variables and endpoint reachability. This default mode reports `authenticated: false` for China clouds because an endpoint probe does not prove the account can call the provider API. Use `providers check <provider> --strict-auth` with the provider-specific auth command environment variable to require an authenticated official CLI or SDK smoke command before reporting ready. See [China Cloud Provider Readiness](docs/china-cloud-providers.md).
 
 Example local data run:
 

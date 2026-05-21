@@ -423,6 +423,38 @@ func TestProvidersCheckChinaCloudReportsMissingCredentials(t *testing.T) {
 	}
 }
 
+func TestProvidersCheckChinaCloudStrictAuthRequiresAuthenticatedValidation(t *testing.T) {
+	t.Setenv("ALIBABA_CLOUD_ACCESS_KEY_ID", "test-ak")
+	t.Setenv("ALIBABA_CLOUD_ACCESS_KEY_SECRET", "test-sk")
+	var stdout bytes.Buffer
+	cmd := NewRootCommand(Options{Stdout: &stdout, Stderr: &bytes.Buffer{}})
+	cmd.SetArgs([]string{"providers", "check", "alibaba-cloud", "--strict-auth", "--json"})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected strict auth error")
+	}
+	for _, want := range []string{`"ready":false`, `"authenticated":false`, "authenticated validation requires SWITCHBOARD_ALIBABA_CLOUD_AUTH_COMMAND"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("%q missing from %s", want, stdout.String())
+		}
+	}
+}
+
+func TestProvidersCheckChinaCloudStrictAuthCommandPasses(t *testing.T) {
+	t.Setenv("SWITCHBOARD_ALIBABA_CLOUD_AUTH_COMMAND", "exit 0")
+	var stdout bytes.Buffer
+	cmd := NewRootCommand(Options{Stdout: &stdout, Stderr: &bytes.Buffer{}})
+	cmd.SetArgs([]string{"providers", "check", "alibaba-cloud", "--strict-auth", "--json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("providers check returned error: %v\nstdout=%s", err, stdout.String())
+	}
+	for _, want := range []string{`"ready":true`, `"auth_mode":"auth_command"`, `"authenticated":true`} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("%q missing from %s", want, stdout.String())
+		}
+	}
+}
+
 func TestCredentialsCommandsSetListGetAndDelete(t *testing.T) {
 	dir := t.TempDir()
 	home := filepath.Join(dir, "home")

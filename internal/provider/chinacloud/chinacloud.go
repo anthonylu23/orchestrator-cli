@@ -39,6 +39,20 @@ type Provider struct {
 	client     *http.Client
 }
 
+type ConnectionOptions struct {
+	RequireAuthenticated bool
+}
+
+type ConnectionReport struct {
+	Mode            string
+	Authenticated   bool
+	Endpoint        string
+	AuthCommandEnv  string
+	Documentation   string
+	Warnings        []string
+	CredentialNames []string
+}
+
 func New(definition Definition) *Provider {
 	return &Provider{
 		definition: definition,
@@ -152,8 +166,21 @@ func (p *Provider) Name() app.ProviderName {
 }
 
 func (p *Provider) ValidateAuth(ctx context.Context) error {
+	_, err := p.ValidateConnection(ctx, ConnectionOptions{})
+	return err
+}
+
+func (p *Provider) ValidateConnection(ctx context.Context, opts ConnectionOptions) (ConnectionReport, error) {
+	report := ConnectionReport{
+		Endpoint:        p.endpoint(),
+		AuthCommandEnv:  p.definition.AuthCommandEnv,
+		Documentation:   p.definition.Documentation,
+		CredentialNames: p.credentialNames(),
+	}
 	if command := strings.TrimSpace(os.Getenv(p.definition.AuthCommandEnv)); command != "" {
-		return p.runAuthCommand(ctx, command)
+		report.Mode = "auth_command"
+		report.Authenticated = true
+		return report, p.runAuthCommand(ctx, command)
 	}
 	var missing []string
 	for _, req := range p.definition.Requirements {
@@ -162,25 +189,36 @@ func (p *Provider) ValidateAuth(ctx context.Context) error {
 		}
 	}
 	if len(missing) > 0 {
-		return &app.ProviderError{
+		return report, &app.ProviderError{
 			Kind:    app.ProviderErrorAuth,
 			Message: fmt.Sprintf("%s credentials are not configured; missing %s", p.definition.DisplayName, strings.Join(missing, ", ")),
 		}
 	}
-	endpoint := p.endpoint()
+	if opts.RequireAuthenticated {
+		return report, &app.ProviderError{
+			Kind:    app.ProviderErrorAuth,
+			Message: fmt.Sprintf("%s authenticated validation requires %s to run an official CLI or SDK smoke command", p.definition.DisplayName, p.definition.AuthCommandEnv),
+		}
+	}
+	endpoint := report.Endpoint
 	if endpoint == "" {
-		return &app.ProviderError{Kind: app.ProviderErrorInvalidSpec, Message: fmt.Sprintf("%s endpoint is empty", p.definition.DisplayName)}
+		return report, &app.ProviderError{Kind: app.ProviderErrorInvalidSpec, Message: fmt.Sprintf("%s endpoint is empty", p.definition.DisplayName)}
 	}
 	ctx, cancel := context.WithTimeout(ctx, defaultAuthTimeout)
 	defer cancel()
 	if err := p.probeEndpoint(ctx, endpoint); err != nil {
-		return &app.ProviderError{
+		return report, &app.ProviderError{
 			Kind:    app.ProviderErrorNetwork,
 			Message: fmt.Sprintf("%s endpoint probe failed for %s: %v", p.definition.DisplayName, endpoint, err),
 			Err:     err,
 		}
 	}
-	return nil
+	report.Mode = "endpoint_probe"
+	report.Authenticated = false
+	report.Warnings = []string{
+		"endpoint probe validates network reachability only; set the auth command env var or use providers check --strict-auth for authenticated validation",
+	}
+	return report, nil
 }
 
 func (p *Provider) runAuthCommand(ctx context.Context, command string) error {
@@ -312,6 +350,15 @@ func anyEnvSet(names []string) bool {
 		}
 	}
 	return false
+}
+
+func (p *Provider) credentialNames() []string {
+	var names []string
+	for _, req := range p.definition.Requirements {
+		names = append(names, req.Names...)
+	}
+	sort.Strings(names)
+	return names
 }
 
 func IsReadinessOnly(adapter app.ProviderAdapter) bool {
