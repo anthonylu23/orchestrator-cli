@@ -517,13 +517,16 @@ func (p *Provider) doAuthRequest(req *http.Request) error {
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+	if isAuthFailureBody(body) {
+		return &app.ProviderError{Kind: app.ProviderErrorAuth, Message: fmt.Sprintf("%s signed auth request was rejected with HTTP %d", p.definition.DisplayName, resp.StatusCode)}
+	}
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		return nil
 	}
 	if resp.StatusCode >= 500 {
 		return &app.ProviderError{Kind: app.ProviderErrorInternal, Message: fmt.Sprintf("%s signed auth request returned HTTP %d", p.definition.DisplayName, resp.StatusCode)}
 	}
-	if isAuthFailureBody(body) || resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
 		return &app.ProviderError{Kind: app.ProviderErrorAuth, Message: fmt.Sprintf("%s signed auth request was rejected with HTTP %d", p.definition.DisplayName, resp.StatusCode)}
 	}
 	return &app.ProviderError{Kind: app.ProviderErrorUnknown, Message: fmt.Sprintf("%s signed auth request returned HTTP %d", p.definition.DisplayName, resp.StatusCode)}

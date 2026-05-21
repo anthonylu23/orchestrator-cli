@@ -276,21 +276,26 @@ func TestValidateConnectionUsesBaiduBuiltInSignedAuth(t *testing.T) {
 }
 
 func TestValidateConnectionBuiltInSignedAuthFailure(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, `{"Response":{"Error":{"Code":"AuthFailure.SecretIdNotFound"}}}`, http.StatusUnauthorized)
-	}))
-	defer server.Close()
+	for _, status := range []int{http.StatusOK, http.StatusUnauthorized} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(status)
+				_, _ = w.Write([]byte(`{"Response":{"Error":{"Code":"AuthFailure.SecretIdNotFound"}}}`))
+			}))
+			defer server.Close()
 
-	def := mustDefinition(t, "tencent-cloud")
-	def.Endpoint = server.URL + "/"
-	t.Setenv("TENCENTCLOUD_SECRET_ID", "secret-id")
-	t.Setenv("TENCENTCLOUD_SECRET_KEY", "secret-key")
-	_, err := New(def).ValidateConnection(context.Background(), ConnectionOptions{RequireAuthenticated: true})
-	if err == nil {
-		t.Fatal("expected built-in auth failure")
-	}
-	if app.ProviderErrorKindOf(err) != app.ProviderErrorAuth {
-		t.Fatalf("kind = %s, err = %v", app.ProviderErrorKindOf(err), err)
+			def := mustDefinition(t, "tencent-cloud")
+			def.Endpoint = server.URL + "/"
+			t.Setenv("TENCENTCLOUD_SECRET_ID", "secret-id")
+			t.Setenv("TENCENTCLOUD_SECRET_KEY", "secret-key")
+			_, err := New(def).ValidateConnection(context.Background(), ConnectionOptions{RequireAuthenticated: true})
+			if err == nil {
+				t.Fatal("expected built-in auth failure")
+			}
+			if app.ProviderErrorKindOf(err) != app.ProviderErrorAuth {
+				t.Fatalf("kind = %s, err = %v", app.ProviderErrorKindOf(err), err)
+			}
+		})
 	}
 }
 
