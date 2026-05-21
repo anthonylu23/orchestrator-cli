@@ -158,6 +158,35 @@ func TestValidateConnectionUsesAlibabaBuiltInSignedAuth(t *testing.T) {
 	}
 }
 
+func TestValidateConnectionUsesHuaweiBuiltInSignedAuth(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || !strings.HasSuffix(r.URL.Path, "/v3/regions/cn-north-4") {
+			t.Fatalf("request = %s %s", r.Method, r.URL.Path)
+		}
+		if auth := r.Header.Get("Authorization"); !strings.HasPrefix(auth, "SDK-HMAC-SHA256 Access=ak-value, SignedHeaders=content-type;host;x-sdk-date, Signature=") || strings.Contains(auth, "secret-value") {
+			t.Fatalf("Authorization = %q", auth)
+		}
+		if r.Header.Get("X-Sdk-Date") == "" {
+			t.Fatalf("missing X-Sdk-Date")
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"region":{"id":"cn-north-4"}}`))
+	}))
+	defer server.Close()
+
+	def := mustDefinition(t, "huawei-cloud")
+	def.BuiltInAuthEndpoint = server.URL + "/v3/regions/cn-north-4"
+	t.Setenv("HUAWEICLOUD_SDK_AK", "ak-value")
+	t.Setenv("HUAWEICLOUD_SDK_SK", "secret-value")
+	report, err := New(def).ValidateConnection(context.Background(), ConnectionOptions{RequireAuthenticated: true})
+	if err != nil {
+		t.Fatalf("ValidateConnection returned error: %v", err)
+	}
+	if report.Mode != "built_in_signed_request" || !report.Authenticated || !report.BuiltInAuth || report.BuiltInEndpoint == "" {
+		t.Fatalf("report = %#v", report)
+	}
+}
+
 func TestValidateConnectionUsesTencentBuiltInSignedAuth(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
@@ -184,6 +213,35 @@ func TestValidateConnectionUsesTencentBuiltInSignedAuth(t *testing.T) {
 		t.Fatalf("ValidateConnection returned error: %v", err)
 	}
 	if report.Mode != "built_in_signed_request" || !report.Authenticated || !report.BuiltInAuth {
+		t.Fatalf("report = %#v", report)
+	}
+}
+
+func TestValidateConnectionUsesTianyiBuiltInSignedAuth(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/v3/cluster/describeRegionClusters" {
+			t.Fatalf("request = %s %s", r.Method, r.URL.Path)
+		}
+		if auth := r.Header.Get("Eop-Authorization"); !strings.HasPrefix(auth, "ak-value Headers=ctyun-eop-request-id;eop-date Signature=") || strings.Contains(auth, "secret-value") {
+			t.Fatalf("Eop-Authorization = %q", auth)
+		}
+		if r.Header.Get("ctyun-eop-request-id") == "" || r.Header.Get("Eop-date") == "" {
+			t.Fatalf("missing Tianyi auth headers")
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"code":0,"data":[]}`))
+	}))
+	defer server.Close()
+
+	def := mustDefinition(t, "tianyi-cloud")
+	def.BuiltInAuthEndpoint = server.URL + "/v3/cluster/describeRegionClusters"
+	t.Setenv("CTYUN_ACCESS_KEY", "ak-value")
+	t.Setenv("CTYUN_SECRET_KEY", "secret-value")
+	report, err := New(def).ValidateConnection(context.Background(), ConnectionOptions{RequireAuthenticated: true})
+	if err != nil {
+		t.Fatalf("ValidateConnection returned error: %v", err)
+	}
+	if report.Mode != "built_in_signed_request" || !report.Authenticated || !report.BuiltInAuth || report.BuiltInEndpoint == "" {
 		t.Fatalf("report = %#v", report)
 	}
 }

@@ -85,8 +85,14 @@ jobs:
               alibaba-cloud)
                 [[ -n "${ALIBABA_CLOUD_ACCESS_KEY_ID:-}" && -n "${ALIBABA_CLOUD_ACCESS_KEY_SECRET:-}" ]]
                 ;;
+              huawei-cloud)
+                [[ ( -n "${HUAWEICLOUD_SDK_AK:-}" && -n "${HUAWEICLOUD_SDK_SK:-}" ) || ( -n "${HUAWEI_CLOUD_ACCESS_KEY_ID:-}" && -n "${HUAWEI_CLOUD_SECRET_ACCESS_KEY:-}" ) ]]
+                ;;
               tencent-cloud)
                 [[ -n "${TENCENTCLOUD_SECRET_ID:-}" && -n "${TENCENTCLOUD_SECRET_KEY:-}" ]]
+                ;;
+              tianyi-cloud)
+                [[ ( -n "${CTYUN_ACCESS_KEY:-}" && -n "${CTYUN_SECRET_KEY:-}" ) || ( -n "${TIANYI_CLOUD_ACCESS_KEY:-}" && -n "${TIANYI_CLOUD_SECRET_KEY:-}" ) ]]
                 ;;
               baidu-ai-cloud)
                 [[ ( -n "${BAIDU_CLOUD_ACCESS_KEY_ID:-}" && -n "${BAIDU_CLOUD_SECRET_ACCESS_KEY:-}" ) || ( -n "${BCE_ACCESS_KEY_ID:-}" && -n "${BCE_SECRET_ACCESS_KEY:-}" ) ]]

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/hmac"
+	cryptorand "crypto/rand"
 	"crypto/sha1"
 	"crypto/sha256"
 	"encoding/base64"
@@ -32,15 +33,17 @@ type EnvRequirement struct {
 }
 
 type Definition struct {
-	Name           string
-	DisplayName    string
-	Endpoint       string
-	EndpointEnv    string
-	AuthCommandEnv string
-	Regions        []string
-	URISchemes     []string
-	Requirements   []EnvRequirement
-	Documentation  string
+	Name                   string
+	DisplayName            string
+	Endpoint               string
+	EndpointEnv            string
+	BuiltInAuthEndpoint    string
+	BuiltInAuthEndpointEnv string
+	AuthCommandEnv         string
+	Regions                []string
+	URISchemes             []string
+	Requirements           []EnvRequirement
+	Documentation          string
 }
 
 type Provider struct {
@@ -58,6 +61,7 @@ type ConnectionReport struct {
 	Endpoint        string
 	AuthCommandEnv  string
 	BuiltInAuth     bool
+	BuiltInEndpoint string
 	Documentation   string
 	Warnings        []string
 	CredentialNames []string
@@ -103,13 +107,15 @@ func Definitions() []Definition {
 			Documentation: "https://www.alibabacloud.com/help/doc-detail/2392167.html",
 		},
 		{
-			Name:           "huawei-cloud",
-			DisplayName:    "Huawei Cloud",
-			Endpoint:       "https://ecs.cn-north-4.myhuaweicloud.com/",
-			EndpointEnv:    "SWITCHBOARD_HUAWEI_CLOUD_ENDPOINT",
-			AuthCommandEnv: "SWITCHBOARD_HUAWEI_CLOUD_AUTH_COMMAND",
-			Regions:        []string{"cn-north-4", "cn-east-3", "cn-south-1", "cn-southwest-2"},
-			URISchemes:     []string{"obs"},
+			Name:                   "huawei-cloud",
+			DisplayName:            "Huawei Cloud",
+			Endpoint:               "https://ecs.cn-north-4.myhuaweicloud.com/",
+			EndpointEnv:            "SWITCHBOARD_HUAWEI_CLOUD_ENDPOINT",
+			BuiltInAuthEndpoint:    "https://iam.myhuaweicloud.com/v3/regions/cn-north-4",
+			BuiltInAuthEndpointEnv: "SWITCHBOARD_HUAWEI_CLOUD_IAM_ENDPOINT",
+			AuthCommandEnv:         "SWITCHBOARD_HUAWEI_CLOUD_AUTH_COMMAND",
+			Regions:                []string{"cn-north-4", "cn-east-3", "cn-south-1", "cn-southwest-2"},
+			URISchemes:             []string{"obs"},
 			Requirements: []EnvRequirement{
 				{Label: "access key", Names: []string{"HUAWEICLOUD_SDK_AK", "HUAWEI_CLOUD_ACCESS_KEY_ID"}},
 				{Label: "secret key", Names: []string{"HUAWEICLOUD_SDK_SK", "HUAWEI_CLOUD_SECRET_ACCESS_KEY"}},
@@ -131,13 +137,15 @@ func Definitions() []Definition {
 			Documentation: "https://cloud.tencent.com/document/sdk/Go",
 		},
 		{
-			Name:           "tianyi-cloud",
-			DisplayName:    "China Telecom Tianyi Cloud / eSurfing Cloud",
-			Endpoint:       "https://ecx-global.ctapi.ctyun.cn/",
-			EndpointEnv:    "SWITCHBOARD_TIANYI_CLOUD_ENDPOINT",
-			AuthCommandEnv: "SWITCHBOARD_TIANYI_CLOUD_AUTH_COMMAND",
-			Regions:        []string{"huadong1", "huabei2", "huanan1"},
-			URISchemes:     []string{"ctyun", "oos"},
+			Name:                   "tianyi-cloud",
+			DisplayName:            "China Telecom Tianyi Cloud / eSurfing Cloud",
+			Endpoint:               "https://ecx-global.ctapi.ctyun.cn/",
+			EndpointEnv:            "SWITCHBOARD_TIANYI_CLOUD_ENDPOINT",
+			BuiltInAuthEndpoint:    "https://ecx-global.ctapi.ctyun.cn/v3/cluster/describeRegionClusters",
+			BuiltInAuthEndpointEnv: "SWITCHBOARD_TIANYI_CLOUD_AUTH_ENDPOINT",
+			AuthCommandEnv:         "SWITCHBOARD_TIANYI_CLOUD_AUTH_COMMAND",
+			Regions:                []string{"huadong1", "huabei2", "huanan1"},
+			URISchemes:             []string{"ctyun", "oos"},
 			Requirements: []EnvRequirement{
 				{Label: "access key", Names: []string{"CTYUN_ACCESS_KEY", "TIANYI_CLOUD_ACCESS_KEY"}},
 				{Label: "secret key", Names: []string{"CTYUN_SECRET_KEY", "TIANYI_CLOUD_SECRET_KEY"}},
@@ -185,6 +193,7 @@ func (p *Provider) ValidateConnection(ctx context.Context, opts ConnectionOption
 		Endpoint:        p.endpoint(),
 		AuthCommandEnv:  p.definition.AuthCommandEnv,
 		BuiltInAuth:     p.hasBuiltInAuth(),
+		BuiltInEndpoint: p.builtInAuthEndpoint(),
 		Documentation:   p.definition.Documentation,
 		CredentialNames: p.credentialNames(),
 	}
@@ -263,7 +272,7 @@ func (p *Provider) runAuthCommand(ctx context.Context, command string) error {
 
 func (p *Provider) hasBuiltInAuth() bool {
 	switch p.definition.Name {
-	case "alibaba-cloud", "tencent-cloud", "baidu-ai-cloud":
+	case "alibaba-cloud", "huawei-cloud", "tencent-cloud", "tianyi-cloud", "baidu-ai-cloud":
 		return true
 	default:
 		return false
@@ -274,8 +283,12 @@ func (p *Provider) runBuiltInAuth(ctx context.Context, endpoint string) error {
 	switch p.definition.Name {
 	case "alibaba-cloud":
 		return p.runAlibabaAuth(ctx, endpoint)
+	case "huawei-cloud":
+		return p.runHuaweiAuth(ctx, p.builtInAuthEndpoint())
 	case "tencent-cloud":
 		return p.runTencentAuth(ctx, endpoint)
+	case "tianyi-cloud":
+		return p.runTianyiAuth(ctx, p.builtInAuthEndpoint())
 	case "baidu-ai-cloud":
 		return p.runBaiduAuth(ctx, endpoint)
 	default:
@@ -317,6 +330,47 @@ func (p *Provider) runAlibabaAuth(ctx context.Context, endpoint string) error {
 	if err != nil {
 		return &app.ProviderError{Kind: app.ProviderErrorInvalidSpec, Message: fmt.Sprintf("create Alibaba Cloud request: %v", err), Err: err}
 	}
+	return p.doAuthRequest(req)
+}
+
+func (p *Provider) runHuaweiAuth(ctx context.Context, endpoint string) error {
+	accessKey := firstEnvValue("HUAWEICLOUD_SDK_AK", "HUAWEI_CLOUD_ACCESS_KEY_ID")
+	secretKey := firstEnvValue("HUAWEICLOUD_SDK_SK", "HUAWEI_CLOUD_SECRET_ACCESS_KEY")
+	requestURL, err := url.Parse(endpoint)
+	if err != nil {
+		return &app.ProviderError{Kind: app.ProviderErrorInvalidSpec, Message: fmt.Sprintf("Huawei Cloud auth endpoint is invalid: %v", err), Err: err}
+	}
+	if requestURL.Path == "" {
+		requestURL.Path = "/"
+	}
+	timestamp := time.Now().UTC().Format("20060102T150405Z")
+	contentType := "application/json"
+	canonicalHeaders := fmt.Sprintf("content-type:%s\nhost:%s\nx-sdk-date:%s\n", contentType, requestURL.Host, timestamp)
+	signedHeaders := "content-type;host;x-sdk-date"
+	canonicalRequest := strings.Join([]string{
+		http.MethodGet,
+		canonicalPath(requestURL.EscapedPath()),
+		canonicalQueryString(requestURL.Query()),
+		canonicalHeaders,
+		signedHeaders,
+		sha256Hex(nil),
+	}, "\n")
+	stringToSign := strings.Join([]string{
+		"SDK-HMAC-SHA256",
+		timestamp,
+		sha256Hex([]byte(canonicalRequest)),
+	}, "\n")
+	signature := hex.EncodeToString(hmacDigest(sha256.New, []byte(secretKey), []byte(stringToSign)))
+	authorization := fmt.Sprintf("SDK-HMAC-SHA256 Access=%s, SignedHeaders=%s, Signature=%s", accessKey, signedHeaders, signature)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL.String(), nil)
+	if err != nil {
+		return &app.ProviderError{Kind: app.ProviderErrorInvalidSpec, Message: fmt.Sprintf("create Huawei Cloud request: %v", err), Err: err}
+	}
+	req.Header.Set("Authorization", authorization)
+	req.Header.Set("Content-Type", contentType)
+	req.Header.Set("X-Sdk-Date", timestamp)
+	req.Host = requestURL.Host
 	return p.doAuthRequest(req)
 }
 
@@ -381,6 +435,40 @@ func (p *Provider) runTencentAuth(ctx context.Context, endpoint string) error {
 	req.Header.Set("X-TC-Timestamp", timestamp)
 	req.Header.Set("X-TC-Version", version)
 	req.Header.Set("X-TC-Region", region)
+	return p.doAuthRequest(req)
+}
+
+func (p *Provider) runTianyiAuth(ctx context.Context, endpoint string) error {
+	accessKey := firstEnvValue("CTYUN_ACCESS_KEY", "TIANYI_CLOUD_ACCESS_KEY")
+	secretKey := firstEnvValue("CTYUN_SECRET_KEY", "TIANYI_CLOUD_SECRET_KEY")
+	requestURL, err := url.Parse(endpoint)
+	if err != nil {
+		return &app.ProviderError{Kind: app.ProviderErrorInvalidSpec, Message: fmt.Sprintf("Tianyi Cloud auth endpoint is invalid: %v", err), Err: err}
+	}
+	if requestURL.Path == "" {
+		requestURL.Path = "/v3/cluster/describeRegionClusters"
+	}
+	eopDate := time.Now().UTC().Format("20060102T150405Z")
+	requestID := requestID()
+	bodyDigest := sha256Hex(nil)
+	headerString := fmt.Sprintf("ctyun-eop-request-id:%s\neop-date:%s\n", requestID, eopDate)
+	signatureString := fmt.Sprintf("%s\n%s\n%s", headerString, canonicalQueryString(requestURL.Query()), bodyDigest)
+	datePart := strings.Split(eopDate, "T")[0]
+	kTime := hmacDigest(sha256.New, []byte(secretKey), []byte(eopDate))
+	kAccessKey := hmacDigest(sha256.New, kTime, []byte(accessKey))
+	kDate := hmacDigest(sha256.New, kAccessKey, []byte(datePart))
+	signature := base64.StdEncoding.EncodeToString(hmacDigest(sha256.New, kDate, []byte(signatureString)))
+	authorization := fmt.Sprintf("%s Headers=ctyun-eop-request-id;eop-date Signature=%s", accessKey, signature)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL.String(), nil)
+	if err != nil {
+		return &app.ProviderError{Kind: app.ProviderErrorInvalidSpec, Message: fmt.Sprintf("create Tianyi Cloud request: %v", err), Err: err}
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("ctyun-eop-request-id", requestID)
+	req.Header.Set("Eop-Authorization", authorization)
+	req.Header.Set("Eop-date", eopDate)
+	req.Host = requestURL.Host
 	return p.doAuthRequest(req)
 }
 
@@ -526,6 +614,18 @@ func (p *Provider) endpoint() string {
 	return p.definition.Endpoint
 }
 
+func (p *Provider) builtInAuthEndpoint() string {
+	if p.definition.BuiltInAuthEndpointEnv != "" {
+		if value := strings.TrimSpace(os.Getenv(p.definition.BuiltInAuthEndpointEnv)); value != "" {
+			return value
+		}
+	}
+	if p.definition.BuiltInAuthEndpoint != "" {
+		return p.definition.BuiltInAuthEndpoint
+	}
+	return p.endpoint()
+}
+
 func (p *Provider) probeEndpoint(ctx context.Context, endpoint string) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodHead, endpoint, nil)
 	if err != nil {
@@ -638,4 +738,39 @@ func hmacDigest(hash func() hash.Hash, key []byte, data []byte) []byte {
 func sha256Hex(data []byte) string {
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])
+}
+
+func canonicalQueryString(values url.Values) string {
+	if len(values) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	var parts []string
+	for _, key := range keys {
+		sortedValues := append([]string(nil), values[key]...)
+		sort.Strings(sortedValues)
+		for _, value := range sortedValues {
+			parts = append(parts, url.QueryEscape(key)+"="+url.QueryEscape(value))
+		}
+	}
+	return strings.Join(parts, "&")
+}
+
+func canonicalPath(path string) string {
+	if path == "" {
+		return "/"
+	}
+	return path
+}
+
+func requestID() string {
+	var data [16]byte
+	if _, err := cryptorand.Read(data[:]); err != nil {
+		return strconv.FormatInt(time.Now().UnixNano(), 10)
+	}
+	return fmt.Sprintf("%x-%x-%x-%x-%x", data[0:4], data[4:6], data[6:8], data[8:10], data[10:16])
 }

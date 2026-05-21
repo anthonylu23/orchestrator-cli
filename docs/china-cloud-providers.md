@@ -5,9 +5,9 @@ This branch adds readiness adapters for five major China cloud providers:
 | Provider name | Cloud | Status | What works now |
 | --- | --- | --- | --- |
 | `alibaba-cloud` | Alibaba Cloud | readiness-only | Built-in signed ECS `DescribeRegions` probe, credential env validation, public endpoint probe, and strict auth-command validation |
-| `huawei-cloud` | Huawei Cloud | readiness-only | Credential env validation, public endpoint probe, and strict auth-command validation |
+| `huawei-cloud` | Huawei Cloud | readiness-only | Built-in AK/SK-signed IAM region probe, credential env validation, public endpoint probe, and strict auth-command validation |
 | `tencent-cloud` | Tencent Cloud | readiness-only | Built-in TC3-signed CVM `DescribeRegions` probe, credential env validation, public endpoint probe, and strict auth-command validation |
-| `tianyi-cloud` | China Telecom Tianyi Cloud / eSurfing Cloud | readiness-only | Credential env validation, public endpoint probe, and strict auth-command validation |
+| `tianyi-cloud` | China Telecom Tianyi Cloud / eSurfing Cloud | readiness-only | Built-in EOP-signed ECX region-cluster probe, credential env validation, public endpoint probe, and strict auth-command validation |
 | `baidu-ai-cloud` | Baidu AI Cloud | readiness-only | Built-in BCE-signed BOS probe, credential env validation, public endpoint probe, and strict auth-command validation |
 
 These are not training providers yet. They intentionally reject `train` submission until each cloud has a real compute adapter comparable to the GCP Vertex AI provider.
@@ -52,7 +52,7 @@ Check credentials and endpoint reachability:
 switchboard-cli providers check alibaba-cloud
 ```
 
-`providers check` returns nonzero if required credential environment variables are missing or the public endpoint cannot be reached. Alibaba Cloud, Tencent Cloud, and Baidu AI Cloud use built-in signed API probes when their credential environment variables are present. Huawei Cloud and Tianyi Cloud currently fall back to endpoint readiness unless a strict auth command is configured.
+`providers check` returns nonzero if required credential environment variables are missing or the public endpoint cannot be reached. All five China cloud providers use built-in signed API probes when their credential environment variables are present. A provider-specific auth command still takes precedence when configured.
 
 For China cloud providers, endpoint-only success is reported as `auth_mode: endpoint_probe` with `authenticated: false`, because an endpoint probe does not prove the credentials can call that cloud API. Built-in signed checks and auth-command checks report `authenticated: true`.
 
@@ -72,13 +72,13 @@ switchboard-cli providers check alibaba-cloud --strict-auth
 switchboard-cli providers check tencent-cloud --strict-auth --json
 ```
 
-Use official CLIs or a small internal smoke script for providers where SDK-backed auth has not been implemented yet. This is currently required for strict Huawei Cloud and Tianyi Cloud validation.
+Use official CLIs or a small internal smoke script when you want to override the built-in signed probes with a provider-maintained command.
 
 ## Manual GitHub Smoke
 
 The repository includes a manual-only GitHub Actions workflow at `.github/workflows/china-cloud-integration.yml`. It does not run on pull requests or pushes because these checks depend on live cloud credentials and optional provider CLI/SDK setup.
 
-Configure the relevant repository secrets, then run **China Cloud Strict Auth Smoke** from GitHub Actions. Alibaba Cloud, Tencent Cloud, and Baidu AI Cloud can run with their credential secrets alone because Switchboard has built-in signed probes for those providers. Huawei Cloud and Tianyi Cloud need provider-specific auth command secrets until their built-in signers are added:
+Configure the relevant repository secrets, then run **China Cloud Strict Auth Smoke** from GitHub Actions. All five providers can run with their credential secrets alone because Switchboard has built-in signed probes. Provider-specific auth command secrets can override the built-in probes:
 
 ```txt
 SWITCHBOARD_ALIBABA_CLOUD_AUTH_COMMAND
@@ -238,11 +238,10 @@ Baidu AI Cloud BOS SDK documentation: https://intl.cloud.baidu.com/en/doc/BOS/s/
 
 This readiness layer does not:
 
-1. sign Huawei Cloud or Tianyi Cloud API requests unless a user-supplied auth command does so; use `providers check --strict-auth` to require authenticated validation.
-2. submit managed training jobs.
-3. fetch provider logs.
-4. cancel provider jobs.
-5. stage local datasets into provider object storage.
-6. report live pricing, inventory, or quota.
+1. submit managed training jobs.
+2. fetch provider logs.
+3. cancel provider jobs.
+4. stage local datasets into provider object storage.
+5. report live pricing, inventory, or quota.
 
 The next real implementation step should pick one China cloud provider, likely Alibaba Cloud or Huawei Cloud, and build a true image-based compute adapter with the same lifecycle expectations as GCP: auth, submit, poll status, logs, cancel, artifacts, and provider-specific error mapping.

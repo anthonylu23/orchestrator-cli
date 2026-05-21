@@ -774,6 +774,7 @@ func newProvidersCommand(opts Options) *cobra.Command {
 				report.Endpoint = connection.Endpoint
 				report.AuthCommandEnv = connection.AuthCommandEnv
 				report.BuiltInAuth = connection.BuiltInAuth
+				report.BuiltInEndpoint = connection.BuiltInEndpoint
 				report.Documentation = connection.Documentation
 				report.Warnings = connection.Warnings
 				report.CredentialNames = connection.CredentialNames
@@ -834,6 +835,7 @@ type providerCheckReport struct {
 	Endpoint        string                   `json:"endpoint,omitempty"`
 	AuthCommandEnv  string                   `json:"auth_command_env,omitempty"`
 	BuiltInAuth     bool                     `json:"built_in_auth"`
+	BuiltInEndpoint string                   `json:"built_in_endpoint,omitempty"`
 	Documentation   string                   `json:"documentation,omitempty"`
 	Warnings        []string                 `json:"warnings,omitempty"`
 	CredentialNames []string                 `json:"credential_names,omitempty"`

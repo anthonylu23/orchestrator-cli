@@ -192,17 +192,16 @@ Current scope:
 
 1. Register the five China cloud providers in `providers list`.
 2. Expose static capability metadata through `providers inspect`.
-3. Validate credential environment variables, optional auth commands, public endpoint reachability, and built-in signed auth probes for Alibaba Cloud, Tencent Cloud, and Baidu AI Cloud through `providers check`.
+3. Validate credential environment variables, optional auth commands, public endpoint reachability, and built-in signed auth probes for all five selected China clouds through `providers check`.
 4. Add `providers check --strict-auth` so China cloud checks can fail closed unless built-in signed auth or an official CLI/SDK smoke command succeeds.
 5. Reject training submission explicitly until a real compute adapter exists.
 
 Non-goals for this phase:
 
-1. Built-in signing for Huawei Cloud and Tianyi Cloud OpenAPI.
-2. Submitting managed training jobs.
-3. Reading cloud logs.
-4. Canceling cloud jobs.
-5. Staging datasets into object storage.
+1. Submitting managed training jobs.
+2. Reading cloud logs.
+3. Canceling cloud jobs.
+4. Staging datasets into object storage.
 6. Reporting live pricing, inventory, or quota.
 
 Next steps:

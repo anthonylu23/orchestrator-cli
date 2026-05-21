@@ -426,8 +426,14 @@ func TestProvidersCheckChinaCloudReportsMissingCredentials(t *testing.T) {
 }
 
 func TestProvidersCheckChinaCloudStrictAuthRequiresAuthenticatedValidation(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"error_code":"APIGW.0301","error_msg":"Incorrect IAM authentication information"}`, http.StatusUnauthorized)
+	}))
+	defer server.Close()
+
 	t.Setenv("HUAWEICLOUD_SDK_AK", "test-ak")
 	t.Setenv("HUAWEICLOUD_SDK_SK", "test-sk")
+	t.Setenv("SWITCHBOARD_HUAWEI_CLOUD_IAM_ENDPOINT", server.URL+"/v3/regions/cn-north-4")
 	var stdout bytes.Buffer
 	cmd := NewRootCommand(Options{Stdout: &stdout, Stderr: &bytes.Buffer{}})
 	cmd.SetArgs([]string{"providers", "check", "huawei-cloud", "--strict-auth", "--json"})
@@ -435,7 +441,7 @@ func TestProvidersCheckChinaCloudStrictAuthRequiresAuthenticatedValidation(t *te
 	if err == nil {
 		t.Fatal("expected strict auth error")
 	}
-	for _, want := range []string{`"ready":false`, `"authenticated":false`, "authenticated validation requires SWITCHBOARD_HUAWEI_CLOUD_AUTH_COMMAND"} {
+	for _, want := range []string{`"ready":false`, `"authenticated":false`, `"built_in_auth":true`, "signed auth request was rejected"} {
 		if !strings.Contains(stdout.String(), want) {
 			t.Fatalf("%q missing from %s", want, stdout.String())
 		}
