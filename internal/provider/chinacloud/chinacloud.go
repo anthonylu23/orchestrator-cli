@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/anthonylu23/switchboard-cli/internal/app"
+	"github.com/anthonylu23/switchboard-cli/internal/credentials"
 )
 
 const defaultAuthTimeout = 5 * time.Second
@@ -49,6 +50,39 @@ type Definition struct {
 type Provider struct {
 	definition Definition
 	client     *http.Client
+	runtime    *vmRuntime
+	Stdout     io.Writer
+	Stderr     io.Writer
+	Now        func() time.Time
+	Sleep      func(context.Context, time.Duration) error
+}
+
+type VMProviderConfig struct {
+	Region                   string
+	Zone                     string
+	InstanceType             string
+	ImageID                  string
+	SSHUser                  string
+	SSHPrivateKey            string
+	SSHKeyName               string
+	VPCID                    string
+	SubnetID                 string
+	SecurityGroupID          string
+	SystemDiskType           string
+	SystemDiskSizeGB         int
+	InternetBandwidthMbps    int
+	PollIntervalSeconds      int
+	APITimeoutSeconds        int
+	SSHConnectTimeoutSecs    int
+	SSHReadyTimeoutSeconds   int
+	TerminateOnCompletion    bool
+	TerminateOnCompletionSet bool
+	KeepInstanceOnFailure    bool
+	EstimateHourlyUSD        float64
+	ProjectOrAccount         string
+	Endpoint                 string
+	HardwareShapes           []app.HardwareShape
+	Credentials              credentials.Resolver
 }
 
 type ConnectionOptions struct {
@@ -71,6 +105,8 @@ func New(definition Definition) *Provider {
 	return &Provider{
 		definition: definition,
 		client:     &http.Client{Timeout: defaultAuthTimeout},
+		Now:        time.Now,
+		Sleep:      sleep,
 	}
 }
 
@@ -78,7 +114,49 @@ func NewWithClient(definition Definition, client *http.Client) *Provider {
 	if client == nil {
 		client = &http.Client{Timeout: defaultAuthTimeout}
 	}
-	return &Provider{definition: definition, client: client}
+	return &Provider{definition: definition, client: client, Now: time.Now, Sleep: sleep}
+}
+
+func NewVMProvider(definition Definition, config VMProviderConfig, stdout io.Writer, stderr io.Writer) *Provider {
+	httpClient := requestHTTPClient(config.APITimeoutSeconds)
+	provider := &Provider{
+		definition: definition,
+		client:     httpClient,
+		Stdout:     stdout,
+		Stderr:     stderr,
+		Now:        time.Now,
+		Sleep:      sleep,
+	}
+	vmConfig := VMRuntimeConfig{
+		Region:                   config.Region,
+		Zone:                     config.Zone,
+		InstanceType:             config.InstanceType,
+		ImageID:                  config.ImageID,
+		SSHUser:                  config.SSHUser,
+		SSHPrivateKey:            config.SSHPrivateKey,
+		SSHKeyName:               config.SSHKeyName,
+		NetworkID:                config.VPCID,
+		SubnetID:                 config.SubnetID,
+		VSwitchID:                config.SubnetID,
+		SecurityGroupID:          config.SecurityGroupID,
+		SystemDiskType:           config.SystemDiskType,
+		SystemDiskSizeGB:         config.SystemDiskSizeGB,
+		InternetBandwidthMbps:    config.InternetBandwidthMbps,
+		PollIntervalSeconds:      config.PollIntervalSeconds,
+		SSHConnectTimeoutSecs:    config.SSHConnectTimeoutSecs,
+		SSHReadyTimeoutSeconds:   config.SSHReadyTimeoutSeconds,
+		TerminateOnCompletion:    config.TerminateOnCompletion,
+		TerminateOnCompletionSet: config.TerminateOnCompletionSet,
+		KeepInstanceOnFailure:    config.KeepInstanceOnFailure,
+		EstimateHourlyUSD:        config.EstimateHourlyUSD,
+		ProjectOrAccount:         config.ProjectOrAccount,
+		RequireProjectOrAccount:  definition.Name == "huawei-cloud",
+		HardwareShapes:           append([]app.HardwareShape(nil), config.HardwareShapes...),
+	}
+	if vmClient := newVMClient(definition, config, httpClient); vmClient != nil {
+		provider.runtime = newVMRuntime(vmConfig, vmClient, nil)
+	}
+	return provider
 }
 
 func NewProviders() []app.ProviderAdapter {
@@ -184,6 +262,9 @@ func (p *Provider) Name() app.ProviderName {
 }
 
 func (p *Provider) ValidateAuth(ctx context.Context) error {
+	if p.runtime != nil && p.runtime.client != nil {
+		return p.runtime.client.ValidateAuth(ctx)
+	}
 	_, err := p.ValidateConnection(ctx, ConnectionOptions{})
 	return err
 }
@@ -196,6 +277,14 @@ func (p *Provider) ValidateConnection(ctx context.Context, opts ConnectionOption
 		BuiltInEndpoint: p.builtInAuthEndpoint(),
 		Documentation:   p.definition.Documentation,
 		CredentialNames: p.credentialNames(),
+	}
+	if p.runtime != nil && p.runtime.client != nil {
+		report.Mode = "vm_client_signed_request"
+		if err := p.runtime.client.ValidateAuth(ctx); err != nil {
+			return report, err
+		}
+		report.Authenticated = true
+		return report, nil
 	}
 	if command := strings.TrimSpace(os.Getenv(p.definition.AuthCommandEnv)); command != "" {
 		report.Mode = "auth_command"
@@ -557,6 +646,9 @@ func isAuthFailureBody(body []byte) bool {
 }
 
 func (p *Provider) Capabilities(ctx context.Context) (app.ProviderCapabilities, error) {
+	if p.runtime != nil {
+		return p.runtime.Capabilities(ctx, p.definition), nil
+	}
 	return app.ProviderCapabilities{
 		GPUFamilies:                nil,
 		Regions:                    append([]string(nil), p.definition.Regions...),
@@ -573,6 +665,9 @@ func (p *Provider) Capabilities(ctx context.Context) (app.ProviderCapabilities, 
 }
 
 func (p *Provider) ValidateJob(ctx context.Context, spec app.JobSpec) app.SupportReport {
+	if p.runtime != nil {
+		return p.runtime.ValidateJob(ctx, p.definition, spec)
+	}
 	return app.SupportReport{
 		Supported: false,
 		Reasons: []string{
@@ -582,10 +677,16 @@ func (p *Provider) ValidateJob(ctx context.Context, spec app.JobSpec) app.Suppor
 }
 
 func (p *Provider) Estimate(ctx context.Context, spec app.JobSpec) (app.CostEstimate, error) {
+	if p.runtime != nil {
+		return p.runtime.Estimate(ctx, spec)
+	}
 	return app.CostEstimate{HourlyUSD: 0, Currency: "USD"}, nil
 }
 
 func (p *Provider) Submit(ctx context.Context, req app.SubmitRequest) (app.SubmitResult, error) {
+	if p.runtime != nil {
+		return p.runtime.Submit(ctx, p, req)
+	}
 	err := &app.ProviderError{
 		Kind:    app.ProviderErrorInvalidSpec,
 		Message: fmt.Sprintf("%s does not implement job submission yet", p.definition.Name),
@@ -594,6 +695,9 @@ func (p *Provider) Submit(ctx context.Context, req app.SubmitRequest) (app.Submi
 }
 
 func (p *Provider) GetStatus(ctx context.Context, ref app.ProviderJobRef) (app.ProviderJobStatus, error) {
+	if p.runtime != nil {
+		return p.runtime.GetStatus(ctx, p.definition, ref)
+	}
 	return app.ProviderJobStatus{}, &app.ProviderError{
 		Kind:    app.ProviderErrorInvalidSpec,
 		Message: fmt.Sprintf("%s does not create provider job refs yet", p.definition.Name),
@@ -601,10 +705,16 @@ func (p *Provider) GetStatus(ctx context.Context, ref app.ProviderJobRef) (app.P
 }
 
 func (p *Provider) StreamLogs(ctx context.Context, req app.LogStreamRequest) (app.LogStream, error) {
+	if p.runtime != nil {
+		return nil, fmt.Errorf("%s logs are read from run artifacts", p.definition.Name)
+	}
 	return nil, fmt.Errorf("%s logs are unavailable because job submission is not implemented", p.definition.Name)
 }
 
 func (p *Provider) Cancel(ctx context.Context, ref app.ProviderJobRef) error {
+	if p.runtime != nil {
+		return p.runtime.Cancel(ctx, p.definition, ref)
+	}
 	return &app.ProviderError{
 		Kind:    app.ProviderErrorInvalidSpec,
 		Message: fmt.Sprintf("%s cancel is unavailable because job submission is not implemented", p.definition.Name),
@@ -702,7 +812,7 @@ func (p *Provider) credentialNames() []string {
 
 func IsReadinessOnly(adapter app.ProviderAdapter) bool {
 	provider, ok := adapter.(*Provider)
-	return ok && provider != nil
+	return ok && provider != nil && provider.runtime == nil
 }
 
 func DefinitionFor(name string) (Definition, error) {

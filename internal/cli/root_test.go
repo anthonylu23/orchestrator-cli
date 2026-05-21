@@ -20,6 +20,7 @@ import (
 	"github.com/anthonylu23/switchboard-cli/internal/app"
 	"github.com/anthonylu23/switchboard-cli/internal/artifact"
 	"github.com/anthonylu23/switchboard-cli/internal/config"
+	"github.com/anthonylu23/switchboard-cli/internal/credentials"
 	"github.com/anthonylu23/switchboard-cli/internal/packaging"
 	mockprovider "github.com/anthonylu23/switchboard-cli/internal/provider/mock"
 	"github.com/anthonylu23/switchboard-cli/internal/state"
@@ -407,6 +408,56 @@ func TestProvidersInspectChinaCloudReadinessProvider(t *testing.T) {
 		if !strings.Contains(stdout.String(), want) {
 			t.Fatalf("%q missing from %s", want, stdout.String())
 		}
+	}
+}
+
+func TestTrainRegistryConfiguresChinaVMProvider(t *testing.T) {
+	registry := buildTrainProviderRegistry(Options{Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}, config.ResolvedTrainConfig{
+		Provider:        "alibaba-cloud",
+		SwitchboardHome: filepath.Join(t.TempDir(), "home"),
+		Job:             app.JobSpec{Name: "china-smoke", Image: "registry.example.cn/switchboard/smoke:latest"},
+		ChinaCloud: config.ChinaCloudConfig{
+			AlibabaCloud: config.ChinaCloudProviderConfig{
+				Region:          "cn-hangzhou",
+				Zone:            "cn-hangzhou-i",
+				InstanceType:    "ecs.g6.large",
+				ImageID:         "m-test",
+				VPCID:           "vpc-test",
+				SubnetID:        "vsw-test",
+				SecurityGroupID: "sg-test",
+				SSHKeyName:      "switchboard",
+				SSHPrivateKey:   filepath.Join(t.TempDir(), "china.pem"),
+			},
+		},
+	}, credentials.Resolver{})
+	adapter, err := registry.Get("alibaba-cloud")
+	if err != nil {
+		t.Fatalf("registry.Get returned error: %v", err)
+	}
+	capabilities, err := adapter.Capabilities(context.Background())
+	if err != nil {
+		t.Fatalf("Capabilities returned error: %v", err)
+	}
+	if !capabilities.SupportsDockerImage {
+		t.Fatalf("capabilities = %#v", capabilities)
+	}
+	report := adapter.ValidateJob(context.Background(), app.JobSpec{Name: "china-smoke", Image: "registry.example.cn/switchboard/smoke:latest"})
+	if !report.Supported {
+		t.Fatalf("ValidateJob report = %#v", report)
+	}
+}
+
+func TestChinaTrainCredentialResolverAllowsEnvFallbackWithoutStore(t *testing.T) {
+	t.Setenv(credentials.PassphraseEnv, "")
+	resolver, err := credentialResolverForTrain(Options{Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}, config.ResolvedTrainConfig{
+		Provider:        "alibaba-cloud",
+		SwitchboardHome: filepath.Join(t.TempDir(), "home"),
+	})
+	if err != nil {
+		t.Fatalf("credentialResolverForTrain returned error: %v", err)
+	}
+	if resolver.Store != nil {
+		t.Fatalf("resolver should not require a store for env fallback: %#v", resolver.Store)
 	}
 }
 

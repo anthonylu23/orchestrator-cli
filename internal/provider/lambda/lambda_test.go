@@ -17,6 +17,7 @@ import (
 	"github.com/anthonylu23/switchboard-cli/internal/credentials"
 	"github.com/anthonylu23/switchboard-cli/internal/home"
 	"github.com/anthonylu23/switchboard-cli/internal/provider/contract"
+	"github.com/anthonylu23/switchboard-cli/internal/redact"
 )
 
 func TestValidateJobRequiresImageAndLambdaFields(t *testing.T) {
@@ -73,13 +74,47 @@ func TestCloudInitRunsDockerWithoutLambdaAPIKey(t *testing.T) {
 		RuntimeEnv: map[string]string{"SWITCHBOARD_RUN_ID": "r_test"},
 	}
 	userData := cloudInitUserData(req)
-	for _, want := range []string{"docker pull 'ghcr.io/example/smoke:latest'", "docker' 'run' '--rm' '--gpus' 'all'", "'-e' 'SWITCHBOARD_EVENTS_PATH=/tmp/switchboard/events.jsonl'", "'python' '/app/train.py' '--epochs' '1'"} {
+	for _, want := range []string{"docker pull 'ghcr.io/example/smoke:latest'", "docker' 'run' '--rm' '--gpus' 'all' '--env-file' '/tmp/switchboard/container.env'", "printf '%s\\n' 'SWITCHBOARD_EVENTS_PATH=/tmp/switchboard/events.jsonl' >> '/tmp/switchboard/container.env'", "'python' '/app/train.py' '--epochs' '1'"} {
 		if !strings.Contains(userData, want) {
 			t.Fatalf("expected %q in user data:\n%s", want, userData)
 		}
 	}
 	if strings.Contains(userData, "secret-lambda-api-key") {
 		t.Fatalf("user data leaked Lambda API key:\n%s", userData)
+	}
+}
+
+func TestAppendNewLogContentRedactsJSONAndDedupesEvents(t *testing.T) {
+	redactor := redact.FromEnvironment(map[string]string{"API_KEY": "secret-value"})
+	var logs, events, stdout bytes.Buffer
+	seen := map[string]bool{}
+	line := "{\"type\":\"metric\",\"step\":1,\"metrics\":{\"loss\":0.5},\"api_key\":\"secret-value\"}\n"
+	offset := appendNewLogContent(&logs, &events, line, 0, "r_lambda", "a_lambda", time.Unix(0, 0), redactor, &stdout, seen)
+	if offset != len(line) {
+		t.Fatalf("offset = %d, want %d", offset, len(line))
+	}
+	_ = appendNewEventContent(&events, line, 0, "r_lambda", "a_lambda", time.Unix(0, 0), redactor, seen)
+	if strings.Contains(logs.String(), "secret-value") || strings.Contains(stdout.String(), "secret-value") || strings.Contains(events.String(), "secret-value") {
+		t.Fatalf("secret was not redacted: logs=%s stdout=%s events=%s", logs.String(), stdout.String(), events.String())
+	}
+	if got := strings.Count(events.String(), "\"run_id\":\"r_lambda\""); got != 1 {
+		t.Fatalf("event count = %d, events=%s", got, events.String())
+	}
+}
+
+func TestAppendNewLogContentKeepsPartialLineOffset(t *testing.T) {
+	redactor := redact.FromEnvironment()
+	var logs, events bytes.Buffer
+	seen := map[string]bool{}
+	content := "partial"
+	offset := appendNewLogContent(&logs, &events, content, 0, "r_lambda", "a_lambda", time.Unix(0, 0), redactor, nil, seen)
+	if offset != 0 || logs.Len() != 0 {
+		t.Fatalf("offset=%d logs=%q", offset, logs.String())
+	}
+	content += " line\n"
+	offset = appendNewLogContent(&logs, &events, content, offset, "r_lambda", "a_lambda", time.Unix(0, 0), redactor, nil, seen)
+	if offset != len(content) || logs.String() != "partial line\n" {
+		t.Fatalf("offset=%d logs=%q", offset, logs.String())
 	}
 }
 

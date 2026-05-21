@@ -13,6 +13,7 @@ const remoteLogsPath = remoteSwitchboardDir + "/logs.txt"
 const remoteEventsPath = remoteSwitchboardDir + "/events.jsonl"
 const remoteExitPath = remoteSwitchboardDir + "/exit.json"
 const remoteCheckpointsDir = remoteSwitchboardDir + "/checkpoints"
+const remoteEnvPath = remoteSwitchboardDir + "/container.env"
 
 func cloudInitUserData(req app.SubmitRequest) string {
 	script := lambdaRunnerScript(req)
@@ -34,10 +35,10 @@ func cloudInitUserData(req app.SubmitRequest) string {
 
 func lambdaRunnerScript(req app.SubmitRequest) string {
 	env := map[string]string{}
-	for k, v := range req.RuntimeEnv {
+	for k, v := range req.JobSpec.Env {
 		env[k] = v
 	}
-	for k, v := range req.JobSpec.Env {
+	for k, v := range req.RuntimeEnv {
 		env[k] = v
 	}
 	env["SWITCHBOARD_EVENTS_PATH"] = remoteEventsPath
@@ -46,15 +47,12 @@ func lambdaRunnerScript(req app.SubmitRequest) string {
 	env["ORCHESTRATOR_CHECKPOINT_DIR"] = remoteCheckpointsDir
 
 	var dockerArgs []string
-	dockerArgs = append(dockerArgs, "docker", "run", "--rm", "--gpus", "all")
+	dockerArgs = append(dockerArgs, "docker", "run", "--rm", "--gpus", "all", "--env-file", remoteEnvPath)
 	keys := make([]string, 0, len(env))
 	for key := range env {
 		keys = append(keys, key)
 	}
 	sort.Strings(keys)
-	for _, key := range keys {
-		dockerArgs = append(dockerArgs, "-e", fmt.Sprintf("%s=%s", key, env[key]))
-	}
 	dockerArgs = append(dockerArgs, "-v", remoteSwitchboardDir+":"+remoteSwitchboardDir)
 	if req.JobSpec.WorkDir != "" && req.JobSpec.WorkDir != "." {
 		dockerArgs = append(dockerArgs, "-w", req.JobSpec.WorkDir)
@@ -69,6 +67,9 @@ func lambdaRunnerScript(req app.SubmitRequest) string {
 		"mkdir -p " + shellQuote(remoteCheckpointsDir),
 		"touch " + shellQuote(remoteEventsPath),
 		"rm -f " + shellQuote(remoteExitPath),
+		"rm -f " + shellQuote(remoteEnvPath),
+		envFileScript(keys, env, remoteEnvPath),
+		"chmod 0600 " + shellQuote(remoteEnvPath),
 		"{",
 		"  echo 'lambda switchboard job starting'",
 		"  docker pull " + shellQuote(req.JobSpec.Image),
@@ -79,6 +80,14 @@ func lambdaRunnerScript(req app.SubmitRequest) string {
 		"  exit \"$code\"",
 		"} >> " + shellQuote(remoteLogsPath) + " 2>&1",
 	}, "\n")
+}
+
+func envFileScript(keys []string, env map[string]string, path string) string {
+	var lines []string
+	for _, key := range keys {
+		lines = append(lines, "printf '%s\\n' "+shellQuote(fmt.Sprintf("%s=%s", key, env[key]))+" >> "+shellQuote(path))
+	}
+	return strings.Join(lines, "\n")
 }
 
 func shellCommand(args []string) string {

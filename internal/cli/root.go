@@ -260,7 +260,7 @@ func shouldPackageForProvider(resolved config.ResolvedTrainConfig, job app.JobSp
 	if job.Image != "" || job.Script == "" {
 		return false
 	}
-	if resolved.Provider != gcpprovider.ProviderName && resolved.Provider != string(app.ProviderAuto) {
+	if resolved.Provider != gcpprovider.ProviderName {
 		return false
 	}
 	return resolved.Packaging.Image != "" || resolved.Packaging.Dockerfile != "" || resolved.GCP.ArtifactRegistryRepository != ""
@@ -523,7 +523,7 @@ func providerResourceKey(resource app.ProviderResource) string {
 func runtimeEnvForProvider(selectedProvider string, runID string, attemptID string, resumeValue string, paths artifact.Paths) map[string]string {
 	checkpointDir := paths.Checkpoints
 	eventsPath := paths.EventsJSONL
-	if selectedProvider == gcpprovider.ProviderName || selectedProvider == lambdaprovider.ProviderName {
+	if selectedProvider == gcpprovider.ProviderName || selectedProvider == lambdaprovider.ProviderName || isChinaCloudProvider(selectedProvider) {
 		checkpointDir = "/tmp/switchboard/checkpoints"
 		eventsPath = "/tmp/switchboard/events.jsonl"
 	}
@@ -576,6 +576,9 @@ func newStatusCommand(opts Options, home *string) *cobra.Command {
 			if err := artifact.EnsureHome(resolvedHome); err != nil {
 				return err
 			}
+			if err := artifact.ValidateRunID(args[0]); err != nil {
+				return err
+			}
 			store, err := state.Open(artifact.DBPath(resolvedHome))
 			if err != nil {
 				return err
@@ -614,16 +617,14 @@ func newLogsCommand(opts Options, home *string) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if err := artifact.ValidateRunID(args[0]); err != nil {
+				return err
+			}
 			path := artifact.ForRun(resolvedHome, args[0]).Logs
 			if follow {
 				return followLogs(cmd.Context(), opts.Stdout, resolvedHome, args[0], path)
 			}
-			content, err := os.ReadFile(path)
-			if err != nil {
-				return err
-			}
-			_, err = opts.Stdout.Write(content)
-			return err
+			return artifact.StreamLogs(opts.Stdout, artifact.ForRun(resolvedHome, args[0]))
 		},
 	}
 	cmd.Flags().BoolVar(&follow, "follow", false, "Follow logs")
@@ -647,6 +648,9 @@ func newCancelCommand(opts Options, home *string) *cobra.Command {
 }
 
 func cancelRun(ctx context.Context, opts Options, home string, runID string) error {
+	if err := artifact.ValidateRunID(runID); err != nil {
+		return err
+	}
 	paths := artifact.ForRun(home, runID)
 	store, err := state.Open(paths.DB)
 	if err != nil {
@@ -678,8 +682,7 @@ func cancelRun(ctx context.Context, opts Options, home string, runID string) err
 	if running.ProviderRef == "" {
 		return fmt.Errorf("run %s has no provider process reference yet", runID)
 	}
-	registry := buildProviderRegistry(opts, config.MockConfig{}, config.GCPConfig{})
-	adapter, err := registry.Get(running.Provider)
+	adapter, err := cancelAdapterForAttempt(ctx, opts, home, store, runID, *running)
 	if err != nil {
 		return err
 	}
@@ -698,6 +701,28 @@ func cancelRun(ctx context.Context, opts Options, home string, runID string) err
 	}
 	fmt.Fprintf(opts.Stdout, "Run %s canceled\n", runID)
 	return nil
+}
+
+func cancelAdapterForAttempt(ctx context.Context, opts Options, resolvedHome string, store *state.Store, runID string, attempt app.Attempt) (app.ProviderAdapter, error) {
+	resources, err := store.ProviderResources(ctx, state.ProviderResourceFilter{RunID: runID, Provider: attempt.Provider})
+	if err == nil {
+		var resolver *credentials.Resolver
+		for _, resource := range resources {
+			if resource.ProviderRef == attempt.ProviderRef || resource.ExternalID != "" {
+				return cleanupAdapterForResource(opts, resolvedHome, resource, &resolver)
+			}
+		}
+	}
+	resolver := credentials.Resolver{}
+	if attempt.Provider == lambdaprovider.ProviderName || isChinaCloudProvider(attempt.Provider) {
+		optionalResolver, err := optionalCredentialResolverAtHome(opts, resolvedHome)
+		if err != nil {
+			return nil, err
+		}
+		resolver = optionalResolver
+	}
+	registry := buildProviderRegistryWithOptions(opts, config.MockConfig{}, config.GCPConfig{}, config.LambdaConfig{}, config.ChinaCloudConfig{}, resolver, true, true)
+	return registry.Get(attempt.Provider)
 }
 
 func followLogs(ctx context.Context, w io.Writer, home string, runID string, path string) error {
@@ -902,15 +927,29 @@ func cleanupAdapterForResource(opts Options, resolvedHome string, resource app.P
 			return opts.LambdaProviderFactory(cfg, opts.Stdout, opts.Stderr), nil
 		}
 		if *lambdaResolver == nil {
-			store, _, err := openCredentialStoreAtHome(opts, resolvedHome)
+			resolver, err := optionalCredentialResolverAtHome(opts, resolvedHome)
 			if err != nil {
 				return nil, err
 			}
-			resolver := credentials.Resolver{Store: store}
 			*lambdaResolver = &resolver
 		}
 		return lambdaprovider.New(lambdaConfigFromConfig(cfg, **lambdaResolver), opts.Stdout, opts.Stderr), nil
 	default:
+		if def, err := chinacloudprovider.DefinitionFor(resource.Provider); err == nil {
+			if *lambdaResolver == nil {
+				resolver, err := optionalCredentialResolverAtHome(opts, resolvedHome)
+				if err != nil {
+					return nil, err
+				}
+				*lambdaResolver = &resolver
+			}
+			cfg := chinacloudprovider.VMProviderConfig{
+				Region:           resource.Region,
+				ProjectOrAccount: resource.ProjectOrAccount,
+				Credentials:      **lambdaResolver,
+			}
+			return chinacloudprovider.NewVMProvider(def, cfg, opts.Stdout, opts.Stderr), nil
+		}
 		return nil, fmt.Errorf("resource cleanup is not supported for provider %q", resource.Provider)
 	}
 }
@@ -922,6 +961,9 @@ func cleanupRequestedState(resource app.ProviderResource) app.ProviderResourceSt
 	case gcpprovider.ProviderName:
 		return app.ProviderResourceStateCanceled
 	default:
+		if isChinaCloudProvider(resource.Provider) {
+			return app.ProviderResourceStateTerminating
+		}
 		return app.ProviderResourceStateUnknown
 	}
 }
@@ -1282,6 +1324,22 @@ func openCredentialStoreAtHome(opts Options, resolvedHome string) (*credentials.
 	return store, path, nil
 }
 
+func optionalCredentialResolverAtHome(opts Options, resolvedHome string) (credentials.Resolver, error) {
+	path := credentials.DefaultPath(resolvedHome)
+	if strings.TrimSpace(os.Getenv(credentials.PassphraseEnv)) == "" {
+		if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
+			return credentials.Resolver{}, nil
+		} else if err != nil {
+			return credentials.Resolver{}, err
+		}
+	}
+	store, _, err := openCredentialStoreAtHome(opts, resolvedHome)
+	if err != nil {
+		return credentials.Resolver{}, err
+	}
+	return credentials.Resolver{Store: store}, nil
+}
+
 func credentialValue(opts Options, key string, fromEnv string, valueStdin bool) (string, error) {
 	if fromEnv != "" && valueStdin {
 		return "", fmt.Errorf("--from-env and --value-stdin are mutually exclusive")
@@ -1308,16 +1366,16 @@ func credentialValue(opts Options, key string, fromEnv string, valueStdin bool) 
 }
 
 func buildProviderRegistry(opts Options, mockConfig config.MockConfig, gcpConfig config.GCPConfig) *provider.Registry {
-	return buildProviderRegistryWithOptions(opts, mockConfig, gcpConfig, config.LambdaConfig{}, credentials.Resolver{}, true, true)
+	return buildProviderRegistryWithOptions(opts, mockConfig, gcpConfig, config.LambdaConfig{}, config.ChinaCloudConfig{}, credentials.Resolver{}, true, true)
 }
 
 func buildTrainProviderRegistry(opts Options, resolved config.ResolvedTrainConfig, credentialResolver credentials.Resolver) *provider.Registry {
-	return buildProviderRegistryWithOptions(opts, resolved.Mock, resolved.GCP, resolved.Lambda, credentialResolver, shouldRegisterGCPForTrain(resolved), shouldRegisterLambdaForTrain(resolved))
+	return buildProviderRegistryWithOptions(opts, resolved.Mock, resolved.GCP, resolved.Lambda, resolved.ChinaCloud, credentialResolver, shouldRegisterGCPForTrain(resolved), shouldRegisterLambdaForTrain(resolved))
 }
 
-func buildProviderRegistryWithOptions(opts Options, mockConfig config.MockConfig, gcpConfig config.GCPConfig, lambdaConfig config.LambdaConfig, credentialResolver credentials.Resolver, includeGCP bool, includeLambda bool) *provider.Registry {
+func buildProviderRegistryWithOptions(opts Options, mockConfig config.MockConfig, gcpConfig config.GCPConfig, lambdaConfig config.LambdaConfig, chinaConfig config.ChinaCloudConfig, credentialResolver credentials.Resolver, includeGCP bool, includeLambda bool) *provider.Registry {
 	adapters := []app.ProviderAdapter{localprovider.New(opts.Stdout, opts.Stderr)}
-	adapters = append(adapters, chinacloudprovider.NewProviders()...)
+	adapters = append(adapters, chinaCloudAdapters(chinaConfig, credentialResolver, opts.Stdout, opts.Stderr)...)
 	for _, providerConfig := range mergedMockProviders(mockConfig) {
 		adapters = append(adapters, mockprovider.New(mockprovider.Config{
 			Name:           providerConfig.Name,
@@ -1341,14 +1399,13 @@ func buildProviderRegistryWithOptions(opts Options, mockConfig config.MockConfig
 }
 
 func credentialResolverForTrain(opts Options, resolved config.ResolvedTrainConfig) (credentials.Resolver, error) {
-	if opts.LambdaProviderFactory != nil || !shouldRegisterLambdaForTrain(resolved) {
+	if opts.LambdaProviderFactory != nil && !shouldRegisterAnyChinaVMForTrain(resolved) {
 		return credentials.Resolver{}, nil
 	}
-	store, _, err := openCredentialStoreAtHome(opts, resolved.SwitchboardHome)
-	if err != nil {
-		return credentials.Resolver{}, err
+	if !shouldRegisterLambdaForTrain(resolved) && !shouldRegisterAnyChinaVMForTrain(resolved) {
+		return credentials.Resolver{}, nil
 	}
-	return credentials.Resolver{Store: store}, nil
+	return optionalCredentialResolverAtHome(opts, resolved.SwitchboardHome)
 }
 
 func shouldRegisterGCPForTrain(resolved config.ResolvedTrainConfig) bool {
@@ -1369,6 +1426,100 @@ func shouldRegisterLambdaForTrain(resolved config.ResolvedTrainConfig) bool {
 		return false
 	}
 	return resolved.Lambda.RegionName != "" && resolved.Lambda.InstanceTypeName != "" && resolved.Lambda.SSHKeyName != "" && resolved.Lambda.SSHPrivateKey != ""
+}
+
+func shouldRegisterAnyChinaVMForTrain(resolved config.ResolvedTrainConfig) bool {
+	if isChinaCloudProvider(resolved.Provider) {
+		return true
+	}
+	if resolved.Provider != string(app.ProviderAuto) {
+		return false
+	}
+	for _, name := range chinacloudprovider.Names() {
+		if chinaCloudProviderConfigured(chinaProviderConfigByName(resolved.ChinaCloud, name)) {
+			return true
+		}
+	}
+	return false
+}
+
+func chinaCloudAdapters(china config.ChinaCloudConfig, credentialResolver credentials.Resolver, stdout io.Writer, stderr io.Writer) []app.ProviderAdapter {
+	defs := chinacloudprovider.Definitions()
+	adapters := make([]app.ProviderAdapter, 0, len(defs))
+	for _, def := range defs {
+		providerConfig := chinaProviderConfigByName(china, def.Name)
+		if chinaCloudProviderConfigured(providerConfig) {
+			adapters = append(adapters, chinacloudprovider.NewVMProvider(def, chinaVMProviderConfigFromConfig(providerConfig, credentialResolver), stdout, stderr))
+			continue
+		}
+		adapters = append(adapters, chinacloudprovider.New(def))
+	}
+	return adapters
+}
+
+func chinaCloudProviderConfigured(cfg config.ChinaCloudProviderConfig) bool {
+	return cfg.Region != "" || cfg.InstanceType != "" || cfg.ImageID != "" || cfg.SubnetID != "" || cfg.SecurityGroupID != "" || cfg.SSHKeyName != "" || cfg.SSHPrivateKey != ""
+}
+
+func chinaProviderConfigByName(china config.ChinaCloudConfig, name string) config.ChinaCloudProviderConfig {
+	switch name {
+	case "alibaba-cloud":
+		return china.AlibabaCloud
+	case "huawei-cloud":
+		return china.HuaweiCloud
+	case "tencent-cloud":
+		return china.TencentCloud
+	case "tianyi-cloud":
+		return china.TianyiCloud
+	case "baidu-ai-cloud":
+		return china.BaiduAICloud
+	default:
+		return config.ChinaCloudProviderConfig{}
+	}
+}
+
+func chinaVMProviderConfigFromConfig(cfg config.ChinaCloudProviderConfig, credentialResolver credentials.Resolver) chinacloudprovider.VMProviderConfig {
+	terminateOnCompletion := true
+	terminateSet := false
+	if cfg.TerminateOnCompletion != nil {
+		terminateOnCompletion = *cfg.TerminateOnCompletion
+		terminateSet = true
+	}
+	projectOrAccount := cfg.ProjectID
+	if projectOrAccount == "" {
+		projectOrAccount = cfg.AccountID
+	}
+	return chinacloudprovider.VMProviderConfig{
+		Region:                   cfg.Region,
+		Zone:                     cfg.Zone,
+		InstanceType:             cfg.InstanceType,
+		ImageID:                  cfg.ImageID,
+		SSHUser:                  cfg.SSHUser,
+		SSHPrivateKey:            cfg.SSHPrivateKey,
+		SSHKeyName:               cfg.SSHKeyName,
+		VPCID:                    cfg.VPCID,
+		SubnetID:                 cfg.SubnetID,
+		SecurityGroupID:          cfg.SecurityGroupID,
+		SystemDiskType:           cfg.SystemDiskCategory,
+		SystemDiskSizeGB:         cfg.SystemDiskSizeGB,
+		InternetBandwidthMbps:    cfg.InternetBandwidthMbps,
+		PollIntervalSeconds:      cfg.PollIntervalSeconds,
+		APITimeoutSeconds:        cfg.APITimeoutSeconds,
+		SSHConnectTimeoutSecs:    cfg.SSHConnectTimeoutSecs,
+		SSHReadyTimeoutSeconds:   cfg.SSHReadyTimeoutSeconds,
+		TerminateOnCompletion:    terminateOnCompletion,
+		TerminateOnCompletionSet: terminateSet,
+		KeepInstanceOnFailure:    cfg.KeepInstanceOnFailure,
+		EstimateHourlyUSD:        cfg.EstimateHourlyUSD,
+		ProjectOrAccount:         projectOrAccount,
+		Endpoint:                 cfg.Endpoint,
+		Credentials:              credentialResolver,
+	}
+}
+
+func isChinaCloudProvider(provider string) bool {
+	_, err := chinacloudprovider.DefinitionFor(provider)
+	return err == nil
 }
 
 func gcpConfigFromConfig(cfg config.GCPConfig) gcpprovider.Config {

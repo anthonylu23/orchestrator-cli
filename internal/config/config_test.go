@@ -287,6 +287,52 @@ func TestLoadTrainRequiresLambdaImageAndFields(t *testing.T) {
 	}
 }
 
+func TestLoadTrainAcceptsChinaVMImageJob(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "switchboard.yaml")
+	content := []byte(`
+job:
+  name: china-smoke
+  image: registry.example.cn/switchboard/smoke:latest
+  command: ["python", "/app/train.py"]
+china_cloud:
+  common:
+    ssh_private_key: keys/china.pem
+    ssh_key_name: switchboard
+    ssh_user: root
+    terminate_on_completion: true
+  huawei_cloud:
+    project_id: "00000000000000000000000000000000"
+    region: cn-north-4
+    zone: cn-north-4a
+    instance_type: pi2.2xlarge.4
+    image_id: ims-test
+    vpc_id: vpc-test
+    subnet_id: subnet-test
+    security_group_id: sg-test
+`)
+	if err := os.MkdirAll(filepath.Join(dir, "keys"), 0o755); err != nil {
+		t.Fatalf("mkdir keys: %v", err)
+	}
+	if err := os.WriteFile(configPath, content, 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	got, err := LoadTrain(TrainFlags{
+		ConfigPath:      configPath,
+		Provider:        "huawei-cloud",
+		SwitchboardHome: filepath.Join(dir, "home"),
+	})
+	if err != nil {
+		t.Fatalf("LoadTrain returned error: %v", err)
+	}
+	if got.ChinaCloud.HuaweiCloud.SSHPrivateKey != filepath.Join(dir, "keys", "china.pem") {
+		t.Fatalf("ssh key path = %q", got.ChinaCloud.HuaweiCloud.SSHPrivateKey)
+	}
+	if got.ChinaCloud.HuaweiCloud.PollIntervalSeconds != 30 || got.ChinaCloud.HuaweiCloud.SSHReadyTimeoutSeconds != 600 {
+		t.Fatalf("china defaults = %#v", got.ChinaCloud.HuaweiCloud)
+	}
+}
+
 func TestLoadTrainRequiresGCPImageAndFields(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "switchboard.yaml")

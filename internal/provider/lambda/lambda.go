@@ -358,12 +358,13 @@ func (p *Provider) waitForActive(ctx context.Context, client Client, instanceID 
 func (p *Provider) monitorRemote(ctx context.Context, client Client, instanceID string, target RemoteTarget, logFile io.Writer, eventFile io.Writer, req app.SubmitRequest, redactor redact.Redactor) (int, string, error) {
 	var logOffset int
 	var eventOffset int
+	seenEvents := map[string]bool{}
 	for {
 		if content, err := p.remote.ReadFile(ctx, target, remoteLogsPath); err == nil {
-			logOffset = appendNewLogContent(logFile, eventFile, content, logOffset, req.RunID, req.AttemptID, p.now(), redactor, p.stdout())
+			logOffset = appendNewLogContent(logFile, eventFile, content, logOffset, req.RunID, req.AttemptID, p.now(), redactor, p.stdout(), seenEvents)
 		}
 		if content, err := p.remote.ReadFile(ctx, target, remoteEventsPath); err == nil {
-			eventOffset = appendNewEventContent(eventFile, content, eventOffset, req.RunID, req.AttemptID, p.now(), redactor)
+			eventOffset = appendNewEventContent(eventFile, content, eventOffset, req.RunID, req.AttemptID, p.now(), redactor, seenEvents)
 		}
 		if content, err := p.remote.ReadFile(ctx, target, remoteExitPath); err == nil && strings.TrimSpace(content) != "" {
 			exitCode, exitReason, err := parseExit(content)
@@ -393,45 +394,99 @@ func (p *Provider) monitorRemote(ctx context.Context, client Client, instanceID 
 	}
 }
 
-func appendNewLogContent(logFile io.Writer, eventFile io.Writer, content string, offset int, runID string, attemptID string, now time.Time, redactor redact.Redactor, stdout io.Writer) int {
+func appendNewLogContent(logFile io.Writer, eventFile io.Writer, content string, offset int, runID string, attemptID string, now time.Time, redactor redact.Redactor, stdout io.Writer, seenEvents map[string]bool) int {
 	if offset > len(content) {
 		offset = 0
 	}
 	if offset == len(content) {
 		return offset
 	}
-	newContent := content[offset:]
-	_, _ = io.WriteString(logFile, redactor.String(newContent))
+	newContent, nextOffset := completeContent(content, offset)
+	if newContent == "" {
+		return offset
+	}
+	redactedContent := redactedLogContent(newContent, redactor)
+	_, _ = io.WriteString(logFile, redactedContent)
 	if stdout != nil {
-		_, _ = io.WriteString(stdout, redactor.String(newContent))
+		_, _ = io.WriteString(stdout, redactedContent)
 	}
 	scanner := bufio.NewScanner(strings.NewReader(newContent))
 	scanner.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
 	for scanner.Scan() {
-		parsed := event.ParseLine(scanner.Text(), runID, attemptID, now)
+		line := scanner.Text()
+		parsed := event.ParseLine(line, runID, attemptID, now)
 		if parsed.Structured {
+			if seenEvents[line] {
+				continue
+			}
+			seenEvents[line] = true
 			_ = event.WriteJSONL(eventFile, redactor.Event(parsed.Event))
 		}
 	}
-	return len(content)
+	if err := scanner.Err(); err != nil {
+		_, _ = fmt.Fprintf(logFile, "log scanner error: %s\n", redactor.String(err.Error()))
+	}
+	return nextOffset
 }
 
-func appendNewEventContent(eventFile io.Writer, content string, offset int, runID string, attemptID string, now time.Time, redactor redact.Redactor) int {
+func appendNewEventContent(eventFile io.Writer, content string, offset int, runID string, attemptID string, now time.Time, redactor redact.Redactor, seenEvents map[string]bool) int {
 	if offset > len(content) {
 		offset = 0
 	}
 	if offset == len(content) {
 		return offset
 	}
-	scanner := bufio.NewScanner(strings.NewReader(content[offset:]))
+	newContent, nextOffset := completeContent(content, offset)
+	if newContent == "" {
+		return offset
+	}
+	scanner := bufio.NewScanner(strings.NewReader(newContent))
 	scanner.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
 	for scanner.Scan() {
-		parsed := event.ParseLine(scanner.Text(), runID, attemptID, now)
+		line := scanner.Text()
+		parsed := event.ParseLine(line, runID, attemptID, now)
 		if parsed.Structured {
+			if seenEvents[line] {
+				continue
+			}
+			seenEvents[line] = true
 			_ = event.WriteJSONL(eventFile, redactor.Event(parsed.Event))
 		}
 	}
-	return len(content)
+	return nextOffset
+}
+
+func completeContent(content string, offset int) (string, int) {
+	if offset >= len(content) {
+		return "", offset
+	}
+	next := content[offset:]
+	if strings.HasSuffix(next, "\n") {
+		return next, len(content)
+	}
+	lastNewline := strings.LastIndex(next, "\n")
+	if lastNewline < 0 {
+		return "", offset
+	}
+	end := offset + lastNewline + 1
+	return content[offset:end], end
+}
+
+func redactedLogContent(content string, redactor redact.Redactor) string {
+	var out strings.Builder
+	for _, part := range strings.SplitAfter(content, "\n") {
+		if part == "" {
+			continue
+		}
+		if strings.HasSuffix(part, "\n") {
+			line := strings.TrimSuffix(part, "\n")
+			out.WriteString(redactor.Line(line))
+			out.WriteString("\n")
+			continue
+		}
+		out.WriteString(redactor.Line(part))
+	}
+	return out.String()
 }
 
 func parseExit(content string) (int, string, error) {

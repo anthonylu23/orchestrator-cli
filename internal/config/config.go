@@ -16,15 +16,16 @@ import (
 const DefaultBundleMaxSizeMB = 512
 
 type Config struct {
-	Job       JobConfig       `yaml:"job"`
-	Data      DataConfig      `yaml:"data"`
-	Packaging PackagingConfig `yaml:"packaging"`
-	Routing   RoutingConfig   `yaml:"routing"`
-	Sizing    SizingConfig    `yaml:"sizing"`
-	Hardware  HardwareConfig  `yaml:"hardware"`
-	Mock      MockConfig      `yaml:"mock"`
-	GCP       GCPConfig       `yaml:"gcp"`
-	Lambda    LambdaConfig    `yaml:"lambda"`
+	Job        JobConfig        `yaml:"job"`
+	Data       DataConfig       `yaml:"data"`
+	Packaging  PackagingConfig  `yaml:"packaging"`
+	Routing    RoutingConfig    `yaml:"routing"`
+	Sizing     SizingConfig     `yaml:"sizing"`
+	Hardware   HardwareConfig   `yaml:"hardware"`
+	Mock       MockConfig       `yaml:"mock"`
+	GCP        GCPConfig        `yaml:"gcp"`
+	Lambda     LambdaConfig     `yaml:"lambda"`
+	ChinaCloud ChinaCloudConfig `yaml:"china_cloud"`
 }
 
 type JobConfig struct {
@@ -144,6 +145,41 @@ type LambdaConfig struct {
 	SSHReadyTimeoutSeconds int    `yaml:"ssh_ready_timeout_seconds"`
 }
 
+type ChinaCloudConfig struct {
+	Common       ChinaCloudProviderConfig `yaml:"common"`
+	AlibabaCloud ChinaCloudProviderConfig `yaml:"alibaba_cloud"`
+	HuaweiCloud  ChinaCloudProviderConfig `yaml:"huawei_cloud"`
+	TencentCloud ChinaCloudProviderConfig `yaml:"tencent_cloud"`
+	TianyiCloud  ChinaCloudProviderConfig `yaml:"tianyi_cloud"`
+	BaiduAICloud ChinaCloudProviderConfig `yaml:"baidu_ai_cloud"`
+}
+
+type ChinaCloudProviderConfig struct {
+	Region                 string  `yaml:"region"`
+	Zone                   string  `yaml:"zone"`
+	InstanceType           string  `yaml:"instance_type"`
+	ImageID                string  `yaml:"image_id"`
+	VPCID                  string  `yaml:"vpc_id"`
+	SubnetID               string  `yaml:"subnet_id"`
+	SecurityGroupID        string  `yaml:"security_group_id"`
+	SSHKeyName             string  `yaml:"ssh_key_name"`
+	SSHPrivateKey          string  `yaml:"ssh_private_key"`
+	SSHUser                string  `yaml:"ssh_user"`
+	Endpoint               string  `yaml:"endpoint"`
+	ProjectID              string  `yaml:"project_id"`
+	AccountID              string  `yaml:"account_id"`
+	SystemDiskCategory     string  `yaml:"system_disk_category"`
+	SystemDiskSizeGB       int     `yaml:"system_disk_size_gb"`
+	InternetBandwidthMbps  int     `yaml:"internet_bandwidth_mbps"`
+	PollIntervalSeconds    int     `yaml:"poll_interval_seconds"`
+	TerminateOnCompletion  *bool   `yaml:"terminate_on_completion"`
+	KeepInstanceOnFailure  bool    `yaml:"keep_instance_on_failure"`
+	APITimeoutSeconds      int     `yaml:"api_timeout_seconds"`
+	SSHConnectTimeoutSecs  int     `yaml:"ssh_connect_timeout_seconds"`
+	SSHReadyTimeoutSeconds int     `yaml:"ssh_ready_timeout_seconds"`
+	EstimateHourlyUSD      float64 `yaml:"estimate_hourly_usd"`
+}
+
 type MockProviderConfig struct {
 	Name           string              `yaml:"name"`
 	HourlyCost     float64             `yaml:"hourly_cost"`
@@ -181,6 +217,7 @@ type ResolvedTrainConfig struct {
 	Mock                      MockConfig
 	GCP                       GCPConfig
 	Lambda                    LambdaConfig
+	ChinaCloud                ChinaCloudConfig
 	BundleMaxSizeBytes        int64
 	RequireOverrideAboveLimit bool
 	AllowLargeDataBundle      bool
@@ -247,6 +284,7 @@ func LoadTrain(flags TrainFlags) (ResolvedTrainConfig, error) {
 		}
 		cfg.Packaging = resolvePackagingPaths(cfg.Packaging, configDir)
 		cfg.Lambda = resolveLambdaPaths(cfg.Lambda, configDir)
+		cfg.ChinaCloud = resolveChinaCloudPaths(cfg.ChinaCloud, configDir)
 	}
 
 	maxSizeMB := cfg.Data.Bundle.MaxSizeMB
@@ -273,11 +311,12 @@ func LoadTrain(flags TrainFlags) (ResolvedTrainConfig, error) {
 		Mock:                      cfg.Mock,
 		GCP:                       resolveGCP(cfg.GCP),
 		Lambda:                    resolveLambda(cfg.Lambda),
+		ChinaCloud:                resolveChinaCloud(cfg.ChinaCloud),
 		BundleMaxSizeBytes:        int64(maxSizeMB) * 1024 * 1024,
 		RequireOverrideAboveLimit: requireOverride,
 		AllowLargeDataBundle:      flags.AllowLargeDataBundle,
 		SwitchboardHome:           resolvedHome,
-	}, validateProviderConfig(provider, job, resolvePackaging(cfg.Packaging), resolveGCP(cfg.GCP), resolveLambda(cfg.Lambda))
+	}, validateProviderConfig(provider, job, resolvePackaging(cfg.Packaging), resolveGCP(cfg.GCP), resolveLambda(cfg.Lambda), resolveChinaCloud(cfg.ChinaCloud))
 }
 
 func resolvePackaging(packaging PackagingConfig) PackagingConfig {
@@ -314,6 +353,27 @@ func resolveLambdaPaths(lambda LambdaConfig, baseDir string) LambdaConfig {
 	}
 	lambda.SSHPrivateKey = resolveLocalPath(lambda.SSHPrivateKey, baseDir)
 	return lambda
+}
+
+func resolveChinaCloudPaths(china ChinaCloudConfig, baseDir string) ChinaCloudConfig {
+	china.Common = resolveChinaCloudProviderPaths(china.Common, baseDir)
+	china.AlibabaCloud = resolveChinaCloudProviderPaths(china.AlibabaCloud, baseDir)
+	china.HuaweiCloud = resolveChinaCloudProviderPaths(china.HuaweiCloud, baseDir)
+	china.TencentCloud = resolveChinaCloudProviderPaths(china.TencentCloud, baseDir)
+	china.TianyiCloud = resolveChinaCloudProviderPaths(china.TianyiCloud, baseDir)
+	china.BaiduAICloud = resolveChinaCloudProviderPaths(china.BaiduAICloud, baseDir)
+	return china
+}
+
+func resolveChinaCloudProviderPaths(provider ChinaCloudProviderConfig, baseDir string) ChinaCloudProviderConfig {
+	if strings.HasPrefix(provider.SSHPrivateKey, "~/") {
+		if homeDir, err := os.UserHomeDir(); err == nil {
+			provider.SSHPrivateKey = filepath.Join(homeDir, strings.TrimPrefix(provider.SSHPrivateKey, "~/"))
+		}
+		return provider
+	}
+	provider.SSHPrivateKey = resolveLocalPath(provider.SSHPrivateKey, baseDir)
+	return provider
 }
 
 func resolveLocalPath(path string, baseDir string) string {
@@ -380,12 +440,128 @@ func resolveLambda(lambda LambdaConfig) LambdaConfig {
 	return lambda
 }
 
-func validateProviderConfig(provider string, job app.JobSpec, packaging PackagingConfig, gcp GCPConfig, lambda LambdaConfig) error {
+func resolveChinaCloud(china ChinaCloudConfig) ChinaCloudConfig {
+	china.AlibabaCloud = resolveChinaCloudProvider(mergeChinaCloudProvider(china.Common, china.AlibabaCloud))
+	china.HuaweiCloud = resolveChinaCloudProvider(mergeChinaCloudProvider(china.Common, china.HuaweiCloud))
+	china.TencentCloud = resolveChinaCloudProvider(mergeChinaCloudProvider(china.Common, china.TencentCloud))
+	china.TianyiCloud = resolveChinaCloudProvider(mergeChinaCloudProvider(china.Common, china.TianyiCloud))
+	china.BaiduAICloud = resolveChinaCloudProvider(mergeChinaCloudProvider(china.Common, china.BaiduAICloud))
+	return china
+}
+
+func mergeChinaCloudProvider(common ChinaCloudProviderConfig, provider ChinaCloudProviderConfig) ChinaCloudProviderConfig {
+	out := common
+	if provider.Region != "" {
+		out.Region = provider.Region
+	}
+	if provider.Zone != "" {
+		out.Zone = provider.Zone
+	}
+	if provider.InstanceType != "" {
+		out.InstanceType = provider.InstanceType
+	}
+	if provider.ImageID != "" {
+		out.ImageID = provider.ImageID
+	}
+	if provider.VPCID != "" {
+		out.VPCID = provider.VPCID
+	}
+	if provider.SubnetID != "" {
+		out.SubnetID = provider.SubnetID
+	}
+	if provider.SecurityGroupID != "" {
+		out.SecurityGroupID = provider.SecurityGroupID
+	}
+	if provider.SSHKeyName != "" {
+		out.SSHKeyName = provider.SSHKeyName
+	}
+	if provider.SSHPrivateKey != "" {
+		out.SSHPrivateKey = provider.SSHPrivateKey
+	}
+	if provider.SSHUser != "" {
+		out.SSHUser = provider.SSHUser
+	}
+	if provider.Endpoint != "" {
+		out.Endpoint = provider.Endpoint
+	}
+	if provider.ProjectID != "" {
+		out.ProjectID = provider.ProjectID
+	}
+	if provider.AccountID != "" {
+		out.AccountID = provider.AccountID
+	}
+	if provider.SystemDiskCategory != "" {
+		out.SystemDiskCategory = provider.SystemDiskCategory
+	}
+	if provider.SystemDiskSizeGB != 0 {
+		out.SystemDiskSizeGB = provider.SystemDiskSizeGB
+	}
+	if provider.InternetBandwidthMbps != 0 {
+		out.InternetBandwidthMbps = provider.InternetBandwidthMbps
+	}
+	if provider.PollIntervalSeconds != 0 {
+		out.PollIntervalSeconds = provider.PollIntervalSeconds
+	}
+	if provider.TerminateOnCompletion != nil {
+		out.TerminateOnCompletion = provider.TerminateOnCompletion
+	}
+	if provider.KeepInstanceOnFailure {
+		out.KeepInstanceOnFailure = true
+	}
+	if provider.APITimeoutSeconds != 0 {
+		out.APITimeoutSeconds = provider.APITimeoutSeconds
+	}
+	if provider.SSHConnectTimeoutSecs != 0 {
+		out.SSHConnectTimeoutSecs = provider.SSHConnectTimeoutSecs
+	}
+	if provider.SSHReadyTimeoutSeconds != 0 {
+		out.SSHReadyTimeoutSeconds = provider.SSHReadyTimeoutSeconds
+	}
+	if provider.EstimateHourlyUSD != 0 {
+		out.EstimateHourlyUSD = provider.EstimateHourlyUSD
+	}
+	return out
+}
+
+func resolveChinaCloudProvider(provider ChinaCloudProviderConfig) ChinaCloudProviderConfig {
+	if provider.SSHUser == "" {
+		provider.SSHUser = "root"
+	}
+	if provider.PollIntervalSeconds == 0 {
+		provider.PollIntervalSeconds = 30
+	}
+	if provider.TerminateOnCompletion == nil {
+		defaultTerminate := true
+		provider.TerminateOnCompletion = &defaultTerminate
+	}
+	if provider.APITimeoutSeconds == 0 {
+		provider.APITimeoutSeconds = 30
+	}
+	if provider.SSHConnectTimeoutSecs == 0 {
+		provider.SSHConnectTimeoutSecs = 10
+	}
+	if provider.SSHReadyTimeoutSeconds == 0 {
+		provider.SSHReadyTimeoutSeconds = 600
+	}
+	return provider
+}
+
+func validateProviderConfig(provider string, job app.JobSpec, packaging PackagingConfig, gcp GCPConfig, lambda LambdaConfig, china ChinaCloudConfig) error {
 	switch provider {
 	case "gcp":
 		return validateGCPConfig(job, packaging, gcp)
 	case "lambda":
 		return validateLambdaConfig(job, lambda)
+	case "alibaba-cloud":
+		return validateChinaCloudConfig(provider, job, china.AlibabaCloud)
+	case "huawei-cloud":
+		return validateChinaCloudConfig(provider, job, china.HuaweiCloud)
+	case "tencent-cloud":
+		return validateChinaCloudConfig(provider, job, china.TencentCloud)
+	case "tianyi-cloud":
+		return validateChinaCloudConfig(provider, job, china.TianyiCloud)
+	case "baidu-ai-cloud":
+		return validateChinaCloudConfig(provider, job, china.BaiduAICloud)
 	default:
 		return nil
 	}
@@ -435,6 +611,51 @@ func validateLambdaConfig(job app.JobSpec, lambda LambdaConfig) error {
 		return errors.New(strings.Join(reasons, "; "))
 	}
 	return nil
+}
+
+func validateChinaCloudConfig(provider string, job app.JobSpec, cfg ChinaCloudProviderConfig) error {
+	var reasons []string
+	if job.Image == "" {
+		reasons = append(reasons, provider+" provider requires job.image")
+	}
+	if job.Script != "" {
+		reasons = append(reasons, provider+" provider v1 does not package local scripts; provide job.image")
+	}
+	if cfg.Region == "" {
+		reasons = append(reasons, "china_cloud."+providerConfigKey(provider)+".region is required")
+	}
+	if cfg.InstanceType == "" {
+		reasons = append(reasons, "china_cloud."+providerConfigKey(provider)+".instance_type is required")
+	}
+	if cfg.ImageID == "" {
+		reasons = append(reasons, "china_cloud."+providerConfigKey(provider)+".image_id is required")
+	}
+	if cfg.VPCID == "" {
+		reasons = append(reasons, "china_cloud."+providerConfigKey(provider)+".vpc_id is required")
+	}
+	if cfg.SubnetID == "" {
+		reasons = append(reasons, "china_cloud."+providerConfigKey(provider)+".subnet_id is required")
+	}
+	if provider == "huawei-cloud" && cfg.ProjectID == "" && cfg.AccountID == "" {
+		reasons = append(reasons, "china_cloud.huawei_cloud.project_id is required")
+	}
+	if cfg.SecurityGroupID == "" {
+		reasons = append(reasons, "china_cloud."+providerConfigKey(provider)+".security_group_id is required")
+	}
+	if cfg.SSHKeyName == "" {
+		reasons = append(reasons, "china_cloud."+providerConfigKey(provider)+".ssh_key_name is required")
+	}
+	if cfg.SSHPrivateKey == "" {
+		reasons = append(reasons, "china_cloud."+providerConfigKey(provider)+".ssh_private_key is required")
+	}
+	if len(reasons) > 0 {
+		return errors.New(strings.Join(reasons, "; "))
+	}
+	return nil
+}
+
+func providerConfigKey(provider string) string {
+	return strings.ReplaceAll(provider, "-", "_")
 }
 
 func canPackageForGCP(job app.JobSpec, packaging PackagingConfig, gcp GCPConfig) bool {
