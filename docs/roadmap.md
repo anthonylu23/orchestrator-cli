@@ -95,7 +95,7 @@ Exit criteria:
 
 ## Phase 3 - Provider Extensibility Hardening
 
-Status: in progress. A shared provider contract harness now covers local, mock, and fake-backed GCP adapter identity, auth validation, capabilities, job validation, estimates, submit/status behavior, log streaming expectations, and cancel behavior. Routing tests cover capability and support-report rejection paths, and CLI tests pin key diagnostic exit categories.
+Status: in progress. A shared provider contract harness now covers local, mock, fake-backed GCP, and fake-backed Lambda adapter identity, auth validation, capabilities, job validation, estimates, submit/status behavior, log streaming expectations, and cancel behavior. Routing tests cover capability and support-report rejection paths, CLI tests pin key diagnostic exit categories, and provider resource lifecycle records now track cloud resources separately from attempts.
 
 Goals:
 
@@ -104,6 +104,7 @@ Goals:
 3. Keep adapter contract checks for bundled data and supported URI schemes current.
 4. Continue hardening capability matching and support reports after core routing rejection.
 5. Improve diagnostics for auth, invalid spec, data preparation, capacity, quota, network, runtime, and internal failures.
+6. Keep provider resource tracking lightweight: record execution resources first, and add adoption/reuse only when a provider workflow requires it.
 
 Exit criteria:
 
@@ -113,7 +114,7 @@ Exit criteria:
 
 ## Phase 4 - First Real Provider: GCP
 
-Status: substantially complete for the first provider milestone. The GCP adapter submits container images to Vertex AI CustomJob through the Google Cloud Go client, polls job status, records provider refs and estimates, reads Cloud Logging payloads into run artifacts, supports best-effort cancel, and rejects unsupported local bundles or non-GCS URI inputs before submit. Live auth and a billable CPU-only Vertex AI CustomJob smoke test passed on 2026-05-17 for project `switchboard-496606`; live pricing/capacity and PyTorch Iris container smokes passed on 2026-05-20. The PyTorch Iris container example provides the first realistic GCP training workload, the CLI can now build/push Docker images before submit for GCP script jobs, and GCP capability reporting can use live Cloud Billing/Compute pricing, inventory, and regional quota facts with static fallback.
+Status: substantially complete for the first provider milestone. The GCP adapter submits container images to Vertex AI CustomJob through the Google Cloud Go client, polls job status, records provider refs, resource records, and estimates, reads Cloud Logging payloads into run artifacts, supports best-effort cancel, and rejects unsupported local bundles or non-GCS URI inputs before submit. Live auth and a billable CPU-only Vertex AI CustomJob smoke test passed on 2026-05-17 for project `switchboard-496606`; live pricing/capacity and PyTorch Iris container smokes passed on 2026-05-20. The PyTorch Iris container example provides the first realistic GCP training workload, the CLI can now build/push Docker images before submit for GCP script jobs, and GCP capability reporting can use live Cloud Billing/Compute pricing, inventory, and regional quota facts with static fallback.
 
 Goals:
 
@@ -159,7 +160,7 @@ Exit criteria:
 
 ## Phase 6 - Lambda Cloud Adapter
 
-Status: initial implementation complete; live Lambda smoke pending. The adapter can be configured as `provider=lambda`, validates Lambda image-first jobs, discovers instance types through the Lambda Cloud API, launches one on-demand instance with cloud-init, runs a Docker image, collects logs/events over SSH, records run artifacts, resolves Lambda API keys from the encrypted local credential store, and terminates the instance by default.
+Status: initial implementation complete with live smoke coverage. The adapter can be configured as `provider=lambda`, validates Lambda image-first jobs, discovers instance types through the Lambda Cloud API, launches one on-demand instance with cloud-init, runs a Docker image, collects logs/events over SSH, records run artifacts, resolves Lambda API keys from the encrypted local credential store, persists instance resource lifecycle records, and terminates the instance by default. Gated auth, submit, failure-cleanup, cancel, and public CLI smokes passed against real Lambda Cloud infrastructure on 2026-05-20.
 
 Goals:
 
@@ -171,18 +172,20 @@ Goals:
 
 Exit criteria:
 
-1. A mock smoke job can run on real Lambda infrastructure through `switchboard-cli train --provider lambda`.
+1. A smoke job can run on real Lambda infrastructure through `switchboard-cli train --provider lambda`.
 2. The run produces SQLite state, `logs.txt`, `events.jsonl`, and `summary.json`.
 3. The test instance is terminated after successful completion.
-4. Lambda behavior passes fake-backed provider contract checks.
-5. Current limits and live-smoke workflow are documented in [Lambda Cloud Provider](lambda-provider.md).
+4. Lambda instance resources are visible through `switchboard-cli resources list`.
+5. Lambda behavior passes fake-backed provider contract checks.
+6. Current limits and live-smoke workflow are documented in [Lambda Cloud Provider](lambda-provider.md).
 
 Next steps:
 
-1. Run the gated live Lambda smoke.
+1. Keep gated Lambda live smoke coverage current after lifecycle or cloud-init changes.
 2. Add private registry guidance if Docker pull auth is needed.
 3. Add S3 checkpoint examples for portable Lambda resume.
-4. Decide whether Lambda filesystems should become first-class staging or checkpoint backends.
+4. Decide whether retained Lambda instances should support explicit refresh/adoption.
+5. Decide whether Lambda filesystems should become first-class staging or checkpoint backends.
 
 ## Later Phases
 
@@ -215,4 +218,5 @@ The initial two-week milestone is not three-provider cloud coverage. It is a pol
 5. Routing: cheapest eligible provider by default; fastest-within-budget provider and hardware selection under declared sizing, budget, and data requirements when hardware routing is active.
 6. Failure handling: retryable provider failures trigger alternate attempts.
 7. Resume: latest checkpoint is passed through `SubmitRequest.ResumeFrom` only when the selected provider supports the checkpoint URI scheme.
-8. Provider contract: local, mock, and future real providers satisfy the same core expectations.
+8. Provider resources: GCP CustomJobs and Lambda instances are tracked separately from attempts and can be inspected after a run.
+9. Provider contract: local, mock, and future real providers satisfy the same core expectations.

@@ -95,9 +95,11 @@ Data inputs must use `mode: uri` with `gs://` sources. Bundled local data, `s3:/
 
 ## Runtime Behavior
 
-Switchboard creates one Vertex AI CustomJob with a single worker pool. The provider stores the full CustomJob resource name as the attempt provider ref, writes provider lifecycle messages and Cloud Logging payloads into `logs.txt`, parses structured JSONL metric/checkpoint/status lines into `events.jsonl`, and records the configured, live-priced, or catalog-derived hourly estimate on the attempt.
+Switchboard creates one Vertex AI CustomJob with a single worker pool. The provider stores the full CustomJob resource name as the attempt provider ref, writes provider lifecycle messages and Cloud Logging payloads into `logs.txt`, parses structured JSONL metric/checkpoint/status lines into `events.jsonl`, records the configured, live-priced, or catalog-derived hourly estimate on the attempt, and persists a `custom_job` provider resource record.
 
-`switchboard-cli cancel <run-id>` can cancel a running GCP attempt by using the stored CustomJob resource name.
+The GCP resource record uses the CustomJob resource name as both `external_id` and `provider_ref`, stores the configured project and location, and has `cleanup_policy=never`. Vertex CustomJobs are lifecycle-controlled by canceling active jobs, not by deleting them through Switchboard cleanup.
+
+`switchboard-cli cancel <run-id>` can cancel a running GCP attempt by using the stored CustomJob resource name. `switchboard-cli resources list --run <run-id>` shows the tracked CustomJob resource and its last observed state.
 
 GCP containers receive remote-safe runtime environment paths such as `/tmp/switchboard/checkpoints` and `/tmp/switchboard/events.jsonl`. They also receive:
 
@@ -149,4 +151,5 @@ switchboard-cli train --provider gcp --config examples/gcp-iris.yaml
 1. Keep the live smoke path current with the `switchboard-496606` smoke bucket and supported Artifact Registry images.
 2. Keep the PyTorch Iris image build repeatable on `linux/amd64` for Vertex CPU jobs.
 3. Expand data staging beyond `gs://` after GCS dataset behavior is stable.
-4. Add more shared-checkpoint examples as additional cloud providers come online.
+4. Add provider resource refresh for long-running CustomJobs if status inspection needs to update records outside the submit loop.
+5. Add more shared-checkpoint examples as additional cloud providers come online.

@@ -18,7 +18,7 @@ Run a training job through one CLI, materialize its data inputs consistently, ch
 
 "Given my script, data, sizing profile, and budget, choose compatible provider and GPU hardware, run the job, and resume if execution fails."
 
-The first implementation proves the lifecycle through local and mock providers, then GCP as the first real cloud API. The current product layer adds managed image packaging for GCP script jobs and first-pass auto hardware routing: selecting provider and single-node GPU shape/count from model, batch, precision, constraints, and budget.
+The first implementation proves the lifecycle through local and mock providers, then GCP and Lambda as real cloud APIs. The current product layer adds managed image packaging for GCP script jobs, first-pass auto hardware routing, and provider resource tracking for execution resources such as Vertex CustomJobs and Lambda instances.
 
 ## Differentiation
 
@@ -26,7 +26,8 @@ The first implementation proves the lifecycle through local and mock providers, 
 2. Run/attempt lifecycle model built for failover and checkpoint resume.
 3. Cost-aware routing with explicit provider and hardware rejection reasons.
 4. Structured JSONL events and stable exit codes for automation.
-5. Minimal config for simple runs with optional YAML for advanced workflows.
+5. Durable resource tracking for cloud objects created by Switchboard attempts.
+6. Minimal config for simple runs with optional YAML for advanced workflows.
 
 ## V1 Scope
 
@@ -40,6 +41,7 @@ The first implementation proves the lifecycle through local and mock providers, 
 8. Provider adapter contract tests.
 9. GCP as the first real provider after local/mock behavior is proven.
 10. First-pass auto hardware routing after provider/hardware capability reporting exists.
+11. Lambda Cloud single-instance execution with tracked cleanup lifecycle.
 
 ## Deferred Scope
 
@@ -53,6 +55,7 @@ The first implementation proves the lifecycle through local and mock providers, 
 8. Complex sweeps or fan-out beyond basic future design notes.
 9. Enterprise governance and compliance features.
 10. Typed API connector framework for arbitrary dataset APIs.
+11. Full cloud project/account management. Projects, buckets, registries, service accounts, SSH keys, and provider accounts remain provider config or credentials.
 
 ## Auto Hardware Routing
 

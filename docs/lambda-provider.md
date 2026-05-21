@@ -2,7 +2,7 @@
 
 ## Status
 
-The Lambda Cloud provider is implemented as a single-instance, image-first adapter. It launches a Lambda on-demand instance through the Lambda Cloud API, uses cloud-init to run a Docker container on the instance, collects remote logs and structured events over SSH, records local Switchboard artifacts, and terminates the instance when the job completes by default.
+The Lambda Cloud provider is implemented as a single-instance, image-first adapter. It launches a Lambda on-demand instance through the Lambda Cloud API, uses cloud-init to run a Docker container on the instance, collects remote logs and structured events over SSH, records local Switchboard artifacts, persists a tracked `instance` provider resource, and terminates the instance when the job completes by default.
 
 This is a milestone adapter for testing Switchboard jobs on real Lambda infrastructure. It is not yet a full data-staging, image-build, private-registry, or cross-provider resume implementation.
 
@@ -67,6 +67,15 @@ The provider submits a Lambda launch request with cloud-init `user_data`. The re
 7. Writes `/tmp/switchboard/exit.json` with the container exit code.
 
 Switchboard then connects over SSH to read remote logs, parse structured JSONL metric/checkpoint/status events, and persist local artifacts under `~/.switchboard-cli/runs/<run-id>/`.
+
+The provider writes a durable resource record as soon as Lambda returns an instance ID, updates it when the instance becomes active, and updates it again after job exit or cleanup. Cleanup policy is derived from:
+
+1. `terminate_on_completion: true` and `keep_instance_on_failure: false`: `cleanup_policy=always`.
+2. `terminate_on_completion: true` and `keep_instance_on_failure: true`: `cleanup_policy=on_success`.
+3. `terminate_on_completion: false` and `keep_instance_on_failure: false`: `cleanup_policy=on_failure`.
+4. `terminate_on_completion: false` and `keep_instance_on_failure: true`: `cleanup_policy=never`.
+
+Use `switchboard-cli resources list --run <run-id>` to inspect tracked Lambda instances. Use `switchboard-cli resources cleanup --provider lambda` to request termination for tracked active Switchboard-created instances whose cleanup policy allows cleanup.
 
 ## Supported Inputs
 
@@ -148,7 +157,7 @@ go test ./internal/provider/lambda -run TestLiveCancelSmoke -count=1
 
 The live submit test verifies remote Docker execution plus local log, metric, checkpoint, and status artifact ingestion. The failure cleanup test runs the same image with an intentionally failing command and verifies the instance reaches a terminating or terminated state. The cancel smoke launches a long-running command, calls `Cancel`, and verifies `Submit` observes the cancellation.
 
-After each run, confirm no smoke instance is left running in the Lambda dashboard or through the Lambda API. The adapter terminates successful jobs by default; failed jobs are also terminated unless `keep_instance_on_failure: true` is set.
+After each run, confirm no smoke instance is left running in the Lambda dashboard, through the Lambda API, or with `switchboard-cli resources list --active --provider lambda`. The adapter terminates successful jobs by default; failed jobs are also terminated unless `keep_instance_on_failure: true` is set.
 
 Live status: the gated auth, submit, failure cleanup, and cancel tests passed against real Lambda Cloud infrastructure on 2026-05-20 using `gpu_1x_a10` in `us-west-1`, `lambda-stack-24-04`, the encrypted local credential store, and a short-lived public smoke image. The public `train --provider lambda` CLI path also passed with the same setup. A launch request tag-schema bug was found during the first live submit and fixed by using Lambda-compatible tag keys.
 
@@ -160,9 +169,11 @@ Live status: the gated auth, submit, failure cleanup, and cancel tests passed ag
 4. No multi-node Lambda jobs.
 5. No explicit user-facing resume command.
 6. SSH collection currently shells out to the local `ssh` binary.
+7. Resource cleanup can terminate tracked active instances, but Switchboard does not yet adopt or reuse arbitrary existing Lambda instances.
 
 ## Next Steps
 
 1. Add optional private registry auth handling for Docker pulls.
 2. Add S3 checkpoint example coverage for portable Lambda resume.
-3. Decide whether Lambda filesystem mounts should become a first-class data/checkpoint backend.
+3. Add provider resource refresh/adoption if retained instances become a supported debugging workflow.
+4. Decide whether Lambda filesystem mounts should become a first-class data/checkpoint backend.

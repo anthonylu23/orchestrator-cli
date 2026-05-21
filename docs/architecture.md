@@ -13,7 +13,7 @@ CLI
   parses commands, flags, and config
 
 Application Services
-  train, status, logs, resume, cancel, providers
+  train, status, logs, resume, cancel, providers, resources
 
 Data Preparation
   validate inputs, estimate bundle size, build data manifest, prepare mounts
@@ -25,7 +25,7 @@ Provider Layer
   provider registry, adapter contract, capabilities, normalized errors
 
 Persistence and Artifacts
-  SQLite run state, events.jsonl, summary.json, logs
+  SQLite run/attempt/resource state, events.jsonl, summary.json, logs
 ```
 
 ## Run Model
@@ -42,10 +42,11 @@ Core entities:
 
 1. `Run`: job spec, desired state, current state, timestamps, and final outcome.
 2. `Attempt`: provider name, provider job reference, attempt state, resume checkpoint URI/step, cost estimate, and exit reason.
-3. `Event`: structured metric, checkpoint, status, and log payloads linked to a run and attempt.
-4. `Summary`: derived final metrics, best metrics, runtime, checkpoint count, resume count, provider attempts, routing decision, and exit reason.
+3. `ProviderResource`: provider-created external resource linked to an attempt, such as a GCP CustomJob or Lambda instance, with provider ref, state, region/project/account, cleanup policy, and metadata.
+4. `Event`: structured metric, checkpoint, status, and log payloads linked to a run and attempt.
+5. `Summary`: derived final metrics, best metrics, runtime, checkpoint count, resume count, provider attempts, routing decision, and exit reason.
 
-SQLite is the canonical state store for runs and attempts. Files under `~/.switchboard-cli/runs/<run-id>/` are durable user-facing artifacts. Local attempts also use a per-run workspace at `runs/<run-id>/workspace`.
+SQLite is the canonical state store for runs, attempts, routing decisions, and provider resources. Files under `~/.switchboard-cli/runs/<run-id>/` are durable user-facing artifacts. Local attempts also use a per-run workspace at `runs/<run-id>/workspace`.
 
 ## Data Preparation
 
@@ -104,8 +105,40 @@ type SubmitRequest struct {
   AttemptID string
   ResumeFrom *CheckpointRef
   RuntimeEnv map[string]string
+  OnStarted func(ref ProviderJobRef) error
+  OnResourceCreated func(resource ProviderResource) error
+  OnResourceUpdated func(resource ProviderResource) error
 }
 ```
+
+## Provider Resources
+
+Provider resources are the lifecycle bridge between a Switchboard attempt and real cloud objects. They are not a cloud project/account abstraction; projects, credentials, buckets, registries, SSH keys, and service accounts remain provider config or credential-store concerns. Resource records are intentionally narrower: they track external resources created or controlled by an attempt so a CLI interruption or provider failure does not hide what exists.
+
+```go
+type ProviderResource struct {
+  ID string
+  RunID string
+  AttemptID string
+  Provider string
+  Kind ProviderResourceKind
+  ExternalID string
+  ProviderRef string
+  Region string
+  ProjectOrAccount string
+  State ProviderResourceState
+  CreatedBySwitchboard bool
+  CleanupPolicy ProviderResourceCleanupPolicy
+  Metadata map[string]string
+}
+```
+
+Current resource kinds:
+
+1. `custom_job`: a GCP Vertex AI CustomJob. Cleanup policy is `never`; lifecycle control is cancellation, not deletion.
+2. `instance`: a Lambda Cloud instance. Cleanup policy is derived from `terminate_on_completion` and `keep_instance_on_failure`.
+
+Providers call `OnResourceCreated` immediately after the external resource exists and `OnResourceUpdated` when observed state changes. The orchestration layer persists those records in SQLite and exposes them through `switchboard-cli resources list`. `switchboard-cli resources cleanup` requests provider cleanup only for tracked, active, Switchboard-created resources whose cleanup policy is not `never`.
 
 ## Provider Capabilities and Errors
 
@@ -240,6 +273,8 @@ Artifacts:
 
 Remote providers use remote-safe runtime paths rather than local artifact paths. GCP and Lambda jobs receive `/tmp/switchboard/checkpoints` and `/tmp/switchboard/events.jsonl`; provider adapters are responsible for mirroring remote logs and structured events back into local run artifacts.
 
+Provider adapters are also responsible for reporting external resource lifecycle transitions through the submit callbacks. GCP records CustomJobs as running/succeeded/failed/canceled. Lambda records instances as booting/running/failed/terminating based on launch, poll, remote execution, and cleanup behavior.
+
 ## Data Failure Behavior
 
 Data preparation failures should happen before training starts whenever possible.
@@ -262,7 +297,8 @@ Adding a provider should require:
 4. Mapping raw API errors into normalized provider errors.
 5. Supporting or explicitly rejecting bundled data and URI schemes.
 6. Reporting concrete hardware shapes and supported checkpoint schemes.
-7. Passing the shared provider contract tests, with explicit contract settings for intentional behavior differences such as artifact-backed logs.
-8. Registering the adapter.
+7. Reporting created external resources through `OnResourceCreated` and later state changes through `OnResourceUpdated` when the provider creates jobs, instances, storage prefixes, or similar resources.
+8. Passing the shared provider contract tests, with explicit contract settings for intentional behavior differences such as artifact-backed logs.
+9. Registering the adapter.
 
 It should not require changes to CLI commands, the run state machine, retry/failover policy, telemetry parsing, or checkpoint resolution.

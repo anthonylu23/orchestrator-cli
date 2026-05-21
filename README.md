@@ -6,9 +6,9 @@ The project is designed as a systems engineering and ML infrastructure tool: the
 
 ## Status
 
-Switchboard now has a local orchestration vertical slice, deterministic mock-provider failover, a first real GCP provider, and an initial Lambda Cloud adapter milestone. The current implementation can run a local Python training script, persist SQLite run state, capture mixed logs and structured JSONL events, materialize local data bundles, cancel active local runs, route across mock providers, resume from the latest checkpoint after a simulated provider failure, submit container-image jobs to Vertex AI CustomJob, and launch image-first smoke jobs on Lambda Cloud instances.
+Switchboard now has a local orchestration vertical slice, deterministic mock-provider failover, a first real GCP provider, an initial Lambda Cloud adapter milestone, and provider resource lifecycle tracking. The current implementation can run a local Python training script, persist SQLite run state, capture mixed logs and structured JSONL events, materialize local data bundles, cancel active local runs, route across mock providers, resume from the latest checkpoint after a simulated provider failure, submit container-image jobs to Vertex AI CustomJob, launch image-first smoke jobs on Lambda Cloud instances, and inspect tracked cloud resources after submission.
 
-Run artifacts redact secret-like keys and known secret environment values before persistence. Attempt history also records resume checkpoint provenance and provider cost estimates so failover decisions remain explainable after completion.
+Run artifacts redact secret-like keys and known secret environment values before persistence. Attempt history also records resume checkpoint provenance and provider cost estimates so failover decisions remain explainable after completion. Provider resource records track external resources such as GCP CustomJobs and Lambda instances separately from attempts, including state, region/project, cleanup policy, and provider refs.
 
 GCP v1 is still image-submit-first at the provider boundary, but the CLI can now build and push a Docker image before submit when a GCP job uses `job.script` with `packaging` config. Live auth, a billable CPU-only Vertex AI CustomJob smoke test, a non-billable pricing/capacity smoke, and a PyTorch Iris Vertex container run have passed on the `switchboard-496606` project. `examples/gcp/iris` contains the first realistic PyTorch Iris container workflow with optional GCS checkpoint upload/resume. GCP capabilities can use live Cloud Billing pricing, Compute Engine machine/accelerator inventory, and regional quota facts with static fallback. Lambda v1 launches one on-demand instance, runs a prebuilt Docker image through cloud-init, collects logs/events over SSH, and terminates the instance by default. GCP data staging beyond `gs://`, Lambda private-registry/staging support, additional providers, and richer QoL workflows remain roadmap work.
 
@@ -39,6 +39,7 @@ Inspect a run:
 ./bin/switchboard-cli logs <run-id>
 ./bin/switchboard-cli cancel <run-id>
 ./bin/switchboard-cli providers list --json
+./bin/switchboard-cli resources list --run <run-id>
 ```
 
 Run the mock failover demo:
@@ -161,9 +162,11 @@ switchboard-cli status <run-id>
 switchboard-cli logs <run-id> --follow
 switchboard-cli cancel <run-id>
 switchboard-cli providers list --json
+switchboard-cli resources list --active
+switchboard-cli resources cleanup --provider lambda --dry-run
 ```
 
-Planned commands not implemented yet include explicit `resume`. Planned provider work now focuses on live Lambda smoke validation, additional cloud adapters, and richer provider-specific staging/checkpoint integrations.
+Planned commands not implemented yet include explicit `resume`. Planned provider work now focuses on private registry/data staging gaps, additional cloud adapters, and richer provider-specific checkpoint integrations.
 
 ## Data Inputs
 
@@ -229,6 +232,8 @@ CLI command
 
 The core user-facing object is a run. Each provider execution is an attempt. This lets one run fail on one provider and resume on another provider while preserving a single user-facing run history.
 
+Provider-created cloud resources are tracked separately from attempts in SQLite. GCP records Vertex AI CustomJobs with `cleanup_policy=never`; Lambda records launched instances with cleanup policy derived from `terminate_on_completion` and `keep_instance_on_failure`. Use `resources list` for visibility and `resources cleanup` for tracked active resources created by Switchboard.
+
 For `provider=auto`, routing checks provider capabilities before ranking candidates. Providers that cannot satisfy bundled data inputs or declared URI schemes are rejected with persisted reasons.
 
 Auto hardware routing now supports single-node provider and hardware-shape selection for `full_auto`, `auto_provider`, and `manual` modes using provider-reported shape facts, sizing hints, budget limits, and persisted rejection reasons. GCP reports a configured shape plus a catalog enriched by live pricing, inventory, and regional quota facts when available. See [Auto Hardware Routing](docs/auto-hardware-routing.md).
@@ -246,7 +251,7 @@ By default Switchboard writes to `~/.switchboard-cli`. Set `SWITCHBOARD_CLI_HOME
 ~/.switchboard-cli/runs/<run-id>/workspace/
 ```
 
-`summary.json` includes final metrics and direction-aware `best_metrics`: common loss/error/perplexity/latency/duration metrics are minimized, while other metrics are maximized. Provider attempts include resume checkpoint and estimate fields when available. Auto-routed runs include the persisted routing decision, selected hardware, estimated VRAM/runtime/cost, confidence, and provider/hardware rejection reasons.
+`summary.json` includes final metrics and direction-aware `best_metrics`: common loss/error/perplexity/latency/duration metrics are minimized, while other metrics are maximized. Provider attempts include resume checkpoint and estimate fields when available. Auto-routed runs include the persisted routing decision, selected hardware, estimated VRAM/runtime/cost, confidence, and provider/hardware rejection reasons. Provider resource lifecycle records live in SQLite and can be inspected with `switchboard-cli resources list`.
 
 ## Roadmap Summary
 
@@ -256,7 +261,7 @@ By default Switchboard writes to `~/.switchboard-cli`. Set `SWITCHBOARD_CLI_HOME
 4. Provider extensibility hardening.
 5. GCP as the first real provider: container-image CustomJob support, managed Docker build/push, live pricing/capacity enrichment, and GCS checkpoint resume are implemented; richer data staging remains.
 6. Auto hardware routing for fastest compatible single-node GPU selection within a max run cost is implemented with provider-reported facts, including live GCP pricing/inventory/quota enrichment when available.
-7. Later: Lambda, Hyperbolic, shared checkpoint backends, fan-out sweeps, richer terminal UI, and optional hosted control plane.
+7. Lambda Cloud single-instance execution and cleanup tracking are implemented; later provider work includes Hyperbolic, RunPod, shared checkpoint backends, fan-out sweeps, richer terminal UI, and optional hosted control plane.
 
 ## Docs
 
@@ -266,6 +271,7 @@ By default Switchboard writes to `~/.switchboard-cli`. Set `SWITCHBOARD_CLI_HOME
 - [GCP Provider](docs/gcp-provider.md)
 - [GCP Live Smoke Test](docs/gcp-live-smoke.md)
 - [GCP Packaging Decision](docs/gcp-packaging-decision.md)
+- [Lambda Cloud Provider](docs/lambda-provider.md)
 - [Credentials](docs/credentials.md)
 - [Auto Hardware Routing](docs/auto-hardware-routing.md)
 - [Roadmap](docs/roadmap.md)
