@@ -53,6 +53,8 @@ const (
 	exitCodeRouting       = 30
 	exitCodeMissingResume = 40
 	exitCodeCanceled      = 130
+
+	logFollowPollInterval = 100 * time.Millisecond
 )
 
 func NewRootCommand(opts Options) *cobra.Command {
@@ -753,8 +755,7 @@ func followLogs(ctx context.Context, w io.Writer, home string, runID string, pat
 			return err
 		}
 		if run.State != app.RunStateRunning {
-			_, err := copyLogFromOffset(w, path, offset)
-			return err
+			return drainFinalLogAfterTerminal(ctx, w, path, offset)
 		}
 
 		select {
@@ -763,7 +764,28 @@ func followLogs(ctx context.Context, w io.Writer, home string, runID string, pat
 				return err
 			}
 			return ctx.Err()
-		case <-time.After(500 * time.Millisecond):
+		case <-time.After(logFollowPollInterval):
+		}
+	}
+}
+
+func drainFinalLogAfterTerminal(ctx context.Context, w io.Writer, path string, offset int64) error {
+	for {
+		select {
+		case <-ctx.Done():
+			if _, err := copyLogFromOffset(w, path, offset); err != nil {
+				return err
+			}
+			return ctx.Err()
+		case <-time.After(logFollowPollInterval):
+			nextOffset, err := copyLogFromOffset(w, path, offset)
+			if err != nil {
+				return err
+			}
+			if nextOffset == offset {
+				return nil
+			}
+			offset = nextOffset
 		}
 	}
 }

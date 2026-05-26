@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -188,19 +189,21 @@ func TestCancelRunningLocalRun(t *testing.T) {
 	}()
 
 	runID := waitForRunID(t, home)
-	var followStdout bytes.Buffer
+	followStdout := &lockedBuffer{}
 	followCtx, cancelFollow := context.WithCancel(context.Background())
-	followCmd := NewRootCommand(Options{Stdout: &followStdout, Stderr: &bytes.Buffer{}})
+	defer cancelFollow()
+	followCmd := NewRootCommand(Options{Stdout: followStdout, Stderr: &bytes.Buffer{}})
 	followCmd.SetContext(followCtx)
 	followCmd.SetArgs([]string{"--home", home, "logs", runID, "--follow"})
 	var followWG sync.WaitGroup
 	followWG.Add(1)
+	var followErr error
 	go func() {
 		defer followWG.Done()
-		_ = followCmd.Execute()
+		followErr = followCmd.Execute()
 	}()
 
-	waitForText(t, trainStdout, "slow start")
+	waitForText(t, followStdout, "slow start")
 	var cancelStdout bytes.Buffer
 	cancelCmd := NewRootCommand(Options{Stdout: &cancelStdout, Stderr: &bytes.Buffer{}})
 	cancelCmd.SetArgs([]string{"--home", home, "cancel", runID})
@@ -210,6 +213,9 @@ func TestCancelRunningLocalRun(t *testing.T) {
 	wg.Wait()
 	cancelFollow()
 	followWG.Wait()
+	if followErr != nil && !errors.Is(followErr, context.Canceled) {
+		t.Fatalf("logs follow returned error: %v", followErr)
+	}
 	if trainErr == nil {
 		t.Fatal("expected train command to return cancellation exit error")
 	}
@@ -227,6 +233,60 @@ func TestCancelRunningLocalRun(t *testing.T) {
 	}
 	if !strings.Contains(followStdout.String(), "slow start") {
 		t.Fatalf("follow output = %s", followStdout.String())
+	}
+}
+
+func TestFollowLogsDrainsWritesAfterTerminalState(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "home")
+	runID := "r_follow_terminal"
+	paths := artifact.ForRun(home, runID)
+	if err := artifact.EnsureHome(home); err != nil {
+		t.Fatalf("ensure home: %v", err)
+	}
+	if err := artifact.EnsureRun(paths); err != nil {
+		t.Fatalf("ensure run: %v", err)
+	}
+	store, err := state.Open(paths.DB)
+	if err != nil {
+		t.Fatalf("open state: %v", err)
+	}
+	defer store.Close()
+	now := time.Now().UTC()
+	if err := store.CreateRun(context.Background(), app.Run{
+		ID:        runID,
+		JobName:   "follow terminal",
+		Script:    "script.py",
+		Provider:  string(app.ProviderLocal),
+		State:     app.RunStateRunning,
+		StartedAt: now,
+	}); err != nil {
+		t.Fatalf("create run: %v", err)
+	}
+
+	output := &lockedBuffer{}
+	done := make(chan error, 1)
+	go func() {
+		done <- followLogs(context.Background(), output, home, runID, paths.Logs)
+	}()
+
+	appendLogLine(t, paths.Logs, "before terminal")
+	waitForText(t, output, "before terminal")
+	if err := store.FinishRun(context.Background(), runID, app.RunStateCanceled, exitCodeCanceled, "canceled", now); err != nil {
+		t.Fatalf("finish run: %v", err)
+	}
+	time.Sleep(logFollowPollInterval / 2)
+	appendLogLine(t, paths.Logs, "after terminal")
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("follow logs returned error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("follow logs did not return after terminal state")
+	}
+	if !strings.Contains(output.String(), "after terminal") {
+		t.Fatalf("follow output = %s", output.String())
 	}
 }
 
@@ -1301,6 +1361,18 @@ func waitForText(t *testing.T, buf interface{ String() string }, text string) {
 		time.Sleep(25 * time.Millisecond)
 	}
 	t.Fatalf("%q not found in %q", text, buf.String())
+}
+
+func appendLogLine(t *testing.T, path string, line string) {
+	t.Helper()
+	file, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatalf("open log file: %v", err)
+	}
+	defer file.Close()
+	if _, err := fmt.Fprintln(file, line); err != nil {
+		t.Fatalf("write log line: %v", err)
+	}
 }
 
 type lockedBuffer struct {
