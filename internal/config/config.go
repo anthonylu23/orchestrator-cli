@@ -18,6 +18,7 @@ const DefaultBundleMaxSizeMB = 512
 type Config struct {
 	Job        JobConfig        `yaml:"job"`
 	Data       DataConfig       `yaml:"data"`
+	Staging    StagingConfig    `yaml:"staging"`
 	Packaging  PackagingConfig  `yaml:"packaging"`
 	Routing    RoutingConfig    `yaml:"routing"`
 	Sizing     SizingConfig     `yaml:"sizing"`
@@ -53,6 +54,11 @@ type PackagingConfig struct {
 type BundleConfig struct {
 	MaxSizeMB                 int  `yaml:"max_size_mb"`
 	RequireOverrideAboveLimit bool `yaml:"require_override_above_limit"`
+}
+
+type StagingConfig struct {
+	CheckpointURIPrefix string `yaml:"checkpoint_uri_prefix"`
+	DataURIPrefix       string `yaml:"data_uri_prefix"`
 }
 
 type RoutingConfig struct {
@@ -132,17 +138,24 @@ type GCPConfig struct {
 }
 
 type LambdaConfig struct {
-	RegionName             string `yaml:"region_name"`
-	InstanceTypeName       string `yaml:"instance_type_name"`
-	SSHKeyName             string `yaml:"ssh_key_name"`
-	SSHPrivateKey          string `yaml:"ssh_private_key"`
-	ImageFamily            string `yaml:"image_family"`
-	PollIntervalSeconds    int    `yaml:"poll_interval_seconds"`
-	TerminateOnCompletion  *bool  `yaml:"terminate_on_completion"`
-	KeepInstanceOnFailure  bool   `yaml:"keep_instance_on_failure"`
-	APITimeoutSeconds      int    `yaml:"api_timeout_seconds"`
-	SSHConnectTimeoutSecs  int    `yaml:"ssh_connect_timeout_seconds"`
-	SSHReadyTimeoutSeconds int    `yaml:"ssh_ready_timeout_seconds"`
+	RegionName             string             `yaml:"region_name"`
+	InstanceTypeName       string             `yaml:"instance_type_name"`
+	SSHKeyName             string             `yaml:"ssh_key_name"`
+	SSHPrivateKey          string             `yaml:"ssh_private_key"`
+	ImageFamily            string             `yaml:"image_family"`
+	RegistryAuth           RegistryAuthConfig `yaml:"registry_auth"`
+	PollIntervalSeconds    int                `yaml:"poll_interval_seconds"`
+	TerminateOnCompletion  *bool              `yaml:"terminate_on_completion"`
+	KeepInstanceOnFailure  bool               `yaml:"keep_instance_on_failure"`
+	APITimeoutSeconds      int                `yaml:"api_timeout_seconds"`
+	SSHConnectTimeoutSecs  int                `yaml:"ssh_connect_timeout_seconds"`
+	SSHReadyTimeoutSeconds int                `yaml:"ssh_ready_timeout_seconds"`
+}
+
+type RegistryAuthConfig struct {
+	Server      string `yaml:"server"`
+	UsernameEnv string `yaml:"username_env"`
+	PasswordEnv string `yaml:"password_env"`
 }
 
 type ChinaCloudConfig struct {
@@ -210,6 +223,7 @@ type TrainFlags struct {
 type ResolvedTrainConfig struct {
 	Provider                  string
 	Job                       app.JobSpec
+	Staging                   StagingConfig
 	Packaging                 PackagingConfig
 	Routing                   RoutingConfig
 	Sizing                    SizingConfig
@@ -304,6 +318,7 @@ func LoadTrain(flags TrainFlags) (ResolvedTrainConfig, error) {
 	return ResolvedTrainConfig{
 		Provider:                  provider,
 		Job:                       job,
+		Staging:                   cfg.Staging,
 		Packaging:                 resolvePackaging(cfg.Packaging),
 		Routing:                   resolveRouting(cfg.Routing),
 		Sizing:                    cfg.Sizing,
@@ -316,7 +331,7 @@ func LoadTrain(flags TrainFlags) (ResolvedTrainConfig, error) {
 		RequireOverrideAboveLimit: requireOverride,
 		AllowLargeDataBundle:      flags.AllowLargeDataBundle,
 		SwitchboardHome:           resolvedHome,
-	}, validateProviderConfig(provider, job, resolvePackaging(cfg.Packaging), resolveGCP(cfg.GCP), resolveLambda(cfg.Lambda), resolveChinaCloud(cfg.ChinaCloud))
+	}, validateResolvedConfig(provider, job, cfg.Staging, resolvePackaging(cfg.Packaging), resolveGCP(cfg.GCP), resolveLambda(cfg.Lambda), resolveChinaCloud(cfg.ChinaCloud))
 }
 
 func resolvePackaging(packaging PackagingConfig) PackagingConfig {
@@ -546,6 +561,34 @@ func resolveChinaCloudProvider(provider ChinaCloudProviderConfig) ChinaCloudProv
 	return provider
 }
 
+func validateResolvedConfig(provider string, job app.JobSpec, staging StagingConfig, packaging PackagingConfig, gcp GCPConfig, lambda LambdaConfig, china ChinaCloudConfig) error {
+	if err := validateStagingConfig(staging); err != nil {
+		return err
+	}
+	return validateProviderConfig(provider, job, packaging, gcp, lambda, china)
+}
+
+func validateStagingConfig(staging StagingConfig) error {
+	for name, value := range map[string]string{
+		"staging.checkpoint_uri_prefix": staging.CheckpointURIPrefix,
+		"staging.data_uri_prefix":       staging.DataURIPrefix,
+	} {
+		if value == "" {
+			continue
+		}
+		parsed, err := url.Parse(value)
+		if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+			return fmt.Errorf("%s must be an object-store URI prefix", name)
+		}
+		switch parsed.Scheme {
+		case "s3", "gs":
+		default:
+			return fmt.Errorf("%s only supports s3:// or gs:// prefixes today", name)
+		}
+	}
+	return nil
+}
+
 func validateProviderConfig(provider string, job app.JobSpec, packaging PackagingConfig, gcp GCPConfig, lambda LambdaConfig, china ChinaCloudConfig) error {
 	switch provider {
 	case "gcp":
@@ -606,6 +649,23 @@ func validateLambdaConfig(job app.JobSpec, lambda LambdaConfig) error {
 	}
 	if lambda.SSHPrivateKey == "" {
 		reasons = append(reasons, "lambda.ssh_private_key is required")
+	}
+	if lambda.RegistryAuth.Server != "" || lambda.RegistryAuth.UsernameEnv != "" || lambda.RegistryAuth.PasswordEnv != "" {
+		if lambda.RegistryAuth.Server == "" {
+			reasons = append(reasons, "lambda.registry_auth.server is required when registry auth is configured")
+		}
+		if lambda.RegistryAuth.UsernameEnv == "" {
+			reasons = append(reasons, "lambda.registry_auth.username_env is required when registry auth is configured")
+		}
+		if lambda.RegistryAuth.PasswordEnv == "" {
+			reasons = append(reasons, "lambda.registry_auth.password_env is required when registry auth is configured")
+		}
+		if lambda.RegistryAuth.UsernameEnv != "" && os.Getenv(lambda.RegistryAuth.UsernameEnv) == "" {
+			reasons = append(reasons, fmt.Sprintf("lambda.registry_auth.username_env %s is empty or unset", lambda.RegistryAuth.UsernameEnv))
+		}
+		if lambda.RegistryAuth.PasswordEnv != "" && os.Getenv(lambda.RegistryAuth.PasswordEnv) == "" {
+			reasons = append(reasons, fmt.Sprintf("lambda.registry_auth.password_env %s is empty or unset", lambda.RegistryAuth.PasswordEnv))
+		}
 	}
 	if len(reasons) > 0 {
 		return errors.New(strings.Join(reasons, "; "))

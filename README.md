@@ -10,7 +10,7 @@ Switchboard now has a local orchestration vertical slice, deterministic mock-pro
 
 Run artifacts redact secret-like keys and known secret environment values before persistence. Attempt history also records resume checkpoint provenance and provider cost estimates so failover decisions remain explainable after completion. Provider resource records track external resources such as GCP CustomJobs and Lambda instances separately from attempts, including state, region/project, cleanup policy, and provider refs.
 
-GCP v1 is still image-submit-first at the provider boundary, but the CLI can now build and push a Docker image before submit when a GCP job uses `job.script` with `packaging` config. Live auth, a billable CPU-only Vertex AI CustomJob smoke test, a non-billable pricing/capacity smoke, and a PyTorch Iris Vertex container run have passed on the `switchboard-496606` project. `examples/gcp/iris` contains the first realistic PyTorch Iris container workflow with optional GCS checkpoint upload/resume. GCP capabilities can use live Cloud Billing pricing, Compute Engine machine/accelerator inventory, and regional quota facts with static fallback. Lambda v1 launches one on-demand instance, runs a prebuilt Docker image through cloud-init, collects logs/events over SSH, and terminates the instance by default. China cloud provider readiness adapters are available for `alibaba-cloud`, `huawei-cloud`, `tencent-cloud`, `tianyi-cloud`, and `baidu-ai-cloud`; all five now have config-gated VM + Docker execution code behind the shared China VM runtime, but live verification is pending a China colleague smoke. GCP data staging beyond `gs://`, Lambda private-registry/staging support, China cloud live verification, additional providers, and richer QoL workflows remain roadmap work.
+GCP v1 is still image-submit-first at the provider boundary, but the CLI can now build and push a Docker image before submit when a GCP job uses `job.script` with `packaging` config. Live auth, a billable CPU-only Vertex AI CustomJob smoke test, a non-billable pricing/capacity smoke, and a PyTorch Iris Vertex container run have passed on the `switchboard-496606` project. `examples/gcp/iris` contains the first realistic PyTorch Iris container workflow with optional GCS checkpoint upload/resume. GCP capabilities can use live Cloud Billing pricing, Compute Engine machine/accelerator inventory, and regional quota facts with static fallback. Lambda v1 launches one on-demand instance, runs a prebuilt Docker image through cloud-init, supports env-var-backed private registry login before `docker pull`, collects logs/events over SSH, and terminates the instance by default. China cloud provider readiness adapters are available for `alibaba-cloud`, `huawei-cloud`, `tencent-cloud`, `tianyi-cloud`, and `baidu-ai-cloud`; all five now have config-gated VM + Docker execution code behind the shared China VM runtime, but live verification is pending a China colleague smoke. Shared object-storage staging env vars now cover `s3://` and `gs://` checkpoint/data prefixes; automatic bundled-data upload, China cloud live verification, additional providers, and richer QoL workflows remain roadmap work.
 
 ## Quick Start
 
@@ -140,6 +140,22 @@ SWITCHBOARD_CREDENTIALS_PASSPHRASE=... \
 
 See [Credentials](docs/credentials.md).
 
+Run the Lambda S3 checkpoint example from a public or private registry:
+
+```sh
+docker build -f examples/lambda/s3_checkpoint/Dockerfile \
+  -t ghcr.io/<owner>/switchboard-lambda-s3-checkpoint:latest \
+  examples/lambda/s3_checkpoint
+docker push ghcr.io/<owner>/switchboard-lambda-s3-checkpoint:latest
+
+GHCR_USERNAME=<owner> GHCR_TOKEN=... \
+SWITCHBOARD_CREDENTIALS_PASSPHRASE=... \
+SWITCHBOARD_CLI_HOME="$(mktemp -d)" \
+./bin/switchboard-cli train --provider lambda --config examples/lambda-s3-checkpoint.yaml
+```
+
+The example uses `staging.checkpoint_uri_prefix` to inject `SWITCHBOARD_CHECKPOINT_URI_PREFIX`; the container uploads a checkpoint to S3 and emits that shared URI as a checkpoint event.
+
 ## Product Wedge
 
 Given a training script, data inputs, sizing profile, and budget, Switchboard should choose compatible execution infrastructure, run the job, persist telemetry, and resume from the latest checkpoint if a provider fails.
@@ -169,7 +185,7 @@ switchboard-cli resources list --active
 switchboard-cli resources cleanup --provider lambda --dry-run
 ```
 
-Planned commands not implemented yet include explicit `resume`. Planned provider work now focuses on private registry/data staging gaps, additional cloud adapters, and richer provider-specific checkpoint integrations.
+Planned commands not implemented yet include explicit `resume`. Planned provider work now focuses on managed object-store upload/download staging, provider-native registry secret handling, additional cloud adapters, and richer provider-specific checkpoint integrations.
 
 ## Data Inputs
 
@@ -203,7 +219,9 @@ For local runs, bundled files and directories are copied into each run workspace
 
 For GCP runs, v1 accepts `job.image` directly or can package `job.script` into a Docker image before submit. Data inputs must still be `gs://` URI inputs. Bundled local data and non-GCS URI inputs are rejected before submit. GCP containers receive `SWITCHBOARD_CHECKPOINT_URI_PREFIX=gs://<output-prefix>/<run-id>/checkpoints`; training code can upload checkpoint files there and emit those shared `gs://` URIs for resume/failover. See [GCP Provider](docs/gcp-provider.md).
 
-For Lambda runs, v1 accepts `job.image` directly and runs it on a launched Lambda instance with Docker. Bundled local data and `job.script` are rejected before submit. URI data inputs are passed through for the container to handle itself. Lambda containers receive remote-safe Switchboard paths under `/tmp/switchboard`; portable resume requires emitted `s3://` or `gs://` checkpoint URIs. See [Lambda Cloud Provider](docs/lambda-provider.md).
+For Lambda runs, v1 accepts `job.image` directly and runs it on a launched Lambda instance with Docker. Bundled local data and `job.script` are rejected before submit. URI data inputs are passed through for the container to handle itself. Lambda containers receive remote-safe Switchboard paths under `/tmp/switchboard`; portable resume requires emitted `s3://` or `gs://` checkpoint URIs. Private registry pulls can use `lambda.registry_auth` with username/password environment variables. See [Lambda Cloud Provider](docs/lambda-provider.md).
+
+Shared object-storage staging env vars are configured under `staging`. Switchboard currently supports `s3://` and `gs://` prefixes, injects per-run checkpoint/data prefixes, and exposes declared URI inputs as name-scoped env vars for the container. See [Object Storage Staging](docs/object-storage-staging.md).
 
 For China cloud readiness checks, `providers check <provider>` validates required credential variables and endpoint reachability. All five China providers use built-in signed API probes when credentials are present; endpoint-only fallback reports `authenticated: false` because it does not prove the account can call the provider API. Use `providers check <provider> --strict-auth` to require built-in signed auth or a provider-specific official CLI/SDK smoke command before reporting ready. `train --provider <china-provider> --config ...` enables the VM runtime when the matching `china_cloud.<provider>` block is configured; live VM execution remains pending the China colleague smoke in [China Live Smoke Guide](docs/china-live-smoke.md). See [China Cloud Provider Readiness](docs/china-cloud-providers.md).
 
@@ -268,7 +286,7 @@ By default Switchboard writes to `~/.switchboard-cli`. Set `SWITCHBOARD_CLI_HOME
 6. Auto hardware routing for fastest compatible single-node GPU selection within a max run cost is implemented with provider-reported facts, including live GCP pricing/inventory/quota enrichment when available.
 7. Lambda Cloud single-instance execution and cleanup tracking are implemented.
 8. China cloud readiness adapters and config-gated VM + Docker execution paths for Alibaba Cloud, Huawei Cloud, Tencent Cloud, Tianyi Cloud, and Baidu AI Cloud are implemented; live verification is pending China colleague smoke.
-9. Later provider work includes Hyperbolic, RunPod, China cloud live verification/promotion, shared checkpoint backends, fan-out sweeps, richer terminal UI, and optional hosted control plane.
+9. Later provider work includes Hyperbolic, RunPod, China cloud live verification/promotion, automatic object-store upload/download staging, fan-out sweeps, richer terminal UI, and optional hosted control plane.
 
 ## Docs
 
@@ -279,6 +297,7 @@ By default Switchboard writes to `~/.switchboard-cli`. Set `SWITCHBOARD_CLI_HOME
 - [GCP Live Smoke Test](docs/gcp-live-smoke.md)
 - [GCP Packaging Decision](docs/gcp-packaging-decision.md)
 - [Lambda Cloud Provider](docs/lambda-provider.md)
+- [Object Storage Staging](docs/object-storage-staging.md)
 - [Credentials](docs/credentials.md)
 - [China Cloud Provider Readiness](docs/china-cloud-providers.md)
 - [China Live Smoke Guide](docs/china-live-smoke.md)

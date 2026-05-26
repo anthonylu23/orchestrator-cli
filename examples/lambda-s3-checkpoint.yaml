@@ -1,0 +1,32 @@
+job:
+  name: lambda-s3-checkpoint
+  image: ghcr.io/example/switchboard-lambda-s3-checkpoint:latest
+  args: ["--epochs", "3", "--train-data", "s3://my-bucket/datasets/train.csv"]
+  # Add AWS credentials here only for a short smoke account, or bake a safer
+  # credential path into the image. YAML env values are passed literally.
+  env:
+    AWS_REGION: us-east-1
+
+data:
+  inputs:
+    - name: train
+      source: s3://my-bucket/datasets/train.csv
+      mount: /workspace/data/train.csv
+      mode: uri
+
+staging:
+  checkpoint_uri_prefix: s3://my-bucket/switchboard/checkpoints
+  data_uri_prefix: s3://my-bucket/switchboard/data
+
+lambda:
+  region_name: us-west-1
+  instance_type_name: gpu_1x_a10
+  ssh_key_name: switchboard
+  ssh_private_key: ~/.ssh/id_ed25519
+  poll_interval_seconds: 30
+  terminate_on_completion: true
+  keep_instance_on_failure: false
+  registry_auth:
+    server: ghcr.io
+    username_env: GHCR_USERNAME
+    password_env: GHCR_TOKEN

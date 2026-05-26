@@ -50,7 +50,7 @@ SQLite is the canonical state store for runs, attempts, routing decisions, and p
 
 ## Data Preparation
 
-Switchboard has a provider-independent data preparation layer between config loading and provider submit. It validates declared training/test data inputs, estimates bundled data size, creates a data manifest, and adds provider-ready data instructions to the runtime bundle.
+Switchboard has a provider-independent data preparation layer between config loading and provider submit. It validates declared training/test data inputs, estimates bundled data size, creates a data manifest, and adds provider-ready data instructions to the runtime bundle. A separate `staging` config injects provider-independent object-store URI prefixes for containers that can upload shared checkpoints or read declared URI data directly.
 
 Initial data input modes:
 
@@ -271,9 +271,9 @@ Artifacts:
 ~/.switchboard-cli/runs/<run-id>/workspace/
 ```
 
-Remote providers use remote-safe runtime paths rather than local artifact paths. GCP and Lambda jobs receive `/tmp/switchboard/checkpoints` and `/tmp/switchboard/events.jsonl`; provider adapters are responsible for mirroring remote logs and structured events back into local run artifacts.
+Remote providers use remote-safe runtime paths rather than local artifact paths. GCP and Lambda jobs receive `/tmp/switchboard/checkpoints` and `/tmp/switchboard/events.jsonl`; provider adapters are responsible for mirroring remote logs and structured events back into local run artifacts. When configured, shared staging env vars expose `s3://` or `gs://` checkpoint/data prefixes and name-scoped URI data inputs to the container.
 
-Provider adapters are also responsible for reporting external resource lifecycle transitions through the submit callbacks. GCP records CustomJobs as running/succeeded/failed/canceled. Lambda records instances as booting/running/failed/terminating based on launch, poll, remote execution, and cleanup behavior.
+Provider adapters are also responsible for reporting external resource lifecycle transitions through the submit callbacks. GCP records CustomJobs as running/succeeded/failed/canceled. Lambda records instances as booting/running/failed/terminating based on launch, poll, remote execution, and cleanup behavior. Lambda can perform a private registry `docker login` before pull from env-var-backed config; registry secrets are redacted from local artifacts but launch user data remains provider-side sensitive metadata.
 
 ## Data Failure Behavior
 

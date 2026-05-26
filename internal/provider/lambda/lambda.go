@@ -30,6 +30,7 @@ type Config struct {
 	SSHKeyName               string
 	SSHPrivateKey            string
 	ImageFamily              string
+	RegistryAuth             RegistryAuth
 	PollIntervalSeconds      int
 	TerminateOnCompletion    bool
 	TerminateOnCompletionSet bool
@@ -39,6 +40,12 @@ type Config struct {
 	SSHReadyTimeoutSeconds   int
 	BaseURL                  string
 	Credentials              credentials.Resolver
+}
+
+type RegistryAuth struct {
+	Server   string
+	Username string
+	Password string
 }
 
 type Provider struct {
@@ -146,7 +153,7 @@ func (p *Provider) Estimate(ctx context.Context, spec app.JobSpec) (app.CostEsti
 }
 
 func (p *Provider) Submit(ctx context.Context, req app.SubmitRequest) (app.SubmitResult, error) {
-	redactor := redact.FromEnvironment(req.JobSpec.Env, req.RuntimeEnv)
+	redactor := redact.FromEnvironment(req.JobSpec.Env, req.RuntimeEnv, p.registryAuthRedactionEnv())
 	paths := artifact.ForRun(filepath.Dir(filepath.Dir(req.RunDir)), req.RunID)
 	logFile, err := os.OpenFile(paths.Logs, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
 	if err != nil {
@@ -263,7 +270,7 @@ func (p *Provider) launchRequest(req app.SubmitRequest) LaunchInstanceRequest {
 		SSHKeyNames:      []string{p.config.SSHKeyName},
 		Hostname:         hostname(req.RunID),
 		Name:             req.JobSpec.Name,
-		UserData:         cloudInitUserData(req),
+		UserData:         cloudInitUserData(req, p.config.RegistryAuth),
 		Tags: []RequestedTagEntry{
 			{Key: "switchboard:run-id", Value: req.RunID},
 			{Key: "switchboard:attempt-id", Value: req.AttemptID},
@@ -306,6 +313,9 @@ func (p *Provider) resourceMetadata(extra map[string]string) map[string]string {
 	}
 	if p.config.ImageFamily != "" {
 		metadata["image_family"] = p.config.ImageFamily
+	}
+	if p.config.RegistryAuth.Server != "" {
+		metadata["registry_auth_server"] = p.config.RegistryAuth.Server
 	}
 	for key, value := range extra {
 		metadata[key] = value
@@ -665,6 +675,15 @@ func (p *Provider) shouldTerminate(exitCode int) bool {
 		return p.config.TerminateOnCompletion
 	}
 	return !p.config.KeepInstanceOnFailure
+}
+
+func (p *Provider) registryAuthRedactionEnv() map[string]string {
+	if p.config.RegistryAuth.Password == "" {
+		return nil
+	}
+	return map[string]string{
+		"SWITCHBOARD_LAMBDA_REGISTRY_PASSWORD": p.config.RegistryAuth.Password,
+	}
 }
 
 func (p *Provider) clientFor() (Client, error) {

@@ -73,7 +73,7 @@ func TestCloudInitRunsDockerWithoutLambdaAPIKey(t *testing.T) {
 		AttemptID:  "a_test",
 		RuntimeEnv: map[string]string{"SWITCHBOARD_RUN_ID": "r_test"},
 	}
-	userData := cloudInitUserData(req)
+	userData := cloudInitUserData(req, RegistryAuth{})
 	for _, want := range []string{"docker pull 'ghcr.io/example/smoke:latest'", "docker' 'run' '--rm' '--gpus' 'all' '--env-file' '/tmp/switchboard/container.env'", "printf '%s\\n' 'SWITCHBOARD_EVENTS_PATH=/tmp/switchboard/events.jsonl' >> '/tmp/switchboard/container.env'", "'python' '/app/train.py' '--epochs' '1'"} {
 		if !strings.Contains(userData, want) {
 			t.Fatalf("expected %q in user data:\n%s", want, userData)
@@ -81,6 +81,32 @@ func TestCloudInitRunsDockerWithoutLambdaAPIKey(t *testing.T) {
 	}
 	if strings.Contains(userData, "secret-lambda-api-key") {
 		t.Fatalf("user data leaked Lambda API key:\n%s", userData)
+	}
+}
+
+func TestCloudInitLogsIntoPrivateRegistry(t *testing.T) {
+	req := app.SubmitRequest{
+		JobSpec: app.JobSpec{
+			Name:  "private-smoke",
+			Image: "registry.example.com/switchboard/smoke:latest",
+		},
+		RunID:     "r_test",
+		AttemptID: "a_test",
+	}
+	userData := cloudInitUserData(req, RegistryAuth{
+		Server:   "registry.example.com",
+		Username: "switchboard",
+		Password: "registry-token-value",
+	})
+	for _, want := range []string{
+		"printf '%s' 'registry-token-value' > '/tmp/switchboard/registry-password'",
+		"docker login 'registry.example.com' --username 'switchboard' --password-stdin < '/tmp/switchboard/registry-password'",
+		"rm -f '/tmp/switchboard/registry-password'",
+		"docker pull 'registry.example.com/switchboard/smoke:latest'",
+	} {
+		if !strings.Contains(userData, want) {
+			t.Fatalf("expected %q in user data:\n%s", want, userData)
+		}
 	}
 }
 

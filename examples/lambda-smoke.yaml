@@ -13,4 +13,4 @@ lambda:
   ssh_private_key: ~/.ssh/id_ed25519
   poll_interval_seconds: 30
   terminate_on_completion: true
-keep_instance_on_failure: false
+  keep_instance_on_failure: false

@@ -711,6 +711,14 @@ job:
   image: ghcr.io/example/switchboard-lambda-smoke:latest
   command: ["python", "/app/train.py"]
   args: ["--epochs", "1"]
+data:
+  inputs:
+    - name: train-set
+      source: s3://example-bucket/train.csv
+      mode: uri
+staging:
+  checkpoint_uri_prefix: s3://example-bucket/switchboard/checkpoints
+  data_uri_prefix: s3://example-bucket/switchboard/data
 lambda:
   region_name: us-west-1
   instance_type_name: gpu_1x_a10
@@ -764,6 +772,12 @@ lambda:
 	}
 	if fake.lastSubmit.RuntimeEnv["SWITCHBOARD_CHECKPOINT_DIR"] != "/tmp/switchboard/checkpoints" {
 		t.Fatalf("lambda checkpoint env = %#v", fake.lastSubmit.RuntimeEnv)
+	}
+	if fake.lastSubmit.RuntimeEnv["SWITCHBOARD_CHECKPOINT_URI_PREFIX"] != "s3://example-bucket/switchboard/checkpoints/"+runID+"/checkpoints" {
+		t.Fatalf("lambda checkpoint uri prefix = %#v", fake.lastSubmit.RuntimeEnv)
+	}
+	if fake.lastSubmit.RuntimeEnv["SWITCHBOARD_DATA_TRAIN_SET_URI"] != "s3://example-bucket/train.csv" {
+		t.Fatalf("lambda data env = %#v", fake.lastSubmit.RuntimeEnv)
 	}
 	if strings.Contains(fake.lastSubmit.RuntimeEnv["SWITCHBOARD_EVENTS_PATH"], home) {
 		t.Fatalf("lambda events path should not point at local artifact path: %#v", fake.lastSubmit.RuntimeEnv)

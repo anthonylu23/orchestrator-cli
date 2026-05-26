@@ -227,17 +227,26 @@ gcp:
 
 func TestLoadTrainAcceptsLambdaImageJob(t *testing.T) {
 	dir := t.TempDir()
+	t.Setenv("GHCR_USER", "switchboard")
+	t.Setenv("GHCR_TOKEN", "registry-secret-token")
 	configPath := filepath.Join(dir, "switchboard.yaml")
 	content := []byte(`
 job:
   name: lambda-container
   image: ghcr.io/example/switchboard-lambda-smoke:latest
   command: ["python", "/app/train.py"]
+staging:
+  checkpoint_uri_prefix: s3://switchboard-smoke/checkpoints
+  data_uri_prefix: s3://switchboard-smoke/data
 lambda:
   region_name: us-west-1
   instance_type_name: gpu_1x_a10
   ssh_key_name: switchboard
   ssh_private_key: ~/.ssh/id_ed25519
+  registry_auth:
+    server: ghcr.io
+    username_env: GHCR_USER
+    password_env: GHCR_TOKEN
 `)
 	if err := os.WriteFile(configPath, content, 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
@@ -254,6 +263,9 @@ lambda:
 	if got.Job.Image != "ghcr.io/example/switchboard-lambda-smoke:latest" || got.Lambda.RegionName != "us-west-1" {
 		t.Fatalf("resolved = %#v", got)
 	}
+	if got.Staging.CheckpointURIPrefix != "s3://switchboard-smoke/checkpoints" || got.Lambda.RegistryAuth.Server != "ghcr.io" {
+		t.Fatalf("staging/lambda auth = %#v / %#v", got.Staging, got.Lambda.RegistryAuth)
+	}
 	if strings.HasPrefix(got.Lambda.SSHPrivateKey, "~") {
 		t.Fatalf("ssh private key was not expanded: %#v", got.Lambda.SSHPrivateKey)
 	}
@@ -262,6 +274,65 @@ lambda:
 	}
 	if got.Lambda.PollIntervalSeconds != 30 || got.Lambda.SSHReadyTimeoutSeconds != 600 {
 		t.Fatalf("lambda defaults = %#v", got.Lambda)
+	}
+}
+
+func TestLoadTrainRejectsInvalidStagingPrefix(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "switchboard.yaml")
+	content := []byte(`
+job:
+  script: train.py
+staging:
+  checkpoint_uri_prefix: https://example.com/checkpoints
+`)
+	if err := os.WriteFile(configPath, content, 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	_, err := LoadTrain(TrainFlags{
+		ConfigPath:      configPath,
+		Provider:        "local",
+		SwitchboardHome: filepath.Join(dir, "home"),
+	})
+	if err == nil || !strings.Contains(err.Error(), "staging.checkpoint_uri_prefix only supports s3:// or gs://") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestLoadTrainRejectsMissingLambdaRegistryAuthEnv(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "switchboard.yaml")
+	content := []byte(`
+job:
+  name: lambda-container
+  image: ghcr.io/example/switchboard-lambda-smoke:latest
+lambda:
+  region_name: us-west-1
+  instance_type_name: gpu_1x_a10
+  ssh_key_name: switchboard
+  ssh_private_key: ~/.ssh/id_ed25519
+  registry_auth:
+    server: ghcr.io
+    username_env: MISSING_GHCR_USER
+    password_env: MISSING_GHCR_TOKEN
+`)
+	if err := os.WriteFile(configPath, content, 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	_, err := LoadTrain(TrainFlags{
+		ConfigPath:      configPath,
+		Provider:        "lambda",
+		SwitchboardHome: filepath.Join(dir, "home"),
+	})
+	if err == nil {
+		t.Fatal("expected registry auth validation error")
+	}
+	for _, want := range []string{"MISSING_GHCR_USER is empty or unset", "MISSING_GHCR_TOKEN is empty or unset"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("expected %q in error: %v", want, err)
+		}
 	}
 }
 

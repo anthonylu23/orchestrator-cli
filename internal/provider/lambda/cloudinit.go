@@ -14,9 +14,10 @@ const remoteEventsPath = remoteSwitchboardDir + "/events.jsonl"
 const remoteExitPath = remoteSwitchboardDir + "/exit.json"
 const remoteCheckpointsDir = remoteSwitchboardDir + "/checkpoints"
 const remoteEnvPath = remoteSwitchboardDir + "/container.env"
+const remoteRegistryPasswordPath = remoteSwitchboardDir + "/registry-password"
 
-func cloudInitUserData(req app.SubmitRequest) string {
-	script := lambdaRunnerScript(req)
+func cloudInitUserData(req app.SubmitRequest, registryAuth RegistryAuth) string {
+	script := lambdaRunnerScript(req, registryAuth)
 	var out strings.Builder
 	out.WriteString("#cloud-config\n")
 	out.WriteString("write_files:\n")
@@ -33,7 +34,7 @@ func cloudInitUserData(req app.SubmitRequest) string {
 	return out.String()
 }
 
-func lambdaRunnerScript(req app.SubmitRequest) string {
+func lambdaRunnerScript(req app.SubmitRequest, registryAuth RegistryAuth) string {
 	env := map[string]string{}
 	for k, v := range req.JobSpec.Env {
 		env[k] = v
@@ -61,25 +62,39 @@ func lambdaRunnerScript(req app.SubmitRequest) string {
 	dockerArgs = append(dockerArgs, req.JobSpec.Command...)
 	dockerArgs = append(dockerArgs, req.JobSpec.Args...)
 
-	return strings.Join([]string{
+	lines := []string{
 		"#!/usr/bin/env bash",
 		"set +e",
 		"mkdir -p " + shellQuote(remoteCheckpointsDir),
 		"touch " + shellQuote(remoteEventsPath),
 		"rm -f " + shellQuote(remoteExitPath),
 		"rm -f " + shellQuote(remoteEnvPath),
+		"rm -f " + shellQuote(remoteRegistryPasswordPath),
 		envFileScript(keys, env, remoteEnvPath),
 		"chmod 0600 " + shellQuote(remoteEnvPath),
-		"{",
+	}
+	if registryAuth.Server != "" {
+		lines = append(lines,
+			"printf '%s' "+shellQuote(registryAuth.Password)+" > "+shellQuote(remoteRegistryPasswordPath),
+			"chmod 0600 "+shellQuote(remoteRegistryPasswordPath),
+		)
+	}
+	lines = append(lines, "{")
+	if registryAuth.Server != "" {
+		lines = append(lines, "  docker login "+shellQuote(registryAuth.Server)+" --username "+shellQuote(registryAuth.Username)+" --password-stdin < "+shellQuote(remoteRegistryPasswordPath))
+	}
+	lines = append(lines,
 		"  echo 'lambda switchboard job starting'",
-		"  docker pull " + shellQuote(req.JobSpec.Image),
-		"  " + shellCommand(dockerArgs),
+		"  docker pull "+shellQuote(req.JobSpec.Image),
+		"  "+shellCommand(dockerArgs),
 		"  code=$?",
 		"  if [ \"$code\" -eq 0 ]; then reason='completed'; else reason=\"container exited with code $code\"; fi",
-		"  printf '{\"exit_code\":%d,\"exit_reason\":\"%s\"}\\n' \"$code\" \"$reason\" > " + shellQuote(remoteExitPath),
+		"  printf '{\"exit_code\":%d,\"exit_reason\":\"%s\"}\\n' \"$code\" \"$reason\" > "+shellQuote(remoteExitPath),
+		"  rm -f "+shellQuote(remoteRegistryPasswordPath),
 		"  exit \"$code\"",
-		"} >> " + shellQuote(remoteLogsPath) + " 2>&1",
-	}, "\n")
+		"} >> "+shellQuote(remoteLogsPath)+" 2>&1",
+	)
+	return strings.Join(lines, "\n")
 }
 
 func envFileScript(keys []string, env map[string]string, path string) string {

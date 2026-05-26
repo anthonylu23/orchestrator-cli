@@ -160,7 +160,7 @@ Exit criteria:
 
 ## Phase 6 - Lambda Cloud Adapter
 
-Status: initial implementation complete with live smoke coverage. The adapter can be configured as `provider=lambda`, validates Lambda image-first jobs, discovers instance types through the Lambda Cloud API, launches one on-demand instance with cloud-init, runs a Docker image, collects logs/events over SSH, records run artifacts, resolves Lambda API keys from the encrypted local credential store, persists instance resource lifecycle records, and terminates the instance by default. Gated auth, submit, failure-cleanup, cancel, and public CLI smokes passed against real Lambda Cloud infrastructure on 2026-05-20.
+Status: initial implementation complete with live smoke coverage. The adapter can be configured as `provider=lambda`, validates Lambda image-first jobs, discovers instance types through the Lambda Cloud API, launches one on-demand instance with cloud-init, optionally logs into a private registry from env-var-backed config, runs a Docker image, collects logs/events over SSH, records run artifacts, resolves Lambda API keys from the encrypted local credential store, persists instance resource lifecycle records, and terminates the instance by default. Gated auth, submit, failure-cleanup, cancel, and public CLI smokes passed against real Lambda Cloud infrastructure on 2026-05-20.
 
 Goals:
 
@@ -182,8 +182,8 @@ Exit criteria:
 Next steps:
 
 1. Keep gated Lambda live smoke coverage current after lifecycle or cloud-init changes.
-2. Add private registry guidance if Docker pull auth is needed.
-3. Add S3 checkpoint examples for portable Lambda resume.
+2. Add provider-native registry secret handling if Lambda exposes a safer path than launch user data.
+3. Keep the S3 checkpoint example current with the shared `staging` env contract.
 4. Decide whether retained Lambda instances should support explicit refresh/adoption.
 5. Decide whether Lambda filesystems should become first-class staging or checkpoint backends.
 
@@ -226,7 +226,7 @@ Next steps:
 
 1. Add Hyperbolic and/or RunPod adapters after the Lambda live smoke is stable.
 2. Promote China cloud VM adapters from code-ready to live-supported after colleague smoke evidence exists.
-3. Add GCS, S3, OSS, OBS, COS, CTYun OOS, and BOS checkpoint backends and provider examples that emit shared checkpoint URIs.
+3. Promote shared object-storage staging from `s3://`/`gs://` env injection into managed upload/download backends, then add OSS, OBS, COS, CTYun OOS, and BOS examples when those providers are live verified.
 4. Add multi-node and distributed training topology after single-node auto hardware proves useful.
 5. Add basic experiment fan-out.
 6. Add richer terminal attach views.

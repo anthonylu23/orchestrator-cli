@@ -29,6 +29,7 @@ import (
 	"github.com/anthonylu23/switchboard-cli/internal/redact"
 	"github.com/anthonylu23/switchboard-cli/internal/routing"
 	"github.com/anthonylu23/switchboard-cli/internal/runtimeprep"
+	"github.com/anthonylu23/switchboard-cli/internal/staging"
 	"github.com/anthonylu23/switchboard-cli/internal/state"
 	"github.com/anthonylu23/switchboard-cli/internal/summary"
 	"github.com/spf13/cobra"
@@ -198,7 +199,7 @@ func runTrain(ctx context.Context, opts Options, resolved config.ResolvedTrainCo
 			selectedHardware = decision.SelectedHardware
 			fmt.Fprintf(opts.Stdout, "Selected %s: %s\n", selectedProvider, decision.SelectionReason)
 		}
-		code, retryable, err := runAttempt(ctx, opts, store, registry, paths, runID, selectedProvider, job, manifest, resumeFrom, selectedHardware)
+		code, retryable, err := runAttempt(ctx, opts, store, registry, paths, runID, selectedProvider, job, manifest, resolved.Staging, resumeFrom, selectedHardware)
 		if err == nil {
 			return code, nil
 		}
@@ -340,7 +341,7 @@ func finishRunOnly(ctx context.Context, store *state.Store, runID string, code i
 	_ = store.FinishRun(ctx, runID, app.RunStateFailed, code, reason, time.Now().UTC())
 }
 
-func runAttempt(ctx context.Context, opts Options, store *state.Store, registry *provider.Registry, paths artifact.Paths, runID string, selectedProvider string, job app.JobSpec, manifest app.DataManifest, resumeFrom *app.CheckpointRef, selectedHardware *app.HardwareSelection) (int, bool, error) {
+func runAttempt(ctx context.Context, opts Options, store *state.Store, registry *provider.Registry, paths artifact.Paths, runID string, selectedProvider string, job app.JobSpec, manifest app.DataManifest, stagingConfig config.StagingConfig, resumeFrom *app.CheckpointRef, selectedHardware *app.HardwareSelection) (int, bool, error) {
 	baseRedactor := redact.FromEnvironment(job.Env)
 	attemptID := app.NewAttemptID()
 	attempt := app.Attempt{ID: attemptID, RunID: runID, Provider: selectedProvider, State: app.AttemptStateRunning, StartedAt: time.Now().UTC()}
@@ -380,7 +381,7 @@ func runAttempt(ctx context.Context, opts Options, store *state.Store, registry 
 	if resumeFrom != nil {
 		resumeValue = resumeFrom.URI
 	}
-	runtimeEnv := runtimeEnvForProvider(selectedProvider, runID, attemptID, resumeValue, paths)
+	runtimeEnv := runtimeEnvForProvider(selectedProvider, runID, attemptID, resumeValue, paths, stagingConfig, attemptJob.Data)
 	attemptRedactor := redact.FromEnvironment(attemptJob.Env, runtimeEnv)
 	estimate := app.CostEstimate{Currency: "USD"}
 	if selectedHardware != nil && selectedHardware.HourlyUSD > 0 {
@@ -520,14 +521,14 @@ func providerResourceKey(resource app.ProviderResource) string {
 	return resource.Provider + "|" + string(resource.Kind) + "|" + externalID
 }
 
-func runtimeEnvForProvider(selectedProvider string, runID string, attemptID string, resumeValue string, paths artifact.Paths) map[string]string {
+func runtimeEnvForProvider(selectedProvider string, runID string, attemptID string, resumeValue string, paths artifact.Paths, stagingConfig config.StagingConfig, inputs []app.DataInput) map[string]string {
 	checkpointDir := paths.Checkpoints
 	eventsPath := paths.EventsJSONL
 	if selectedProvider == gcpprovider.ProviderName || selectedProvider == lambdaprovider.ProviderName || isChinaCloudProvider(selectedProvider) {
 		checkpointDir = "/tmp/switchboard/checkpoints"
 		eventsPath = "/tmp/switchboard/events.jsonl"
 	}
-	return map[string]string{
+	env := map[string]string{
 		"SWITCHBOARD_RUN_ID":          runID,
 		"SWITCHBOARD_ATTEMPT_ID":      attemptID,
 		"SWITCHBOARD_CHECKPOINT_DIR":  checkpointDir,
@@ -539,6 +540,13 @@ func runtimeEnvForProvider(selectedProvider string, runID string, attemptID stri
 		"ORCHESTRATOR_RESUME_FROM":    resumeValue,
 		"ORCHESTRATOR_EVENTS_PATH":    eventsPath,
 	}
+	for key, value := range staging.RuntimeEnv(stagingConfig, runID, inputs) {
+		if selectedProvider == gcpprovider.ProviderName && (key == "SWITCHBOARD_CHECKPOINT_URI_PREFIX" || key == "ORCHESTRATOR_CHECKPOINT_URI_PREFIX") {
+			continue
+		}
+		env[key] = value
+	}
+	return env
 }
 
 func writeSummary(ctx context.Context, store *state.Store, paths artifact.Paths, runID string) error {
@@ -1558,7 +1566,12 @@ func lambdaConfigFromConfig(cfg config.LambdaConfig, credentialResolver credenti
 		APITimeoutSeconds:        cfg.APITimeoutSeconds,
 		SSHConnectTimeoutSecs:    cfg.SSHConnectTimeoutSecs,
 		SSHReadyTimeoutSeconds:   cfg.SSHReadyTimeoutSeconds,
-		Credentials:              credentialResolver,
+		RegistryAuth: lambdaprovider.RegistryAuth{
+			Server:   cfg.RegistryAuth.Server,
+			Username: os.Getenv(cfg.RegistryAuth.UsernameEnv),
+			Password: os.Getenv(cfg.RegistryAuth.PasswordEnv),
+		},
+		Credentials: credentialResolver,
 	}
 }
 
