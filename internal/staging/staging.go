@@ -11,12 +11,12 @@ import (
 func RuntimeEnv(cfg config.StagingConfig, runID string, inputs []app.DataInput) map[string]string {
 	env := map[string]string{}
 	if cfg.CheckpointURIPrefix != "" {
-		prefix := joinURI(cfg.CheckpointURIPrefix, runID, "checkpoints")
+		prefix := CheckpointPrefix(cfg, runID)
 		env["SWITCHBOARD_CHECKPOINT_URI_PREFIX"] = prefix
 		env["ORCHESTRATOR_CHECKPOINT_URI_PREFIX"] = prefix
 	}
 	if cfg.DataURIPrefix != "" {
-		prefix := joinURI(cfg.DataURIPrefix, runID, "data")
+		prefix := DataPrefix(cfg, runID)
 		env["SWITCHBOARD_DATA_URI_PREFIX"] = prefix
 		env["ORCHESTRATOR_DATA_URI_PREFIX"] = prefix
 	}
@@ -34,6 +34,18 @@ func RuntimeEnv(cfg config.StagingConfig, runID string, inputs []app.DataInput) 
 		}
 	}
 	return env
+}
+
+func CheckpointPrefix(cfg config.StagingConfig, runID string) string {
+	return joinURI(cfg.CheckpointURIPrefix, runID, "checkpoints")
+}
+
+func DataPrefix(cfg config.StagingConfig, runID string) string {
+	return joinURI(cfg.DataURIPrefix, runID, "data")
+}
+
+func JoinURI(parts ...string) string {
+	return joinURI(parts...)
 }
 
 func joinURI(parts ...string) string {

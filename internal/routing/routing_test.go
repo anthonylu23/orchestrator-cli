@@ -236,6 +236,49 @@ func TestSelectFullAutoChoosesFastestHardwareWithinBudget(t *testing.T) {
 	}
 }
 
+func TestSelectFullAutoUsesRequiredVRAMFromProbe(t *testing.T) {
+	registry := provider.NewRegistry(staticProvider{
+		name: "mock",
+		capabilities: app.ProviderCapabilities{SupportsLocalScript: true, HardwareShapes: []app.HardwareShape{{
+			ID:                "small",
+			Provider:          "mock",
+			Region:            "us-central1",
+			MachineType:       "small",
+			AcceleratorCount:  1,
+			GPUFamily:         "nvidia-l4",
+			VRAMGBPerGPU:      24,
+			TotalVRAMGB:       24,
+			OnDemandHourlyUSD: 1,
+			SupportsOnDemand:  true,
+		}, {
+			ID:                "large",
+			Provider:          "mock",
+			Region:            "us-central1",
+			MachineType:       "large",
+			AcceleratorCount:  1,
+			GPUFamily:         "nvidia-a100",
+			VRAMGBPerGPU:      80,
+			TotalVRAMGB:       80,
+			OnDemandHourlyUSD: 2,
+			SupportsOnDemand:  true,
+		}}},
+	})
+	decision, err := Select(context.Background(), registry, app.JobSpec{Script: "train.py"}, Options{
+		Mode:      "full_auto",
+		Objective: "fastest_within_budget",
+		Sizing:    SizingHints{RequiredVRAMGB: 64},
+	})
+	if err != nil {
+		t.Fatalf("Select returned error: %v", err)
+	}
+	if decision.SelectedHardware == nil || decision.SelectedHardware.ShapeID != "large" {
+		t.Fatalf("decision = %#v", decision)
+	}
+	if decision.Confidence != "probe" || decision.EstimatedRequiredVRAMGB == nil || *decision.EstimatedRequiredVRAMGB != 64 {
+		t.Fatalf("probe sizing not reflected: %#v", decision)
+	}
+}
+
 func TestSelectFullAutoRejectsOverBudgetHardware(t *testing.T) {
 	registry := provider.NewRegistry(staticProvider{
 		name: "expensive",

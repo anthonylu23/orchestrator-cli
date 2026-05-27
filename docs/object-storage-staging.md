@@ -1,6 +1,6 @@
 # Object Storage Staging
 
-Switchboard now has a small provider-independent object-storage staging contract for image-based jobs. It does not upload local files yet; it gives containers stable runtime environment variables for shared checkpoint prefixes, declared URI data inputs, and future staging backends.
+Switchboard has a provider-independent object-storage staging contract for image-based jobs. It gives containers stable runtime environment variables for shared checkpoint prefixes, declared URI data inputs, and staged data prefixes. When `staging.data_uri_prefix` is a `gs://` or `s3://` prefix and a non-local run has bundled data inputs, Switchboard uploads those local files/directories before provider validation and rewrites the inputs to `mode: uri`.
 
 ## Config
 
@@ -20,6 +20,41 @@ SWITCHBOARD_DATA_URI_PREFIX=s3://my-bucket/switchboard/data/<run-id>/data
 Legacy `ORCHESTRATOR_*` aliases are also injected during the rename window.
 
 ## Data Inputs
+
+### Managed Bundled Upload
+
+For cloud runs, local bundled inputs can be staged to object storage by setting `staging.data_uri_prefix`:
+
+```yaml
+data:
+  inputs:
+    - name: train
+      source: ./data/train.csv
+      mount: /workspace/data/train.csv
+      mode: bundle
+
+staging:
+  data_uri_prefix: s3://my-bucket/switchboard/data
+```
+
+Before submit, Switchboard uploads the file to:
+
+```text
+s3://my-bucket/switchboard/data/<run-id>/data/train/train.csv
+```
+
+and rewrites the provider-facing input to:
+
+```yaml
+name: train
+source: s3://my-bucket/switchboard/data/<run-id>/data/train/train.csv
+mount: /workspace/data/train.csv
+mode: uri
+```
+
+For directory inputs, all regular files are uploaded under `.../<input-name>/<relative-path>`, and the provider-facing input source becomes the directory prefix. GCS upload uses the Google Cloud Storage API; S3 upload shells out to `aws s3 cp`, so the AWS CLI and credentials must be available locally. The container is still responsible for reading or downloading the staged URI into the mounted path it expects; Switchboard does not inject provider IAM, create buckets, or mount object storage filesystems.
+
+### URI Inputs
 
 For each URI data input, Switchboard injects name-scoped env vars. For example:
 
@@ -53,7 +88,7 @@ Provider failover can only resume from checkpoint schemes supported by the next 
 
 ## Current Limits
 
-1. Switchboard does not yet upload bundled local datasets to object storage.
+1. Managed bundled upload supports `gs://` and `s3://` data prefixes only.
 2. Switchboard does not create buckets, IAM policies, or short-lived object-store credentials.
-3. Containers own object-store upload/download behavior for this phase.
+3. Containers own object-store download behavior for staged and URI inputs.
 4. GCP keeps its provider-owned `SWITCHBOARD_CHECKPOINT_URI_PREFIX` derived from `gcp.output_uri_prefix`.

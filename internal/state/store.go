@@ -171,6 +171,15 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 	return err
 }
 
+func (s *Store) RestartRun(ctx context.Context, run app.Run) error {
+	_, err := s.db.ExecContext(ctx, `
+UPDATE runs
+SET job_name = ?, script = ?, image = ?, provider = ?, state = ?, started_at = ?, ended_at = NULL, exit_code = 0, error = ''
+WHERE id = ?`,
+		run.JobName, run.Script, run.Image, run.Provider, run.State, run.StartedAt.Format(time.RFC3339Nano), run.ID)
+	return err
+}
+
 func (s *Store) CreateAttempt(ctx context.Context, attempt app.Attempt) error {
 	_, err := s.db.ExecContext(ctx, `
 INSERT INTO attempts (

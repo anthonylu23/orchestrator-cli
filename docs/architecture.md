@@ -50,7 +50,7 @@ SQLite is the canonical state store for runs, attempts, routing decisions, and p
 
 ## Data Preparation
 
-Switchboard has a provider-independent data preparation layer between config loading and provider submit. It validates declared training/test data inputs, estimates bundled data size, creates a data manifest, and adds provider-ready data instructions to the runtime bundle. A separate `staging` config injects provider-independent object-store URI prefixes for containers that can upload shared checkpoints or read declared URI data directly.
+Switchboard has a provider-independent data preparation layer between config loading and provider submit. It validates declared training/test data inputs, estimates bundled data size, creates a data manifest, and adds provider-ready data instructions to the runtime bundle. A separate `staging` config injects provider-independent object-store URI prefixes for containers that can upload shared checkpoints or read declared URI data directly. For non-local runs with `gs://` or `s3://` `staging.data_uri_prefix`, bundled data inputs are uploaded to object storage and rewritten to URI mode before routing/provider validation.
 
 Initial data input modes:
 
@@ -138,7 +138,7 @@ Current resource kinds:
 1. `custom_job`: a GCP Vertex AI CustomJob. Cleanup policy is `never`; lifecycle control is cancellation, not deletion.
 2. `instance`: a Lambda Cloud instance. Cleanup policy is derived from `terminate_on_completion` and `keep_instance_on_failure`.
 
-Providers call `OnResourceCreated` immediately after the external resource exists and `OnResourceUpdated` when observed state changes. The orchestration layer persists those records in SQLite and exposes them through `switchboard-cli resources list`. `switchboard-cli resources cleanup` requests provider cleanup only for tracked, active, Switchboard-created resources whose cleanup policy is not `never`.
+Providers call `OnResourceCreated` immediately after the external resource exists and `OnResourceUpdated` when observed state changes. The orchestration layer persists those records in SQLite and exposes them through `switchboard-cli resources list`. `switchboard-cli resources refresh` asks GCP or Lambda for current status and updates tracked resource state without creating or cleaning anything. `switchboard-cli resources cleanup` requests provider cleanup only for tracked, active, Switchboard-created resources whose cleanup policy is not `never`.
 
 ## Provider Capabilities and Errors
 
@@ -211,7 +211,7 @@ Planned control levels:
 2. `auto_provider`: route provider while honoring user-selected hardware requirements.
 3. `manual`: use the specified provider and hardware.
 
-The preferred full-auto objective is fastest compatible hardware within a max estimated run cost. Current inputs come from sizing hints and hardware constraints; probe artifacts are future work. If the estimator cannot produce a confident memory and cost estimate, routing rejects full-auto before submit with actionable missing-input or bounds reasons.
+The preferred full-auto objective is fastest compatible hardware within a max estimated run cost. Current inputs come from sizing hints, hardware constraints, and optional sizing probe artifacts. If `sizing.probe.command` and `sizing.probe.output` are configured, Switchboard runs the probe, reads measured fields such as `required_vram_gb` or `peak_vram_gb`, and feeds them into routing before submit. If the estimator cannot produce a confident memory and cost estimate, routing rejects full-auto before submit with actionable missing-input or bounds reasons.
 
 The planned routing flow is:
 
@@ -237,7 +237,7 @@ type CheckpointResolver interface {
 }
 ```
 
-The current resolver reads structured checkpoint events from `events.jsonl` and returns the highest-step checkpoint. Real cross-provider resume requires shared storage reachable from both providers. Providers report supported checkpoint URI schemes, and routing rejects resume attempts where the next provider cannot read the latest checkpoint. Local/mock tests model the metadata flow; GCP is considered reachable only for `gs://` checkpoint URIs.
+The current resolver reads structured checkpoint events from `events.jsonl` and returns the highest-step checkpoint. Real cross-provider resume requires shared storage reachable from both providers. Providers report supported checkpoint URI schemes, and routing rejects resume attempts where the next provider cannot read the latest checkpoint. Direct `switchboard-cli resume <run-id> --provider <provider>` also checks the selected provider's checkpoint schemes before creating the resumed attempt. Local/mock tests model the metadata flow; GCP is considered reachable only for `gs://` checkpoint URIs.
 
 ## Runtime and Telemetry
 
@@ -271,7 +271,7 @@ Artifacts:
 ~/.switchboard-cli/runs/<run-id>/workspace/
 ```
 
-Remote providers use remote-safe runtime paths rather than local artifact paths. GCP and Lambda jobs receive `/tmp/switchboard/checkpoints` and `/tmp/switchboard/events.jsonl`; provider adapters are responsible for mirroring remote logs and structured events back into local run artifacts. When configured, shared staging env vars expose `s3://` or `gs://` checkpoint/data prefixes and name-scoped URI data inputs to the container.
+Remote providers use remote-safe runtime paths rather than local artifact paths. GCP and Lambda jobs receive `/tmp/switchboard/checkpoints` and `/tmp/switchboard/events.jsonl`; provider adapters are responsible for mirroring remote logs and structured events back into local run artifacts. When configured, shared staging env vars expose `s3://` or `gs://` checkpoint/data prefixes and name-scoped URI data inputs to the container. Managed object-store staging can also transform bundled inputs into URI inputs before submit; containers still own object-store download/materialization.
 
 Provider adapters are also responsible for reporting external resource lifecycle transitions through the submit callbacks. GCP records CustomJobs as running/succeeded/failed/canceled. Lambda records instances as booting/running/failed/terminating based on launch, poll, remote execution, and cleanup behavior. Lambda can perform a private registry `docker login` before pull from env-var-backed config; registry secrets are redacted from local artifacts but launch user data remains provider-side sensitive metadata.
 

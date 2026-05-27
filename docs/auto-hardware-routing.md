@@ -4,7 +4,7 @@
 
 Auto hardware routing is implemented for the first single-node path. The config loader accepts `routing`, `sizing`, and `hardware`; provider capabilities expose concrete shapes; and the orchestration router can select provider plus hardware shape for `full_auto`, `auto_provider`, and `manual`.
 
-Current limits: sizing uses conservative hints rather than a probe artifact. GCP pricing and inventory are loaded from Google APIs when available, with static estimates as a fallback; capacity remains quota/inventory-based rather than a hard reservation.
+Current limits: sizing can use conservative hints or a local probe artifact with measured required/peak VRAM. GCP pricing and inventory are loaded from Google APIs when available, with static estimates as a fallback; capacity remains quota/inventory-based rather than a hard reservation.
 
 ## Goal
 
@@ -62,7 +62,25 @@ hardware:
 
 ## Sizing Model
 
-The preferred future sizing source is a probe or profiling step emitted by the training script or framework. The current implementation uses user-provided hints and constraints.
+The preferred sizing source is a probe or profiling step emitted by the training script or framework. Switchboard can run `sizing.probe.command`, read `sizing.probe.output`, and merge the resulting JSON profile into the routing hints before provider/hardware selection.
+
+Probe output is JSON. Supported fields are:
+
+```json
+{
+  "required_vram_gb": 24,
+  "peak_vram_gb": 22.5,
+  "model_parameters_b": 7,
+  "model_artifact_gb": 14,
+  "batch_size": 8,
+  "gradient_accumulation_steps": 2,
+  "precision": "bf16",
+  "optimizer": "adamw",
+  "expected_steps": 1200
+}
+```
+
+`required_vram_gb` takes precedence for fit checks. If it is absent, `peak_vram_gb` is used as the measured required VRAM. Other nonzero fields override matching static hints for routing.
 
 Useful sizing inputs include:
 
@@ -108,6 +126,6 @@ The same run/attempt model still applies. If an attempt fails for a retryable pr
 
 ## Next Steps
 
-1. Add a sizing profile artifact contract that scripts can emit during probe runs.
-2. Expand live GCP inventory smoke tests around Cloud Billing and Compute quota permissions.
-3. Expand the shape catalog and contract tests as Lambda, Hyperbolic, and other providers are added.
+1. Expand live GCP inventory smoke tests around Cloud Billing and Compute quota permissions.
+2. Expand the shape catalog and contract tests as Lambda, Hyperbolic, and other providers are added.
+3. Add framework-specific probe examples for common PyTorch and Transformers workloads.

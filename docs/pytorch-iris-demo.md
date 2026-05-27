@@ -66,4 +66,4 @@ Status: a CPU-only Vertex AI PyTorch Iris smoke passed on 2026-05-20 against `sw
 
 1. Keep local and GCP Iris workflows aligned as the provider evolves.
 2. Keep the GCP container build repeatable on `linux/amd64` so Vertex CPU jobs do not receive ARM-only images from Apple Silicon machines.
-3. Consider adding an optional resume-focused version after explicit user-facing `resume` support exists and shared checkpoint storage is available.
+3. Add an optional cloud resume walkthrough that uses `switchboard-cli resume <run-id>` with shared `gs://` checkpoint storage.

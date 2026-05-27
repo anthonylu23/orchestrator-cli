@@ -2,9 +2,9 @@
 
 ## Status
 
-The Lambda Cloud provider is implemented as a single-instance, image-first adapter. It launches a Lambda on-demand instance through the Lambda Cloud API, uses cloud-init to run a Docker container on the instance, supports optional private registry login before `docker pull`, collects remote logs and structured events over SSH, records local Switchboard artifacts, persists a tracked `instance` provider resource, and terminates the instance when the job completes by default.
+The Lambda Cloud provider is implemented as a single-instance, image-first adapter. It launches a Lambda on-demand instance through the Lambda Cloud API, uses cloud-init to run a Docker container on the instance, supports optional private registry login before `docker pull`, collects remote logs and structured events over SSH, records local Switchboard artifacts, persists a tracked `instance` provider resource, and terminates the instance when the job completes by default. The CLI can package a local `job.script` into a Docker image before submit when `packaging.image` is explicit.
 
-This is a milestone adapter for testing Switchboard jobs on real Lambda infrastructure. It is not yet a full data-staging, image-build, or cross-provider resume implementation.
+This is a milestone adapter for testing Switchboard jobs on real Lambda infrastructure. It is not yet a full image-build or Lambda-filesystem-staging implementation. Cross-provider resume is supported only when training code emits shared `s3://` or `gs://` checkpoint events and the resumed container can read that URI.
 
 Official references:
 
@@ -47,6 +47,28 @@ lambda:
   keep_instance_on_failure: false
 ```
 
+Package a local script before Lambda submit by supplying an explicit image tag:
+
+```yaml
+job:
+  name: lambda-script
+  script: examples/train.py
+
+packaging:
+  context: .
+  dockerfile: Dockerfile
+  image: ghcr.io/example/switchboard-lambda-script:latest
+  platform: linux/amd64
+
+lambda:
+  region_name: us-west-1
+  instance_type_name: gpu_1x_a10
+  ssh_key_name: switchboard
+  ssh_private_key: ~/.ssh/id_ed25519
+```
+
+Switchboard runs `docker build` and `docker push`, rewrites the provider-facing job to `job.image`, and then uses the normal Lambda image path. Authenticate Docker to the target registry before running the command.
+
 Store the API key, then run it:
 
 ```sh
@@ -82,13 +104,13 @@ The provider writes a durable resource record as soon as Lambda returns an insta
 3. `terminate_on_completion: false` and `keep_instance_on_failure: false`: `cleanup_policy=on_failure`.
 4. `terminate_on_completion: false` and `keep_instance_on_failure: true`: `cleanup_policy=never`.
 
-Use `switchboard-cli resources list --run <run-id>` to inspect tracked Lambda instances. Use `switchboard-cli resources cleanup --provider lambda` to request termination for tracked active Switchboard-created instances whose cleanup policy allows cleanup.
+Use `switchboard-cli resources list --run <run-id>` to inspect tracked Lambda instances. Use `switchboard-cli resources refresh --provider lambda` to re-read current instance status into the resource record. Use `switchboard-cli resources cleanup --provider lambda` to request termination for tracked active Switchboard-created instances whose cleanup policy allows cleanup.
 
 ## Supported Inputs
 
-Lambda v1 supports prebuilt `job.image` workloads. `job.script` and local bundled data are rejected before submit.
+Lambda v1 supports prebuilt `job.image` workloads and packageable `job.script` workloads when `packaging.image` is explicit. Local bundled data requires managed `s3://` or `gs://` staging before submit.
 
-URI data inputs using `http://`, `https://`, `s3://`, or `gs://` are allowed only as container-visible references. Switchboard does not download or mount those inputs on Lambda yet. The training image must read the URI itself using credentials supplied by the user through `job.env` or the image environment.
+URI data inputs using `http://`, `https://`, `s3://`, or `gs://` are allowed only as container-visible references. Switchboard uploads staged S3 data with the local AWS CLI before submit, but it does not download or mount URI inputs on Lambda yet. The training image must read the URI itself using credentials supplied by the user through `job.env` or the image environment.
 
 When `staging` is configured, Lambda containers also receive provider-independent object-storage env vars:
 
@@ -182,13 +204,12 @@ Live status: the gated auth, submit, failure cleanup, and cancel tests passed ag
 
 ## Current Limits
 
-1. No Switchboard-managed Docker build/push for Lambda yet.
+1. Lambda packaging requires an explicit `packaging.image`; Switchboard does not derive a provider-native registry image for Lambda.
 2. Private registry auth uses launch-time cloud-init user data; provider-native secret injection is not implemented yet.
 3. No Lambda filesystem staging yet.
 4. No multi-node Lambda jobs.
-5. No explicit user-facing resume command.
-6. SSH collection currently shells out to the local `ssh` binary.
-7. Resource cleanup can terminate tracked active instances, but Switchboard does not yet adopt or reuse arbitrary existing Lambda instances.
+5. SSH collection currently shells out to the local `ssh` binary.
+6. Resource refresh and cleanup work for tracked instances, but Switchboard does not yet adopt or reuse arbitrary existing Lambda instances.
 
 ## Next Steps
 

@@ -83,6 +83,7 @@ type SizingProbeConfig struct {
 }
 
 type SizingHintsConfig struct {
+	RequiredVRAMGB            float64 `yaml:"required_vram_gb"`
 	DatasetSizeGB             float64 `yaml:"dataset_size_gb"`
 	ModelParametersB          float64 `yaml:"model_parameters_b"`
 	ModelArtifactGB           float64 `yaml:"model_artifact_gb"`
@@ -297,6 +298,7 @@ func LoadTrain(flags TrainFlags) (ResolvedTrainConfig, error) {
 			job = resolveJobPaths(job, configDir)
 		}
 		cfg.Packaging = resolvePackagingPaths(cfg.Packaging, configDir)
+		cfg.Sizing = resolveSizingPaths(cfg.Sizing, configDir)
 		cfg.Lambda = resolveLambdaPaths(cfg.Lambda, configDir)
 		cfg.ChinaCloud = resolveChinaCloudPaths(cfg.ChinaCloud, configDir)
 	}
@@ -357,6 +359,11 @@ func resolvePackagingPaths(packaging PackagingConfig, baseDir string) PackagingC
 	packaging.Context = resolveLocalPath(packaging.Context, baseDir)
 	packaging.Dockerfile = resolveLocalPath(packaging.Dockerfile, baseDir)
 	return packaging
+}
+
+func resolveSizingPaths(sizing SizingConfig, baseDir string) SizingConfig {
+	sizing.Probe.Output = resolveLocalPath(sizing.Probe.Output, baseDir)
+	return sizing
 }
 
 func resolveLambdaPaths(lambda LambdaConfig, baseDir string) LambdaConfig {
@@ -594,7 +601,7 @@ func validateProviderConfig(provider string, job app.JobSpec, packaging Packagin
 	case "gcp":
 		return validateGCPConfig(job, packaging, gcp)
 	case "lambda":
-		return validateLambdaConfig(job, lambda)
+		return validateLambdaConfig(job, packaging, lambda)
 	case "alibaba-cloud":
 		return validateChinaCloudConfig(provider, job, china.AlibabaCloud)
 	case "huawei-cloud":
@@ -630,12 +637,12 @@ func validateGCPConfig(job app.JobSpec, packaging PackagingConfig, gcp GCPConfig
 	return nil
 }
 
-func validateLambdaConfig(job app.JobSpec, lambda LambdaConfig) error {
+func validateLambdaConfig(job app.JobSpec, packaging PackagingConfig, lambda LambdaConfig) error {
 	var reasons []string
-	if job.Image == "" {
-		reasons = append(reasons, "lambda provider requires job.image")
+	if job.Image == "" && !canPackageWithExplicitImage(job, packaging) {
+		reasons = append(reasons, "lambda provider requires job.image or packaging.image for job.script")
 	}
-	if job.Script != "" {
+	if job.Script != "" && !canPackageWithExplicitImage(job, packaging) {
 		reasons = append(reasons, "lambda provider v1 does not package local scripts; provide job.image")
 	}
 	if lambda.RegionName == "" {
@@ -726,6 +733,10 @@ func canPackageForGCP(job app.JobSpec, packaging PackagingConfig, gcp GCPConfig)
 		return true
 	}
 	return gcp.ProjectID != "" && gcp.Location != "" && gcp.ArtifactRegistryRepository != ""
+}
+
+func canPackageWithExplicitImage(job app.JobSpec, packaging PackagingConfig) bool {
+	return job.Script != "" && packaging.Image != ""
 }
 
 func LoadFile(path string) (Config, error) {

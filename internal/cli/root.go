@@ -29,6 +29,7 @@ import (
 	"github.com/anthonylu23/switchboard-cli/internal/redact"
 	"github.com/anthonylu23/switchboard-cli/internal/routing"
 	"github.com/anthonylu23/switchboard-cli/internal/runtimeprep"
+	"github.com/anthonylu23/switchboard-cli/internal/sizing"
 	"github.com/anthonylu23/switchboard-cli/internal/staging"
 	"github.com/anthonylu23/switchboard-cli/internal/state"
 	"github.com/anthonylu23/switchboard-cli/internal/summary"
@@ -41,6 +42,7 @@ type Options struct {
 	GCPProviderFactory    func(config.GCPConfig, io.Writer, io.Writer) app.ProviderAdapter
 	LambdaProviderFactory func(config.LambdaConfig, io.Writer, io.Writer) app.ProviderAdapter
 	ImageBuilderFactory   func(io.Writer, io.Writer) ImageBuilder
+	StagingUploader       staging.Uploader
 }
 
 type ImageBuilder interface {
@@ -74,6 +76,7 @@ func NewRootCommand(opts Options) *cobra.Command {
 	}
 	root.PersistentFlags().StringVar(&home, "home", "", "Switchboard home directory")
 	root.AddCommand(newTrainCommand(opts, &home))
+	root.AddCommand(newResumeCommand(opts, &home))
 	root.AddCommand(newStatusCommand(opts, &home))
 	root.AddCommand(newLogsCommand(opts, &home))
 	root.AddCommand(newCancelCommand(opts, &home))
@@ -124,32 +127,50 @@ func newTrainCommand(opts Options, home *string) *cobra.Command {
 	return cmd
 }
 
+func newResumeCommand(opts Options, home *string) *cobra.Command {
+	var flags config.TrainFlags
+	cmd := &cobra.Command{
+		Use:   "resume <run-id>",
+		Short: "Resume a run from its latest checkpoint",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			flags.SwitchboardHome = *home
+			resolved, err := config.LoadTrain(flags)
+			if err != nil {
+				return err
+			}
+			code, err := runResume(cmd.Context(), opts, args[0], resolved)
+			if err != nil {
+				return err
+			}
+			if code != 0 {
+				return exitCodeError{code: code}
+			}
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&flags.ConfigPath, "config", "", "Path to switchboard-cli YAML config")
+	cmd.Flags().StringVar(&flags.Provider, "provider", "auto", "Provider to use for the resumed attempt")
+	cmd.Flags().StringVar(&flags.Script, "script", "", "Training script path")
+	cmd.Flags().StringArrayVar(&flags.Args, "arg", nil, "Argument to pass to the script; repeat for multiple args")
+	cmd.Flags().BoolVar(&flags.AllowLargeDataBundle, "allow-large-data-bundle", false, "Allow local data bundles above configured limit")
+	return cmd
+}
+
 func runTrain(ctx context.Context, opts Options, resolved config.ResolvedTrainConfig) (int, error) {
 	if err := artifact.EnsureHome(resolved.SwitchboardHome); err != nil {
 		return exitCodeInternal, err
 	}
-
-	manifest, err := data.Prepare(resolved.Job, data.PreflightOptions{
-		BundleSizeLimitBytes: resolved.BundleMaxSizeBytes,
-		RequireOverride:      resolved.RequireOverrideAboveLimit,
-		AllowLargeBundle:     resolved.AllowLargeDataBundle,
-	})
+	var err error
+	resolved, err = applySizingProbe(ctx, opts, resolved)
 	if err != nil {
 		return exitCodeInvalidSpec, err
 	}
-	job := resolved.Job
-	job.Data = append([]app.DataInput(nil), manifest.Inputs...)
-	runRedactor := redact.FromEnvironment(job.Env)
 
-	now := time.Now().UTC()
 	runID := app.NewRunID()
-	originalScript := job.Script
-	if shouldPackageForProvider(resolved, job) {
-		packaged, err := packageJob(ctx, opts, resolved, job, runID)
-		if err != nil {
-			return exitCodeInvalidSpec, err
-		}
-		job = packaged
+	job, manifest, originalScript, err := prepareRunJob(ctx, opts, resolved, runID)
+	if err != nil {
+		return exitCodeInvalidSpec, err
 	}
 	paths := artifact.ForRun(resolved.SwitchboardHome, runID)
 	if err := artifact.EnsureRun(paths); err != nil {
@@ -161,11 +182,108 @@ func runTrain(ctx context.Context, opts Options, resolved config.ResolvedTrainCo
 	}
 	defer store.Close()
 
-	run := app.Run{ID: runID, JobName: resolved.Job.Name, Script: originalScript, Image: job.Image, Provider: resolved.Provider, State: app.RunStateRunning, StartedAt: now}
+	run := app.Run{ID: runID, JobName: resolved.Job.Name, Script: originalScript, Image: job.Image, Provider: resolved.Provider, State: app.RunStateRunning, StartedAt: time.Now().UTC()}
 	if err := store.CreateRun(ctx, run); err != nil {
 		return exitCodeInternal, err
 	}
+	return runAttempts(ctx, opts, resolved, store, paths, runID, job, manifest, nil)
+}
 
+func runResume(ctx context.Context, opts Options, runID string, resolved config.ResolvedTrainConfig) (int, error) {
+	if err := artifact.EnsureHome(resolved.SwitchboardHome); err != nil {
+		return exitCodeInternal, err
+	}
+	var err error
+	resolved, err = applySizingProbe(ctx, opts, resolved)
+	if err != nil {
+		return exitCodeInvalidSpec, err
+	}
+	paths := artifact.ForRun(resolved.SwitchboardHome, runID)
+	if err := artifact.EnsureRun(paths); err != nil {
+		return exitCodeInternal, err
+	}
+	store, err := state.Open(paths.DB)
+	if err != nil {
+		return exitCodeInternal, err
+	}
+	defer store.Close()
+	if _, err := store.GetRun(ctx, runID); err != nil {
+		return exitCodeInvalidSpec, fmt.Errorf("run %q not found: %w", runID, err)
+	}
+	resumeFrom, err := (checkpoint.Resolver{Home: resolved.SwitchboardHome}).Latest(ctx, runID)
+	if err != nil {
+		return exitCodeMissingResume, err
+	}
+	if resumeFrom == nil {
+		return exitCodeMissingResume, fmt.Errorf("run %s has no checkpoint events to resume from", runID)
+	}
+	job, manifest, originalScript, err := prepareRunJob(ctx, opts, resolved, runID)
+	if err != nil {
+		return exitCodeInvalidSpec, err
+	}
+	run := app.Run{ID: runID, JobName: resolved.Job.Name, Script: originalScript, Image: job.Image, Provider: resolved.Provider, State: app.RunStateRunning, StartedAt: time.Now().UTC()}
+	if err := store.RestartRun(ctx, run); err != nil {
+		return exitCodeInternal, err
+	}
+	fmt.Fprintf(opts.Stdout, "Found checkpoint: step %d\n", resumeFrom.Step)
+	return runAttempts(ctx, opts, resolved, store, paths, runID, job, manifest, resumeFrom)
+}
+
+func prepareRunJob(ctx context.Context, opts Options, resolved config.ResolvedTrainConfig, runID string) (app.JobSpec, app.DataManifest, string, error) {
+	manifest, err := data.Prepare(resolved.Job, data.PreflightOptions{
+		BundleSizeLimitBytes: resolved.BundleMaxSizeBytes,
+		RequireOverride:      resolved.RequireOverrideAboveLimit,
+		AllowLargeBundle:     resolved.AllowLargeDataBundle,
+	})
+	if err != nil {
+		return app.JobSpec{}, app.DataManifest{}, "", err
+	}
+	job := resolved.Job
+	job.Data = append([]app.DataInput(nil), manifest.Inputs...)
+	if shouldStageBundledInputs(resolved, manifest) {
+		if err := validateStagingDataPrefixForProvider(resolved); err != nil {
+			return app.JobSpec{}, app.DataManifest{}, "", err
+		}
+		staged, err := staging.StageBundledInputs(ctx, resolved.Staging, runID, job, manifest, opts.StagingUploader)
+		if err != nil {
+			return app.JobSpec{}, app.DataManifest{}, "", err
+		}
+		job = staged.Job
+		manifest = staged.Manifest
+		for _, uri := range staged.UploadedObjects {
+			fmt.Fprintf(opts.Stdout, "Staged data: %s\n", uri)
+		}
+	}
+	originalScript := job.Script
+	if shouldPackageForProvider(resolved, job) {
+		packaged, err := packageJob(ctx, opts, resolved, job, runID)
+		if err != nil {
+			return app.JobSpec{}, app.DataManifest{}, "", err
+		}
+		job = packaged
+	}
+	return job, manifest, originalScript, nil
+}
+
+func applySizingProbe(ctx context.Context, opts Options, resolved config.ResolvedTrainConfig) (config.ResolvedTrainConfig, error) {
+	if len(resolved.Sizing.Probe.Command) == 0 && resolved.Sizing.Probe.Output == "" {
+		return resolved, nil
+	}
+	profile, err := sizing.RunProbe(ctx, resolved.Sizing.Probe, opts.Stdout, opts.Stderr)
+	if err != nil {
+		return config.ResolvedTrainConfig{}, err
+	}
+	resolved.Sizing.Hints = sizing.ApplyProfile(resolved.Sizing.Hints, profile)
+	if profile.RequiredVRAMGB > 0 || profile.PeakVRAMGB > 0 {
+		fmt.Fprintf(opts.Stdout, "Loaded sizing profile: required_vram_gb=%.1f\n", resolved.Sizing.Hints.RequiredVRAMGB)
+	} else {
+		fmt.Fprintln(opts.Stdout, "Loaded sizing profile")
+	}
+	return resolved, nil
+}
+
+func runAttempts(ctx context.Context, opts Options, resolved config.ResolvedTrainConfig, store *state.Store, paths artifact.Paths, runID string, job app.JobSpec, manifest app.DataManifest, initialResumeFrom *app.CheckpointRef) (int, error) {
+	runRedactor := redact.FromEnvironment(job.Env)
 	credentialResolver, err := credentialResolverForTrain(opts, resolved)
 	if err != nil {
 		return exitCodeInvalidSpec, err
@@ -176,7 +294,7 @@ func runTrain(ctx context.Context, opts Options, resolved config.ResolvedTrainCo
 		maxAttempts = 1
 	}
 	excluded := map[string]bool{}
-	var resumeFrom *app.CheckpointRef
+	resumeFrom := initialResumeFrom
 	for attemptNumber := 1; attemptNumber <= maxAttempts; attemptNumber++ {
 		selectedProvider := resolved.Provider
 		var selectedHardware *app.HardwareSelection
@@ -200,6 +318,13 @@ func runTrain(ctx context.Context, opts Options, resolved config.ResolvedTrainCo
 			selectedProvider = decision.SelectedProvider
 			selectedHardware = decision.SelectedHardware
 			fmt.Fprintf(opts.Stdout, "Selected %s: %s\n", selectedProvider, decision.SelectionReason)
+		} else if resumeFrom != nil {
+			if err := ensureProviderSupportsCheckpoint(ctx, registry, selectedProvider, resumeFrom); err != nil {
+				reason := runRedactor.String(err.Error())
+				finishRunOnly(ctx, store, runID, exitCodeMissingResume, reason)
+				_ = writeSummary(ctx, store, paths, runID)
+				return exitCodeMissingResume, err
+			}
 		}
 		code, retryable, err := runAttempt(ctx, opts, store, registry, paths, runID, selectedProvider, job, manifest, resolved.Staging, resumeFrom, selectedHardware)
 		if err == nil {
@@ -226,6 +351,31 @@ func runTrain(ctx context.Context, opts Options, resolved config.ResolvedTrainCo
 	return exitCodeInternal, fmt.Errorf("run did not complete")
 }
 
+func ensureProviderSupportsCheckpoint(ctx context.Context, registry *provider.Registry, selectedProvider string, resumeFrom *app.CheckpointRef) error {
+	adapter, err := registry.Get(selectedProvider)
+	if err != nil {
+		return err
+	}
+	capabilities, err := adapter.Capabilities(ctx)
+	if err != nil {
+		return err
+	}
+	scheme := checkpointScheme(resumeFrom.URI)
+	for _, supported := range capabilities.SupportedCheckpointSchemes {
+		if strings.EqualFold(supported, scheme) {
+			return nil
+		}
+	}
+	return fmt.Errorf("provider %s does not support %q checkpoint resume URI %q", selectedProvider, scheme, resumeFrom.URI)
+}
+
+func checkpointScheme(uri string) string {
+	if before, _, ok := strings.Cut(uri, "://"); ok && before != "" {
+		return strings.ToLower(before)
+	}
+	return "file"
+}
+
 func routingOptions(resolved config.ResolvedTrainConfig, excluded map[string]bool, resumeFrom *app.CheckpointRef) routing.Options {
 	return routing.Options{
 		Mode:                resolved.Routing.Mode,
@@ -233,6 +383,7 @@ func routingOptions(resolved config.ResolvedTrainConfig, excluded map[string]boo
 		Exclude:             excluded,
 		BudgetMaxRunCostUSD: resolved.Routing.Budget.MaxRunCostUSD,
 		Sizing: routing.SizingHints{
+			RequiredVRAMGB:            resolved.Sizing.Hints.RequiredVRAMGB,
 			ModelParametersB:          resolved.Sizing.Hints.ModelParametersB,
 			ModelArtifactGB:           resolved.Sizing.Hints.ModelArtifactGB,
 			BatchSize:                 resolved.Sizing.Hints.BatchSize,
@@ -259,14 +410,55 @@ func routingOptions(resolved config.ResolvedTrainConfig, excluded map[string]boo
 	}
 }
 
+func shouldStageBundledInputs(resolved config.ResolvedTrainConfig, manifest app.DataManifest) bool {
+	if resolved.Staging.DataURIPrefix == "" || resolved.Provider == string(app.ProviderLocal) {
+		return false
+	}
+	for _, input := range manifest.Inputs {
+		if input.Mode == app.DataInputModeBundle {
+			return true
+		}
+	}
+	return false
+}
+
+func validateStagingDataPrefixForProvider(resolved config.ResolvedTrainConfig) error {
+	if resolved.Provider == string(app.ProviderAuto) {
+		return nil
+	}
+	scheme := objectStoreScheme(resolved.Staging.DataURIPrefix)
+	switch resolved.Provider {
+	case gcpprovider.ProviderName:
+		if scheme != "gs" {
+			return fmt.Errorf("provider gcp cannot read staged data prefix scheme %q; use a gs:// staging.data_uri_prefix", scheme)
+		}
+	case lambdaprovider.ProviderName:
+		if scheme != "s3" && scheme != "gs" {
+			return fmt.Errorf("provider lambda cannot read staged data prefix scheme %q; use an s3:// or gs:// staging.data_uri_prefix", scheme)
+		}
+	}
+	return nil
+}
+
+func objectStoreScheme(value string) string {
+	before, _, ok := strings.Cut(value, "://")
+	if !ok {
+		return ""
+	}
+	return strings.ToLower(before)
+}
+
 func shouldPackageForProvider(resolved config.ResolvedTrainConfig, job app.JobSpec) bool {
 	if job.Image != "" || job.Script == "" {
 		return false
 	}
-	if resolved.Provider != gcpprovider.ProviderName {
+	if resolved.Provider == string(app.ProviderLocal) {
 		return false
 	}
-	return resolved.Packaging.Image != "" || resolved.Packaging.Dockerfile != "" || resolved.GCP.ArtifactRegistryRepository != ""
+	if resolved.Packaging.Image != "" {
+		return true
+	}
+	return resolved.Provider == gcpprovider.ProviderName && (resolved.Packaging.Dockerfile != "" || resolved.GCP.ArtifactRegistryRepository != "")
 }
 
 func packageJob(ctx context.Context, opts Options, resolved config.ResolvedTrainConfig, job app.JobSpec, runID string) (app.JobSpec, error) {
@@ -852,6 +1044,69 @@ func newResourcesCommand(opts Options, home *string) *cobra.Command {
 	list.Flags().BoolVar(&listActive, "active", false, "Only show active resources")
 	list.Flags().BoolVar(&listJSON, "json", false, "Print JSON")
 
+	var refreshRunID, refreshProvider string
+	var refreshJSON bool
+	refresh := &cobra.Command{
+		Use:   "refresh",
+		Short: "Refresh tracked provider resource states",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			resolvedHome, err := resolveHome(*home)
+			if err != nil {
+				return err
+			}
+			if err := artifact.EnsureHome(resolvedHome); err != nil {
+				return err
+			}
+			store, err := state.Open(artifact.DBPath(resolvedHome))
+			if err != nil {
+				return err
+			}
+			defer store.Close()
+			resources, err := store.ProviderResources(cmd.Context(), state.ProviderResourceFilter{RunID: refreshRunID, Provider: refreshProvider})
+			if err != nil {
+				return err
+			}
+			var lambdaResolver *credentials.Resolver
+			refreshed := make([]app.ProviderResource, 0, len(resources))
+			for _, resource := range resources {
+				if !resourceRefreshSupported(resource) {
+					continue
+				}
+				adapter, err := refreshAdapterForResource(opts, resolvedHome, resource, &lambdaResolver)
+				if err != nil {
+					return err
+				}
+				status, err := adapter.GetStatus(cmd.Context(), app.ProviderJobRef{ID: resource.ProviderRef})
+				if err != nil {
+					return err
+				}
+				now := time.Now().UTC()
+				resource.State = providerResourceStateFromAttempt(status.State)
+				resource.UpdatedAt = now
+				resource.LastObservedAt = &now
+				resource.Metadata = mergeResourceMetadata(resource.Metadata, map[string]string{"refreshed_at": now.Format(time.RFC3339Nano)})
+				saved, err := store.SaveProviderResource(cmd.Context(), resource)
+				if err != nil {
+					return err
+				}
+				refreshed = append(refreshed, saved)
+				if !refreshJSON {
+					fmt.Fprintf(opts.Stdout, "refreshed\t%s\t%s\t%s\t%s\n", saved.ID, saved.Provider, saved.State, saved.ProviderRef)
+				}
+			}
+			if refreshJSON {
+				return json.NewEncoder(opts.Stdout).Encode(refreshed)
+			}
+			if len(refreshed) == 0 {
+				fmt.Fprintln(opts.Stdout, "No refreshable provider resources found")
+			}
+			return nil
+		},
+	}
+	refresh.Flags().StringVar(&refreshRunID, "run", "", "Refresh resources for one run ID")
+	refresh.Flags().StringVar(&refreshProvider, "provider", "", "Refresh resources for one provider")
+	refresh.Flags().BoolVar(&refreshJSON, "json", false, "Print refreshed resources as JSON")
+
 	var cleanupRunID, cleanupProvider string
 	var dryRun bool
 	cleanup := &cobra.Command{
@@ -913,7 +1168,7 @@ func newResourcesCommand(opts Options, home *string) *cobra.Command {
 	cleanup.Flags().StringVar(&cleanupProvider, "provider", "", "Clean resources for one provider")
 	cleanup.Flags().BoolVar(&dryRun, "dry-run", false, "Show resources that would be cleaned")
 
-	cmd.AddCommand(list, cleanup)
+	cmd.AddCommand(list, refresh, cleanup)
 	return cmd
 }
 
@@ -940,6 +1195,34 @@ func providerResourceStateActive(state app.ProviderResourceState) bool {
 		return true
 	default:
 		return false
+	}
+}
+
+func resourceRefreshSupported(resource app.ProviderResource) bool {
+	return resource.ProviderRef != "" && (resource.Provider == gcpprovider.ProviderName || resource.Provider == lambdaprovider.ProviderName)
+}
+
+func refreshAdapterForResource(opts Options, resolvedHome string, resource app.ProviderResource, lambdaResolver **credentials.Resolver) (app.ProviderAdapter, error) {
+	switch resource.Provider {
+	case gcpprovider.ProviderName, lambdaprovider.ProviderName:
+		return cleanupAdapterForResource(opts, resolvedHome, resource, lambdaResolver)
+	default:
+		return nil, fmt.Errorf("resource refresh is not supported for provider %q", resource.Provider)
+	}
+}
+
+func providerResourceStateFromAttempt(state app.AttemptState) app.ProviderResourceState {
+	switch state {
+	case app.AttemptStateRunning:
+		return app.ProviderResourceStateRunning
+	case app.AttemptStateSucceeded:
+		return app.ProviderResourceStateSucceeded
+	case app.AttemptStateFailed:
+		return app.ProviderResourceStateFailed
+	case app.AttemptStateCanceled:
+		return app.ProviderResourceStateCanceled
+	default:
+		return app.ProviderResourceStateUnknown
 	}
 }
 

@@ -24,6 +24,7 @@ type Options struct {
 }
 
 type SizingHints struct {
+	RequiredVRAMGB            float64
 	ModelParametersB          float64
 	ModelArtifactGB           float64
 	BatchSize                 int
@@ -282,6 +283,9 @@ func sortHardware(candidates []hardwareScoredCandidate, objective string) {
 }
 
 func estimateRequiredVRAM(opts Options) (float64, string, error) {
+	if opts.Sizing.RequiredVRAMGB > 0 {
+		return opts.Sizing.RequiredVRAMGB, "probe", nil
+	}
 	if opts.Sizing.ModelParametersB > 0 {
 		bytesPerParam := precisionBytes(opts.Sizing.Precision)
 		multiplier := optimizerMultiplier(opts.Sizing.Optimizer)

@@ -81,6 +81,105 @@ func TestLocalTrainStatusLogsIntegration(t *testing.T) {
 	}
 }
 
+func TestResumeLocalRunUsesLatestCheckpoint(t *testing.T) {
+	repo := repoRoot(t)
+	home := filepath.Join(t.TempDir(), "home")
+	var stdout, stderr bytes.Buffer
+
+	cmd := NewRootCommand(Options{Stdout: &stdout, Stderr: &stderr})
+	cmd.SetArgs([]string{"--home", home, "train", "--provider", "local", "--script", filepath.Join(repo, "examples", "train.py")})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("train returned error: %v\nstdout=%s\nstderr=%s", err, stdout.String(), stderr.String())
+	}
+	runID := extractRunID(t, stdout.String())
+
+	stdout.Reset()
+	cmd = NewRootCommand(Options{Stdout: &stdout, Stderr: &stderr})
+	cmd.SetArgs([]string{"--home", home, "resume", runID, "--provider", "local", "--script", filepath.Join(repo, "examples", "train.py")})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("resume returned error: %v\nstdout=%s\nstderr=%s", err, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "Found checkpoint: step 3") {
+		t.Fatalf("resume stdout = %s", stdout.String())
+	}
+
+	paths := artifact.ForRun(home, runID)
+	store, err := state.Open(paths.DB)
+	if err != nil {
+		t.Fatalf("open state: %v", err)
+	}
+	defer store.Close()
+	attempts, err := store.AttemptsByRun(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("attempts: %v", err)
+	}
+	if len(attempts) != 2 {
+		t.Fatalf("attempts = %#v", attempts)
+	}
+	if attempts[1].ResumeFromStep == nil || *attempts[1].ResumeFromStep != 3 || !strings.HasPrefix(attempts[1].ResumeFromURI, "file://") {
+		t.Fatalf("resume provenance = %#v", attempts[1])
+	}
+
+	var summary app.Summary
+	content, err := os.ReadFile(paths.Summary)
+	if err != nil {
+		t.Fatalf("read summary: %v", err)
+	}
+	if err := json.Unmarshal(content, &summary); err != nil {
+		t.Fatalf("parse summary: %v", err)
+	}
+	if summary.State != app.RunStateSucceeded || summary.ResumeCount != 1 {
+		t.Fatalf("summary = %#v", summary)
+	}
+}
+
+func TestResumeRejectsProviderWithoutCheckpointScheme(t *testing.T) {
+	repo := repoRoot(t)
+	dir := t.TempDir()
+	home := filepath.Join(dir, "home")
+	var stdout, stderr bytes.Buffer
+
+	cmd := NewRootCommand(Options{Stdout: &stdout, Stderr: &stderr})
+	cmd.SetArgs([]string{"--home", home, "train", "--provider", "local", "--script", filepath.Join(repo, "examples", "train.py")})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("train returned error: %v\nstdout=%s\nstderr=%s", err, stdout.String(), stderr.String())
+	}
+	runID := extractRunID(t, stdout.String())
+
+	configPath := filepath.Join(dir, "gcp.yaml")
+	configContent := `
+job:
+  image: us-docker.pkg.dev/project/repo/train:latest
+gcp:
+  project_id: test-project
+  location: us-central1
+  output_uri_prefix: gs://bucket/outputs
+`
+	if err := os.WriteFile(configPath, []byte(configContent), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	fake := &fakeGCPAdapter{}
+	stdout.Reset()
+	cmd = NewRootCommand(Options{
+		Stdout: &stdout,
+		Stderr: &stderr,
+		GCPProviderFactory: func(cfg config.GCPConfig, stdout io.Writer, stderr io.Writer) app.ProviderAdapter {
+			return fake
+		},
+	})
+	cmd.SetArgs([]string{"--home", home, "resume", runID, "--provider", "gcp", "--config", configPath})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected resume to reject incompatible checkpoint scheme")
+	}
+	if !strings.Contains(err.Error(), "does not support \"file\" checkpoint resume") {
+		t.Fatalf("error = %v", err)
+	}
+	if fake.lastSubmit.RunID != "" {
+		t.Fatalf("submit should not be called: %#v", fake.lastSubmit)
+	}
+}
+
 func TestLocalTrainMaterializesBundledData(t *testing.T) {
 	repo := repoRoot(t)
 	dir := t.TempDir()
@@ -761,6 +860,120 @@ gcp:
 	}
 }
 
+func TestGCPTrainStagesBundledDataBeforeSubmit(t *testing.T) {
+	dir := t.TempDir()
+	home := filepath.Join(dir, "home")
+	dataPath := filepath.Join(dir, "train.csv")
+	if err := os.WriteFile(dataPath, []byte("x,y\n1,2\n"), 0o600); err != nil {
+		t.Fatalf("write data: %v", err)
+	}
+	configPath := filepath.Join(dir, "switchboard.yaml")
+	configContent := fmt.Sprintf(`
+job:
+  name: gcp-staged-data
+  image: us-docker.pkg.dev/project/repo/train:latest
+data:
+  inputs:
+    - name: train
+      source: %q
+      mount: /workspace/data/train.csv
+      mode: bundle
+staging:
+  data_uri_prefix: gs://bucket/staged
+gcp:
+  project_id: test-project
+  location: us-central1
+  output_uri_prefix: gs://bucket/outputs
+`, dataPath)
+	if err := os.WriteFile(configPath, []byte(configContent), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	fake := &fakeGCPAdapter{}
+	uploader := &fakeStagingUploader{}
+	var stdout, stderr bytes.Buffer
+	cmd := NewRootCommand(Options{
+		Stdout:          &stdout,
+		Stderr:          &stderr,
+		StagingUploader: uploader,
+		GCPProviderFactory: func(cfg config.GCPConfig, stdout io.Writer, stderr io.Writer) app.ProviderAdapter {
+			return fake
+		},
+	})
+	cmd.SetArgs([]string{"--home", home, "train", "--provider", "gcp", "--config", configPath})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("train returned error: %v\nstdout=%s\nstderr=%s", err, stdout.String(), stderr.String())
+	}
+	runID := extractRunID(t, stdout.String())
+	wantURI := "gs://bucket/staged/" + runID + "/data/train/train.csv"
+	if len(uploader.destinations) != 1 || uploader.destinations[0] != wantURI {
+		t.Fatalf("staged destinations = %#v, want %s", uploader.destinations, wantURI)
+	}
+	if len(fake.lastSubmit.JobSpec.Data) != 1 || fake.lastSubmit.JobSpec.Data[0].Mode != app.DataInputModeURI || fake.lastSubmit.JobSpec.Data[0].Source != wantURI {
+		t.Fatalf("submitted data = %#v", fake.lastSubmit.JobSpec.Data)
+	}
+	if fake.lastSubmit.RuntimeEnv["SWITCHBOARD_DATA_TRAIN_URI"] != wantURI {
+		t.Fatalf("runtime env = %#v", fake.lastSubmit.RuntimeEnv)
+	}
+	if !strings.Contains(stdout.String(), "Staged data: "+wantURI) {
+		t.Fatalf("stdout = %s", stdout.String())
+	}
+}
+
+func TestGCPTrainRejectsS3StagingBeforeUpload(t *testing.T) {
+	dir := t.TempDir()
+	home := filepath.Join(dir, "home")
+	dataPath := filepath.Join(dir, "train.csv")
+	if err := os.WriteFile(dataPath, []byte("x,y\n1,2\n"), 0o600); err != nil {
+		t.Fatalf("write data: %v", err)
+	}
+	configPath := filepath.Join(dir, "switchboard.yaml")
+	configContent := fmt.Sprintf(`
+job:
+  name: gcp-s3-staging
+  image: us-docker.pkg.dev/project/repo/train:latest
+data:
+  inputs:
+    - name: train
+      source: %q
+      mount: /workspace/data/train.csv
+      mode: bundle
+staging:
+  data_uri_prefix: s3://bucket/staged
+gcp:
+  project_id: test-project
+  location: us-central1
+  output_uri_prefix: gs://bucket/outputs
+`, dataPath)
+	if err := os.WriteFile(configPath, []byte(configContent), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	fake := &fakeGCPAdapter{}
+	uploader := &fakeStagingUploader{}
+	var stdout, stderr bytes.Buffer
+	cmd := NewRootCommand(Options{
+		Stdout:          &stdout,
+		Stderr:          &stderr,
+		StagingUploader: uploader,
+		GCPProviderFactory: func(cfg config.GCPConfig, stdout io.Writer, stderr io.Writer) app.ProviderAdapter {
+			return fake
+		},
+	})
+	cmd.SetArgs([]string{"--home", home, "train", "--provider", "gcp", "--config", configPath})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected train to reject s3 staging for gcp")
+	}
+	if !strings.Contains(err.Error(), "provider gcp cannot read staged data prefix scheme \"s3\"") {
+		t.Fatalf("error = %v", err)
+	}
+	if len(uploader.destinations) != 0 {
+		t.Fatalf("staging uploader should not be called: %#v", uploader.destinations)
+	}
+	if fake.lastSubmit.RunID != "" {
+		t.Fatalf("submit should not be called: %#v", fake.lastSubmit)
+	}
+}
+
 func TestLambdaTrainIntegrationUsesConfiguredProvider(t *testing.T) {
 	dir := t.TempDir()
 	home := filepath.Join(dir, "home")
@@ -844,6 +1057,63 @@ lambda:
 	}
 }
 
+func TestLambdaTrainStagesBundledDataToS3BeforeSubmit(t *testing.T) {
+	dir := t.TempDir()
+	home := filepath.Join(dir, "home")
+	dataPath := filepath.Join(dir, "train.csv")
+	if err := os.WriteFile(dataPath, []byte("x,y\n1,2\n"), 0o600); err != nil {
+		t.Fatalf("write data: %v", err)
+	}
+	configPath := filepath.Join(dir, "switchboard.yaml")
+	configContent := fmt.Sprintf(`
+job:
+  name: lambda-staged-data
+  image: ghcr.io/example/switchboard-lambda-smoke:latest
+data:
+  inputs:
+    - name: train
+      source: %q
+      mount: /workspace/data/train.csv
+      mode: bundle
+staging:
+  data_uri_prefix: s3://example-bucket/staged
+lambda:
+  region_name: us-west-1
+  instance_type_name: gpu_1x_a10
+  ssh_key_name: switchboard
+  ssh_private_key: ~/.ssh/id_ed25519
+`, dataPath)
+	if err := os.WriteFile(configPath, []byte(configContent), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	fake := &fakeLambdaAdapter{}
+	uploader := &fakeStagingUploader{}
+	var stdout, stderr bytes.Buffer
+	cmd := NewRootCommand(Options{
+		Stdout:          &stdout,
+		Stderr:          &stderr,
+		StagingUploader: uploader,
+		LambdaProviderFactory: func(cfg config.LambdaConfig, stdout io.Writer, stderr io.Writer) app.ProviderAdapter {
+			return fake
+		},
+	})
+	cmd.SetArgs([]string{"--home", home, "train", "--provider", "lambda", "--config", configPath})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("train returned error: %v\nstdout=%s\nstderr=%s", err, stdout.String(), stderr.String())
+	}
+	runID := extractRunID(t, stdout.String())
+	wantURI := "s3://example-bucket/staged/" + runID + "/data/train/train.csv"
+	if len(uploader.destinations) != 1 || uploader.destinations[0] != wantURI {
+		t.Fatalf("staged destinations = %#v, want %s", uploader.destinations, wantURI)
+	}
+	if len(fake.lastSubmit.JobSpec.Data) != 1 || fake.lastSubmit.JobSpec.Data[0].Mode != app.DataInputModeURI || fake.lastSubmit.JobSpec.Data[0].Source != wantURI {
+		t.Fatalf("submitted data = %#v", fake.lastSubmit.JobSpec.Data)
+	}
+	if fake.lastSubmit.RuntimeEnv["SWITCHBOARD_DATA_TRAIN_URI"] != wantURI {
+		t.Fatalf("runtime env = %#v", fake.lastSubmit.RuntimeEnv)
+	}
+}
+
 func TestResourcesListAndCleanup(t *testing.T) {
 	home := filepath.Join(t.TempDir(), "home")
 	if err := artifact.EnsureHome(home); err != nil {
@@ -915,6 +1185,71 @@ func TestResourcesListAndCleanup(t *testing.T) {
 		t.Fatalf("resources: %v", err)
 	}
 	if len(resources) != 1 || resources[0].State != app.ProviderResourceStateTerminating {
+		t.Fatalf("resources = %#v", resources)
+	}
+}
+
+func TestResourcesRefreshUpdatesProviderResourceState(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "home")
+	if err := artifact.EnsureHome(home); err != nil {
+		t.Fatalf("ensure home: %v", err)
+	}
+	store, err := state.Open(artifact.DBPath(home))
+	if err != nil {
+		t.Fatalf("open state: %v", err)
+	}
+	started := time.Now().UTC()
+	if err := store.CreateRun(context.Background(), app.Run{ID: "r_refresh", JobName: "train", Image: "image", Provider: "gcp", State: app.RunStateRunning, StartedAt: started}); err != nil {
+		t.Fatalf("CreateRun returned error: %v", err)
+	}
+	if err := store.CreateAttempt(context.Background(), app.Attempt{ID: "a_refresh", RunID: "r_refresh", Provider: "gcp", State: app.AttemptStateRunning, StartedAt: started}); err != nil {
+		t.Fatalf("CreateAttempt returned error: %v", err)
+	}
+	if _, err := store.SaveProviderResource(context.Background(), app.ProviderResource{
+		ID:                   "res_refresh",
+		RunID:                "r_refresh",
+		AttemptID:            "a_refresh",
+		Provider:             "gcp",
+		Kind:                 app.ProviderResourceKindCustomJob,
+		ExternalID:           "projects/test-project/locations/us-central1/customJobs/fake",
+		ProviderRef:          "projects/test-project/locations/us-central1/customJobs/fake",
+		Region:               "us-central1",
+		ProjectOrAccount:     "test-project",
+		State:                app.ProviderResourceStateRunning,
+		CreatedBySwitchboard: true,
+		CleanupPolicy:        app.ProviderResourceCleanupNever,
+	}); err != nil {
+		t.Fatalf("SaveProviderResource returned error: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("close state: %v", err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	cmd := NewRootCommand(Options{
+		Stdout: &stdout,
+		Stderr: &stderr,
+		GCPProviderFactory: func(cfg config.GCPConfig, stdout io.Writer, stderr io.Writer) app.ProviderAdapter {
+			return &fakeGCPAdapter{}
+		},
+	})
+	cmd.SetArgs([]string{"--home", home, "resources", "refresh", "--run", "r_refresh"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("resources refresh returned error: %v\nstdout=%s\nstderr=%s", err, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "refreshed\tres_refresh\tgcp\tsucceeded") {
+		t.Fatalf("refresh output = %s", stdout.String())
+	}
+	store, err = state.Open(artifact.DBPath(home))
+	if err != nil {
+		t.Fatalf("reopen state: %v", err)
+	}
+	defer store.Close()
+	resources, err := store.ProviderResourcesByRun(context.Background(), "r_refresh")
+	if err != nil {
+		t.Fatalf("resources: %v", err)
+	}
+	if len(resources) != 1 || resources[0].State != app.ProviderResourceStateSucceeded || resources[0].LastObservedAt == nil || resources[0].Metadata["refreshed_at"] == "" {
 		t.Fatalf("resources = %#v", resources)
 	}
 }
@@ -1010,6 +1345,57 @@ func TestRunTrainPackagesLocalScriptForGCP(t *testing.T) {
 	}
 	if !reflect.DeepEqual(fakeGCP.lastSubmit.JobSpec.Command, []string{"python3", "train.py"}) {
 		t.Fatalf("command = %#v", fakeGCP.lastSubmit.JobSpec.Command)
+	}
+}
+
+func TestRunTrainPackagesLocalScriptForLambdaWithExplicitImage(t *testing.T) {
+	dir := t.TempDir()
+	contextDir := filepath.Join(dir, "context")
+	if err := os.MkdirAll(contextDir, 0o755); err != nil {
+		t.Fatalf("create context: %v", err)
+	}
+	script := filepath.Join(contextDir, "train.py")
+	if err := os.WriteFile(script, []byte("print('ok')\n"), 0o600); err != nil {
+		t.Fatalf("write script: %v", err)
+	}
+	fakeLambda := &fakeLambdaAdapter{}
+	fakeBuilder := &fakeImageBuilder{image: "ghcr.io/example/switchboard-lambda:latest"}
+	var stdout bytes.Buffer
+	code, err := runTrain(context.Background(), Options{
+		Stdout: &stdout,
+		Stderr: &bytes.Buffer{},
+		LambdaProviderFactory: func(cfg config.LambdaConfig, stdout io.Writer, stderr io.Writer) app.ProviderAdapter {
+			return fakeLambda
+		},
+		ImageBuilderFactory: func(stdout io.Writer, stderr io.Writer) ImageBuilder {
+			return fakeBuilder
+		},
+	}, config.ResolvedTrainConfig{
+		Provider:        "lambda",
+		SwitchboardHome: filepath.Join(dir, "home"),
+		Job:             app.JobSpec{Name: "train.py", Script: script},
+		Packaging: config.PackagingConfig{
+			Context: contextDir,
+			Image:   "ghcr.io/example/switchboard-lambda:latest",
+		},
+		Lambda: config.LambdaConfig{
+			RegionName:       "us-west-1",
+			InstanceTypeName: "gpu_1x_a10",
+			SSHKeyName:       "switchboard",
+			SSHPrivateKey:    "~/.ssh/id_ed25519",
+		},
+	})
+	if err != nil || code != 0 {
+		t.Fatalf("runTrain code=%d err=%v stdout=%s", code, err, stdout.String())
+	}
+	if fakeBuilder.request.Config.Image != "ghcr.io/example/switchboard-lambda:latest" {
+		t.Fatalf("build request = %#v", fakeBuilder.request)
+	}
+	if fakeLambda.lastSubmit.JobSpec.Image != fakeBuilder.image || fakeLambda.lastSubmit.JobSpec.Script != "" {
+		t.Fatalf("submitted job = %#v", fakeLambda.lastSubmit.JobSpec)
+	}
+	if !reflect.DeepEqual(fakeLambda.lastSubmit.JobSpec.Command, []string{"python3", "train.py"}) {
+		t.Fatalf("command = %#v", fakeLambda.lastSubmit.JobSpec.Command)
 	}
 }
 
@@ -1416,6 +1802,15 @@ type fakeImageBuilder struct {
 	err     error
 }
 
+type fakeStagingUploader struct {
+	destinations []string
+}
+
+func (u *fakeStagingUploader) UploadFile(ctx context.Context, sourcePath string, destinationURI string) error {
+	u.destinations = append(u.destinations, destinationURI)
+	return nil
+}
+
 func (b *fakeImageBuilder) BuildAndPush(ctx context.Context, req packaging.BuildRequest) (packaging.BuildResult, error) {
 	b.request = req
 	if b.err != nil {
@@ -1437,9 +1832,10 @@ func (a *fakeGCPAdapter) Capabilities(ctx context.Context) (app.ProviderCapabili
 		return a.capabilities, nil
 	}
 	return app.ProviderCapabilities{
-		SupportsDockerImage:     true,
-		SupportedURISchemes:     []string{"gs"},
-		SupportsObjectStorePull: true,
+		SupportsDockerImage:        true,
+		SupportedURISchemes:        []string{"gs"},
+		SupportedCheckpointSchemes: []string{"gs"},
+		SupportsObjectStorePull:    true,
 	}, nil
 }
 

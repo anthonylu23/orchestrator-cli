@@ -55,6 +55,16 @@ func TestRunAttemptLifecycle(t *testing.T) {
 	if gotRun.State != app.RunStateSucceeded || gotRun.ExitCode != 0 || gotRun.Image != "image:latest" {
 		t.Fatalf("run = %#v", gotRun)
 	}
+	if err := store.RestartRun(ctx, app.Run{ID: "r_1", JobName: "resume", Script: "resume.py", Image: "", Provider: "local", State: app.RunStateRunning, StartedAt: ended.Add(time.Second)}); err != nil {
+		t.Fatalf("RestartRun returned error: %v", err)
+	}
+	gotRun, err = store.GetRun(ctx, "r_1")
+	if err != nil {
+		t.Fatalf("GetRun after restart returned error: %v", err)
+	}
+	if gotRun.State != app.RunStateRunning || gotRun.ExitCode != 0 || gotRun.Error != "" || !gotRun.EndedAt.IsZero() || gotRun.JobName != "resume" || gotRun.Script != "resume.py" {
+		t.Fatalf("restarted run = %#v", gotRun)
+	}
 	attempts, err := store.AttemptsByRun(ctx, "r_1")
 	if err != nil {
 		t.Fatalf("AttemptsByRun returned error: %v", err)

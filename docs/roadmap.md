@@ -95,7 +95,7 @@ Exit criteria:
 
 ## Phase 3 - Provider Extensibility Hardening
 
-Status: in progress. A shared provider contract harness now covers local, mock, fake-backed GCP, and fake-backed Lambda adapter identity, auth validation, capabilities, job validation, estimates, submit/status behavior, log streaming expectations, and cancel behavior. Routing tests cover capability and support-report rejection paths, CLI tests pin key diagnostic exit categories, and provider resource lifecycle records now track cloud resources separately from attempts.
+Status: in progress. A shared provider contract harness now covers local, mock, fake-backed GCP, and fake-backed Lambda adapter identity, auth validation, capabilities, job validation, estimates, submit/status behavior, log streaming expectations, and cancel behavior. Routing tests cover capability and support-report rejection paths, CLI tests pin key diagnostic exit categories, explicit `resume` can start another attempt under an existing run from the latest checkpoint event, and provider resource lifecycle records now track cloud resources separately from attempts with list, refresh, and cleanup commands.
 
 Goals:
 
@@ -114,7 +114,7 @@ Exit criteria:
 
 ## Phase 4 - First Real Provider: GCP
 
-Status: substantially complete for the first provider milestone. The GCP adapter submits container images to Vertex AI CustomJob through the Google Cloud Go client, polls job status, records provider refs, resource records, and estimates, reads Cloud Logging payloads into run artifacts, supports best-effort cancel, and rejects unsupported local bundles or non-GCS URI inputs before submit. Live auth and a billable CPU-only Vertex AI CustomJob smoke test passed on 2026-05-17 for project `switchboard-496606`; live pricing/capacity and PyTorch Iris container smokes passed on 2026-05-20. The PyTorch Iris container example provides the first realistic GCP training workload, the CLI can now build/push Docker images before submit for GCP script jobs, and GCP capability reporting can use live Cloud Billing/Compute pricing, inventory, and regional quota facts with static fallback.
+Status: substantially complete for the first provider milestone. The GCP adapter submits container images to Vertex AI CustomJob through the Google Cloud Go client, polls job status, records provider refs, resource records, and estimates, reads Cloud Logging payloads into run artifacts, supports best-effort cancel, and rejects unsupported local bundles or non-GCS URI inputs before submit. Live auth and a billable CPU-only Vertex AI CustomJob smoke test passed on 2026-05-17 for project `switchboard-496606`; live pricing/capacity and PyTorch Iris container smokes passed on 2026-05-20. The PyTorch Iris container example provides the first realistic GCP training workload, the CLI can now build/push Docker images before submit for GCP script jobs, bundled local data can be uploaded to configured GCS staging prefixes before submit, and GCP capability reporting can use live Cloud Billing/Compute pricing, inventory, and regional quota facts with static fallback.
 
 Goals:
 
@@ -135,12 +135,12 @@ Next steps:
 
 1. Keep the GCP live smoke path repeatable against `switchboard-496606`.
 2. Keep the PyTorch Iris image build repeatable on `linux/amd64` and rerun it when GCP provider behavior changes.
-3. Keep Switchboard-managed image build/push covered by fake-runner tests and documented Artifact Registry auth guidance.
+3. Keep Switchboard-managed image build/push and GCS bundled-data staging covered by fake-runner/uploader tests and documented Artifact Registry/GCS auth guidance.
 4. Keep the gated Cloud Billing/Compute pricing and capacity smoke current.
 
 ## Phase 5 - Auto Hardware Routing
 
-Status: first single-node implementation complete. The router can select provider and hardware shape for `full_auto`, `auto_provider`, and `manual`, reject shapes for memory/budget/constraint/no-quota reasons, persist selected hardware and estimates, and include the decision in summaries. GCP reports a configured shape plus a catalog enriched by live Cloud Billing and Compute inventory/quota APIs when available.
+Status: first single-node implementation complete. The router can select provider and hardware shape for `full_auto`, `auto_provider`, and `manual`, reject shapes for memory/budget/constraint/no-quota reasons, merge optional sizing probe artifacts into hardware estimates, persist selected hardware and estimates, and include the decision in summaries. GCP reports a configured shape plus a catalog enriched by live Cloud Billing and Compute inventory/quota APIs when available.
 
 Goals:
 
@@ -160,7 +160,7 @@ Exit criteria:
 
 ## Phase 6 - Lambda Cloud Adapter
 
-Status: initial implementation complete with live smoke coverage. The adapter can be configured as `provider=lambda`, validates Lambda image-first jobs, discovers instance types through the Lambda Cloud API, launches one on-demand instance with cloud-init, optionally logs into a private registry from env-var-backed config, runs a Docker image, collects logs/events over SSH, records run artifacts, resolves Lambda API keys from the encrypted local credential store, persists instance resource lifecycle records, and terminates the instance by default. Gated auth, submit, failure-cleanup, cancel, and public CLI smokes passed against real Lambda Cloud infrastructure on 2026-05-20.
+Status: initial implementation complete with live smoke coverage. The adapter can be configured as `provider=lambda`, validates Lambda image-first jobs, can receive packageable scripts from the shared Docker build/push layer when `packaging.image` is explicit, discovers instance types through the Lambda Cloud API, launches one on-demand instance with cloud-init, optionally logs into a private registry from env-var-backed config, runs a Docker image, collects logs/events over SSH, records run artifacts, resolves Lambda API keys from the encrypted local credential store, persists instance resource lifecycle records, and terminates the instance by default. Gated auth, submit, failure-cleanup, cancel, and public CLI smokes passed against real Lambda Cloud infrastructure on 2026-05-20.
 
 Goals:
 
@@ -184,7 +184,7 @@ Next steps:
 1. Keep gated Lambda live smoke coverage current after lifecycle or cloud-init changes.
 2. Add provider-native registry secret handling if Lambda exposes a safer path than launch user data.
 3. Keep the S3 checkpoint example current with the shared `staging` env contract.
-4. Decide whether retained Lambda instances should support explicit refresh/adoption.
+4. Decide whether retained Lambda instances should support explicit adoption/reuse beyond refresh.
 5. Decide whether Lambda filesystems should become first-class staging or checkpoint backends.
 
 ## Phase 7 - China Cloud VM Readiness
@@ -226,7 +226,7 @@ Next steps:
 
 1. Add Hyperbolic and/or RunPod adapters after the Lambda live smoke is stable.
 2. Promote China cloud VM adapters from code-ready to live-supported after colleague smoke evidence exists.
-3. Promote shared object-storage staging from `s3://`/`gs://` env injection into managed upload/download backends, then add OSS, OBS, COS, CTYun OOS, and BOS examples when those providers are live verified.
+3. Extend shared object-storage staging with container download helpers and provider-specific object-store examples after the corresponding providers are live verified.
 4. Add multi-node and distributed training topology after single-node auto hardware proves useful.
 5. Add basic experiment fan-out.
 6. Add richer terminal attach views.

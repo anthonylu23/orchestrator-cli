@@ -496,6 +496,42 @@ gcp:
 	}
 }
 
+func TestLoadTrainAcceptsLambdaPackagingWithExplicitImage(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "switchboard.yaml")
+	content := []byte(`
+job:
+  script: train.py
+packaging:
+  image: ghcr.io/example/switchboard-lambda:latest
+  dockerfile: Dockerfile
+  context: .
+lambda:
+  region_name: us-west-1
+  instance_type_name: gpu_1x_a10
+  ssh_key_name: switchboard
+  ssh_private_key: ~/.ssh/id_ed25519
+`)
+	if err := os.WriteFile(configPath, content, 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	got, err := LoadTrain(TrainFlags{
+		ConfigPath:      configPath,
+		Provider:        "lambda",
+		SwitchboardHome: filepath.Join(dir, "home"),
+	})
+	if err != nil {
+		t.Fatalf("LoadTrain returned error: %v", err)
+	}
+	if got.Job.Script != filepath.Join(dir, "train.py") || got.Job.Image != "" {
+		t.Fatalf("job = %#v", got.Job)
+	}
+	if got.Packaging.Image != "ghcr.io/example/switchboard-lambda:latest" || got.Packaging.Dockerfile != filepath.Join(dir, "Dockerfile") {
+		t.Fatalf("packaging = %#v", got.Packaging)
+	}
+}
+
 func TestLoadTrainParsesHardwareRoutingSchema(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "switchboard.yaml")
@@ -565,7 +601,7 @@ mock:
 	if got.Routing.Budget.MaxRunCostUSD != 75 {
 		t.Fatalf("budget = %#v", got.Routing.Budget)
 	}
-	if got.Sizing.Probe.Output != "switchboard-sizing.json" || got.Sizing.Hints.Precision != "bf16" {
+	if got.Sizing.Probe.Output != filepath.Join(dir, "switchboard-sizing.json") || got.Sizing.Hints.Precision != "bf16" {
 		t.Fatalf("sizing = %#v", got.Sizing)
 	}
 	if got.Hardware.Constraints.MaxGPUs != 8 || len(got.Hardware.Constraints.AllowedGPUFamilies) != 2 {
