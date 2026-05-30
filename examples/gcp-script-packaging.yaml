@@ -1,10 +1,10 @@
 job:
   name: "gcp-iris-packaging-demo"
-  script: "gcp/iris/train_iris_gcs.py"
-  command: ["python", "/app/train_iris_gcs.py"]
+  script: "iris_pytorch.py"
+  command: ["python", "/app/switchboard_materialize_data.py", "--", "python", "/app/iris_pytorch.py"]
   args:
-    - "--data-uri"
-    - "gs://my-bucket/switchboard-demo/iris/Iris.csv"
+    - "--data"
+    - "/workspace/data/iris/Iris.csv"
     - "--epochs"
     - "40"
 
@@ -17,6 +17,7 @@ data:
   inputs:
     - name: "iris"
       source: "gs://my-bucket/switchboard-demo/iris/Iris.csv"
+      mount: "/workspace/data/iris/Iris.csv"
       mode: "uri"
 
 gcp:

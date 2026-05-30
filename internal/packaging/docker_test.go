@@ -51,6 +51,43 @@ func TestDockerBuilderRejectsMissingDockerfile(t *testing.T) {
 	}
 }
 
+func TestDockerBuilderRejectsFileContext(t *testing.T) {
+	dir := t.TempDir()
+	contextFile := filepath.Join(dir, "context.tar")
+	if err := os.WriteFile(contextFile, []byte("not a directory"), 0o600); err != nil {
+		t.Fatalf("write context file: %v", err)
+	}
+	_, err := (DockerBuilder{Runner: &recordingRunner{}}).BuildAndPush(context.Background(), BuildRequest{
+		Config: Config{ContextDir: contextFile, Image: "image"},
+	})
+	if err == nil || !contains(err.Error(), "must be a directory") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestDockerBuilderRejectsMalformedPlatform(t *testing.T) {
+	_, err := (DockerBuilder{Runner: &recordingRunner{}}).BuildAndPush(context.Background(), BuildRequest{
+		Config: Config{ContextDir: t.TempDir(), Image: "image", Platform: "linux amd64"},
+	})
+	if err == nil || !contains(err.Error(), "platform") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestDockerBuilderReportsBuildDaemonFailure(t *testing.T) {
+	dir := t.TempDir()
+	runner := &recordingRunner{failOn: "build", failErr: errors.New("Cannot connect to the Docker daemon")}
+	_, err := (DockerBuilder{Runner: runner}).BuildAndPush(context.Background(), BuildRequest{
+		Config: Config{ContextDir: dir, Image: "image", Platform: "linux/amd64"},
+	})
+	if err == nil || !contains(err.Error(), "docker build failed") {
+		t.Fatalf("error = %v", err)
+	}
+	if !contains(err.Error(), "Docker daemon") {
+		t.Fatalf("missing daemon guidance: %v", err)
+	}
+}
+
 func TestDockerBuilderReportsPushFailure(t *testing.T) {
 	dir := t.TempDir()
 	runner := &recordingRunner{failOn: "push"}
@@ -84,11 +121,15 @@ type recordedCommand struct {
 type recordingRunner struct {
 	commands []recordedCommand
 	failOn   string
+	failErr  error
 }
 
 func (r *recordingRunner) Run(ctx context.Context, name string, args []string, stdout io.Writer, stderr io.Writer) error {
 	r.commands = append(r.commands, recordedCommand{Name: name, Args: append([]string(nil), args...)})
 	if r.failOn != "" && len(args) > 0 && args[0] == r.failOn {
+		if r.failErr != nil {
+			return r.failErr
+		}
 		return errors.New("boom")
 	}
 	return nil

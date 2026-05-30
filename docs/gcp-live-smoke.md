@@ -173,8 +173,8 @@ job:
   name: gcp-iris-pytorch-amd64
   image: us-central1-docker.pkg.dev/switchboard-496606/switchboard/iris-pytorch:codex-gcp-readiness-amd64
   args:
-    - --data-uri
-    - gs://switchboard-496606-orchestrator-smoke/switchboard-demo/iris/Iris.csv
+    - --data
+    - /workspace/data/iris/Iris.csv
     - --epochs
     - "40"
 
@@ -182,6 +182,7 @@ data:
   inputs:
     - name: iris
       source: gs://switchboard-496606-orchestrator-smoke/switchboard-demo/iris/Iris.csv
+      mount: /workspace/data/iris/Iris.csv
       mode: uri
 
 gcp:
@@ -194,6 +195,8 @@ gcp:
   poll_interval_seconds: 15
   estimate_hourly_usd: 0.25
 ```
+
+The 2026-05-20 transcript used the older `--data-uri` wrapper. Current images should use `runtime/container/switchboard_materialize_data.py` to materialize the declared `gs://` input at `/workspace/data/iris/Iris.csv` before launching `iris_pytorch.py`; rerun the smoke after rebuilding that image.
 
 The image was built with Cloud Build using:
 

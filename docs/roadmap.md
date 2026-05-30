@@ -95,7 +95,7 @@ Exit criteria:
 
 ## Phase 3 - Provider Extensibility Hardening
 
-Status: in progress. A shared provider contract harness now covers local, mock, fake-backed GCP, and fake-backed Lambda adapter identity, auth validation, capabilities, job validation, estimates, submit/status behavior, log streaming expectations, and cancel behavior. Routing tests cover capability and support-report rejection paths, CLI tests pin key diagnostic exit categories, explicit `resume` can start another attempt under an existing run from the latest checkpoint event, and provider resource lifecycle records now track cloud resources separately from attempts with list, refresh, and cleanup commands.
+Status: in progress. A shared provider contract harness now covers local, mock, fake-backed GCP, and fake-backed Lambda adapter identity, auth validation, capabilities, job validation, estimates, submit/status behavior, log streaming expectations, and cancel behavior. Routing tests cover capability and support-report rejection paths, CLI tests pin key diagnostic exit categories, explicit `resume` can start another attempt under an existing run from the latest checkpoint event, `plan` can preview pre-submit routing/staging/packaging/checkpoint compatibility without side effects, and provider resource lifecycle records now track cloud resources separately from attempts with list, refresh, and cleanup commands.
 
 Goals:
 
@@ -105,6 +105,7 @@ Goals:
 4. Continue hardening capability matching and support reports after core routing rejection.
 5. Improve diagnostics for auth, invalid spec, data preparation, capacity, quota, network, runtime, and internal failures.
 6. Keep provider resource tracking lightweight: record execution resources first, and add adoption/reuse only when a provider workflow requires it.
+7. Keep `plan` behavior side-effect-free as packaging, staging, and provider routing grow.
 
 Exit criteria:
 
@@ -134,7 +135,7 @@ Exit criteria:
 Next steps:
 
 1. Keep the GCP live smoke path repeatable against `switchboard-496606`.
-2. Keep the PyTorch Iris image build repeatable on `linux/amd64` and rerun it when GCP provider behavior changes.
+2. Keep the PyTorch Iris image build repeatable on `linux/amd64` and rerun it when GCP provider behavior or the shared container materializer changes.
 3. Keep Switchboard-managed image build/push and GCS bundled-data staging covered by fake-runner/uploader tests and documented Artifact Registry/GCS auth guidance.
 4. Keep the gated Cloud Billing/Compute pricing and capacity smoke current.
 
@@ -224,9 +225,9 @@ Next steps:
 
 ## Later Phases
 
-1. Add Hyperbolic and/or RunPod adapters after the Lambda live smoke is stable.
+1. Add Hyperbolic and/or RunPod adapters after the Lambda live smoke is stable and their create/status/log/cancel/pricing API shape is verified.
 2. Promote China cloud VM adapters from code-ready to live-supported after colleague smoke evidence exists.
-3. Extend shared object-storage staging with container download helpers and provider-specific object-store examples after the corresponding providers are live verified.
+3. Extend provider-specific object-store examples after the corresponding providers are live verified.
 4. Add multi-node and distributed training topology after single-node auto hardware proves useful.
 5. Add basic experiment fan-out.
 6. Add richer terminal attach views.

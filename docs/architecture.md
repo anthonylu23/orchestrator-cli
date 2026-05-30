@@ -13,7 +13,7 @@ CLI
   parses commands, flags, and config
 
 Application Services
-  train, status, logs, resume, cancel, providers, resources
+  plan, train, status, logs, resume, cancel, providers, resources
 
 Data Preparation
   validate inputs, estimate bundle size, build data manifest, prepare mounts
@@ -259,6 +259,10 @@ The local provider materializes bundled data into the workspace and executes the
 
 The event ingestor accepts mixed stdout. Valid JSON events are persisted as structured records and raw logs remain available after redaction. Secret-like keys and known secret values are replaced with `[REDACTED]` before logs, events, summaries, or provider failure reasons are written.
 
+## Planning
+
+`switchboard-cli plan` is the side-effect-free version of the pre-submit path. It resolves config, validates data inputs, simulates managed object-store staging with a no-op uploader, simulates Docker packaging without build or push, runs provider validation/routing, reports estimates and hardware choices, and checks optional `--resume-from` checkpoint scheme compatibility. It deliberately suppresses provider submit, Docker build, Docker push, managed data upload, and run state/artifact writes.
+
 Summaries keep `best_metrics` as a directional view. Metrics whose names contain `loss`, `error`, `err`, `perplexity`, `ppl`, `latency`, or `duration` are minimized; other metrics are maximized.
 
 Artifacts:
@@ -271,7 +275,7 @@ Artifacts:
 ~/.switchboard-cli/runs/<run-id>/workspace/
 ```
 
-Remote providers use remote-safe runtime paths rather than local artifact paths. GCP and Lambda jobs receive `/tmp/switchboard/checkpoints` and `/tmp/switchboard/events.jsonl`; provider adapters are responsible for mirroring remote logs and structured events back into local run artifacts. When configured, shared staging env vars expose `s3://` or `gs://` checkpoint/data prefixes and name-scoped URI data inputs to the container. Managed object-store staging can also transform bundled inputs into URI inputs before submit; containers still own object-store download/materialization.
+Remote providers use remote-safe runtime paths rather than local artifact paths. GCP and Lambda jobs receive `/tmp/switchboard/checkpoints` and `/tmp/switchboard/events.jsonl`; provider adapters are responsible for mirroring remote logs and structured events back into local run artifacts. When configured, shared staging env vars expose `s3://` or `gs://` checkpoint/data prefixes and name-scoped URI data inputs to the container. Managed object-store staging can also transform bundled inputs into URI inputs before submit; containers still own object-store download/materialization. Images can include `runtime/container/switchboard_materialize_data.py` to perform that download step consistently before the training command starts.
 
 Provider adapters are also responsible for reporting external resource lifecycle transitions through the submit callbacks. GCP records CustomJobs as running/succeeded/failed/canceled. Lambda records instances as booting/running/failed/terminating based on launch, poll, remote execution, and cleanup behavior. Lambda can perform a private registry `docker login` before pull from env-var-backed config; registry secrets are redacted from local artifacts but launch user data remains provider-side sensitive metadata.
 
@@ -285,7 +289,7 @@ Data preparation failures should happen before training starts whenever possible
 4. Remote fetch auth failure: data preparation failure with secret redaction.
 5. Remote fetch unavailable: retryable or terminal based on normalized error classification.
 
-Routing should reject providers whose capabilities cannot satisfy declared data inputs.
+Routing should reject providers whose capabilities cannot satisfy declared data inputs. Planning code must remain side-effect-free: no provider submit, no Docker build/push, no managed data upload, and no run-state writes.
 
 ## Adding a Provider
 

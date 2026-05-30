@@ -196,6 +196,85 @@ gcp:
 	}
 }
 
+func TestGCPResumeUsesSharedGCSCheckpoint(t *testing.T) {
+	dir := t.TempDir()
+	home := filepath.Join(dir, "home")
+	runID := "r_gcp_resume"
+	paths := artifact.ForRun(home, runID)
+	if err := artifact.EnsureHome(home); err != nil {
+		t.Fatalf("ensure home: %v", err)
+	}
+	if err := artifact.EnsureRun(paths); err != nil {
+		t.Fatalf("ensure run: %v", err)
+	}
+	store, err := state.Open(paths.DB)
+	if err != nil {
+		t.Fatalf("open state: %v", err)
+	}
+	started := time.Now().UTC().Add(-time.Hour)
+	if err := store.CreateRun(context.Background(), app.Run{ID: runID, JobName: "gcp-complete", Image: "us-docker.pkg.dev/project/repo/train:latest", Provider: "gcp", State: app.RunStateSucceeded, StartedAt: started}); err != nil {
+		t.Fatalf("CreateRun returned error: %v", err)
+	}
+	if err := store.CreateAttempt(context.Background(), app.Attempt{ID: "a_initial", RunID: runID, Provider: "gcp", State: app.AttemptStateSucceeded, StartedAt: started}); err != nil {
+		t.Fatalf("CreateAttempt returned error: %v", err)
+	}
+	if err := store.FinishAttempt(context.Background(), "a_initial", app.AttemptStateSucceeded, 0, "completed", "projects/test-project/locations/us-central1/customJobs/initial", started.Add(time.Minute)); err != nil {
+		t.Fatalf("FinishAttempt returned error: %v", err)
+	}
+	if err := store.FinishRun(context.Background(), runID, app.RunStateSucceeded, 0, "completed", started.Add(time.Minute)); err != nil {
+		t.Fatalf("FinishRun returned error: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("close state: %v", err)
+	}
+	checkpointEvent := `{"type":"checkpoint","step":5,"checkpoint_uri":"gs://bucket/checkpoints/epoch-5.pt"}` + "\n"
+	if err := os.WriteFile(paths.EventsJSONL, []byte(checkpointEvent), 0o600); err != nil {
+		t.Fatalf("write checkpoint event: %v", err)
+	}
+	configPath := filepath.Join(dir, "gcp.yaml")
+	configContent := `
+job:
+  image: us-docker.pkg.dev/project/repo/train:latest
+gcp:
+  project_id: test-project
+  location: us-central1
+  output_uri_prefix: gs://bucket/outputs
+`
+	if err := os.WriteFile(configPath, []byte(configContent), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	fake := &fakeGCPAdapter{}
+	var stdout, stderr bytes.Buffer
+	cmd := NewRootCommand(Options{
+		Stdout: &stdout,
+		Stderr: &stderr,
+		GCPProviderFactory: func(cfg config.GCPConfig, stdout io.Writer, stderr io.Writer) app.ProviderAdapter {
+			return fake
+		},
+	})
+	cmd.SetArgs([]string{"--home", home, "resume", runID, "--provider", "gcp", "--config", configPath})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("resume returned error: %v\nstdout=%s\nstderr=%s", err, stdout.String(), stderr.String())
+	}
+	if fake.lastSubmit.ResumeFrom == nil || fake.lastSubmit.ResumeFrom.URI != "gs://bucket/checkpoints/epoch-5.pt" || fake.lastSubmit.ResumeFrom.Step != 5 {
+		t.Fatalf("resume checkpoint = %#v", fake.lastSubmit.ResumeFrom)
+	}
+	if !strings.Contains(stdout.String(), "Found checkpoint: step 5") {
+		t.Fatalf("stdout = %s", stdout.String())
+	}
+	var summary app.Summary
+	content, err := os.ReadFile(paths.Summary)
+	if err != nil {
+		t.Fatalf("read summary: %v", err)
+	}
+	if err := json.Unmarshal(content, &summary); err != nil {
+		t.Fatalf("parse summary: %v", err)
+	}
+	if summary.State != app.RunStateSucceeded || summary.ResumeCount != 1 {
+		t.Fatalf("summary = %#v", summary)
+	}
+}
+
 func TestLambdaCredentialErrorBeforeSubmitDoesNotCreateRun(t *testing.T) {
 	dir := t.TempDir()
 	home := filepath.Join(dir, "home")
@@ -982,6 +1061,141 @@ gcp:
 	}
 	if !strings.Contains(stdout.String(), "us-docker.pkg.dev/project/repo/train:latest") {
 		t.Fatalf("status = %s", stdout.String())
+	}
+}
+
+func TestPlanSimulatesPackagingAndStagingWithoutSideEffects(t *testing.T) {
+	dir := t.TempDir()
+	home := filepath.Join(dir, "home")
+	contextDir := filepath.Join(dir, "context")
+	if err := os.MkdirAll(contextDir, 0o755); err != nil {
+		t.Fatalf("create context: %v", err)
+	}
+	script := filepath.Join(contextDir, "train.py")
+	if err := os.WriteFile(script, []byte("print('ok')\n"), 0o600); err != nil {
+		t.Fatalf("write script: %v", err)
+	}
+	dataPath := filepath.Join(dir, "train.csv")
+	if err := os.WriteFile(dataPath, []byte("x,y\n1,2\n"), 0o600); err != nil {
+		t.Fatalf("write data: %v", err)
+	}
+	configPath := filepath.Join(dir, "switchboard.yaml")
+	configContent := fmt.Sprintf(`
+job:
+  name: plan-gcp
+  script: %q
+data:
+  inputs:
+    - name: train
+      source: %q
+      mount: /workspace/data/train.csv
+      mode: bundle
+staging:
+  data_uri_prefix: gs://bucket/staged
+packaging:
+  context: %q
+  image: us-central1-docker.pkg.dev/test-project/switchboard/train:latest
+  platform: linux/amd64
+gcp:
+  project_id: test-project
+  location: us-central1
+  output_uri_prefix: gs://bucket/outputs
+`, script, dataPath, contextDir)
+	if err := os.WriteFile(configPath, []byte(configContent), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	fakeGCP := &fakeGCPAdapter{}
+	fakeBuilder := &fakeImageBuilder{image: "should-not-be-used"}
+	uploader := &fakeStagingUploader{}
+	var stdout, stderr bytes.Buffer
+	cmd := NewRootCommand(Options{
+		Stdout:          &stdout,
+		Stderr:          &stderr,
+		StagingUploader: uploader,
+		GCPProviderFactory: func(cfg config.GCPConfig, stdout io.Writer, stderr io.Writer) app.ProviderAdapter {
+			return fakeGCP
+		},
+		ImageBuilderFactory: func(stdout io.Writer, stderr io.Writer) ImageBuilder {
+			return fakeBuilder
+		},
+	})
+	cmd.SetArgs([]string{"--home", home, "plan", "--provider", "auto", "--config", configPath, "--json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("plan returned error: %v\nstdout=%s\nstderr=%s", err, stdout.String(), stderr.String())
+	}
+	var report planReport
+	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+		t.Fatalf("parse plan: %v\n%s", err, stdout.String())
+	}
+	if fakeGCP.lastSubmit.RunID != "" {
+		t.Fatalf("plan should not submit: %#v", fakeGCP.lastSubmit)
+	}
+	if fakeBuilder.request.Config.Image != "" {
+		t.Fatalf("plan should not build or push: %#v", fakeBuilder.request)
+	}
+	if len(uploader.destinations) != 0 {
+		t.Fatalf("plan should not call configured uploader: %#v", uploader.destinations)
+	}
+	if !report.Staging.WouldUpload || len(report.Staging.PlannedUploads) != 1 {
+		t.Fatalf("staging report = %#v", report.Staging)
+	}
+	if !strings.HasPrefix(report.Staging.PlannedUploads[0], "gs://bucket/staged/"+report.PlanRunID+"/data/train/") {
+		t.Fatalf("planned upload = %#v", report.Staging.PlannedUploads)
+	}
+	if !report.Packaging.WouldPackage || report.Packaging.Image != "us-central1-docker.pkg.dev/test-project/switchboard/train:latest" {
+		t.Fatalf("packaging report = %#v", report.Packaging)
+	}
+	if report.Routing == nil || report.Routing.SelectedProvider != "gcp" {
+		t.Fatalf("routing = %#v", report.Routing)
+	}
+	suppressed := strings.Join(report.SuppressedActions, ",")
+	if !strings.Contains(suppressed, "provider submit") || !strings.Contains(suppressed, "managed data upload") {
+		t.Fatalf("suppressed actions = %#v", report.SuppressedActions)
+	}
+}
+
+func TestPlanReportsCheckpointIncompatibilityWithoutSubmit(t *testing.T) {
+	dir := t.TempDir()
+	home := filepath.Join(dir, "home")
+	configPath := filepath.Join(dir, "switchboard.yaml")
+	configContent := `
+job:
+  name: gcp-resume-plan
+  image: us-docker.pkg.dev/project/repo/train:latest
+gcp:
+  project_id: test-project
+  location: us-central1
+  output_uri_prefix: gs://bucket/outputs
+`
+	if err := os.WriteFile(configPath, []byte(configContent), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	fakeGCP := &fakeGCPAdapter{}
+	var stdout, stderr bytes.Buffer
+	cmd := NewRootCommand(Options{
+		Stdout: &stdout,
+		Stderr: &stderr,
+		GCPProviderFactory: func(cfg config.GCPConfig, stdout io.Writer, stderr io.Writer) app.ProviderAdapter {
+			return fakeGCP
+		},
+	})
+	cmd.SetArgs([]string{"--home", home, "plan", "--provider", "gcp", "--config", configPath, "--resume-from", "s3://bucket/checkpoints/epoch-3.pt", "--resume-step", "3", "--json"})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected incompatible checkpoint error")
+	}
+	var report planReport
+	if parseErr := json.Unmarshal(stdout.Bytes(), &report); parseErr != nil {
+		t.Fatalf("parse plan: %v\n%s", parseErr, stdout.String())
+	}
+	if fakeGCP.lastSubmit.RunID != "" {
+		t.Fatalf("plan should not submit: %#v", fakeGCP.lastSubmit)
+	}
+	if report.Checkpoint.SupportedBySelected {
+		t.Fatalf("checkpoint report = %#v", report.Checkpoint)
+	}
+	if !strings.Contains(report.Checkpoint.Reason, "does not support \"s3\" checkpoint resume") {
+		t.Fatalf("checkpoint report = %#v", report.Checkpoint)
 	}
 }
 

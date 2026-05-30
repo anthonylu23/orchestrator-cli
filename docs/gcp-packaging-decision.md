@@ -2,7 +2,7 @@
 
 ## Status
 
-Implemented for the first GCP script packaging milestone.
+Implemented for the first GCP script packaging milestone. The Docker path now performs local preflight for context directory and platform format, and build/push failures include daemon, platform, registry-auth, and Artifact Registry guidance.
 
 ## Decision
 
@@ -27,5 +27,4 @@ Vertex AI source packaging remains deferred. It may still be useful later, but a
 ## Next Steps
 
 1. Add cleanup/pruning options for generated images after the first provider expansion.
-2. Expand Docker diagnostics beyond Artifact Registry auth, such as daemon availability and unsupported platform errors.
-3. Revisit source packaging only if image build/push proves too heavy for target users.
+2. Revisit source packaging only if image build/push proves too heavy for target users.

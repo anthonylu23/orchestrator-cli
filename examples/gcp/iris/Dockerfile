@@ -9,5 +9,6 @@ RUN pip install --no-cache-dir -r /app/requirements.txt
 
 COPY examples/iris_pytorch.py /app/iris_pytorch.py
 COPY examples/gcp/iris/train_iris_gcs.py /app/train_iris_gcs.py
+COPY runtime/container/switchboard_materialize_data.py /app/switchboard_materialize_data.py
 
-ENTRYPOINT ["python", "/app/train_iris_gcs.py"]
+ENTRYPOINT ["python", "/app/switchboard_materialize_data.py", "--", "python", "/app/iris_pytorch.py"]

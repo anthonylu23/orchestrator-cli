@@ -6,6 +6,8 @@ The Lambda Cloud provider is implemented as a single-instance, image-first adapt
 
 This is a milestone adapter for testing Switchboard jobs on real Lambda infrastructure. It is not yet a full image-build or Lambda-filesystem-staging implementation. Cross-provider resume is supported only when training code emits shared `s3://` or `gs://` checkpoint events and the resumed container can read that URI.
 
+Images that want Switchboard-managed URI materialization can include `runtime/container/switchboard_materialize_data.py` and run it before the training command. The helper materializes `http(s)://`, `s3://`, and `gs://` data inputs when the image includes the matching SDK or CLI.
+
 Official references:
 
 1. [Lambda Cloud API](https://cloud.lambda.ai/api/v1/openapi.json)
@@ -110,7 +112,7 @@ Use `switchboard-cli resources list --run <run-id>` to inspect tracked Lambda in
 
 Lambda v1 supports prebuilt `job.image` workloads and packageable `job.script` workloads when `packaging.image` is explicit. Local bundled data requires managed `s3://` or `gs://` staging before submit.
 
-URI data inputs using `http://`, `https://`, `s3://`, or `gs://` are allowed only as container-visible references. Switchboard uploads staged S3 data with the local AWS CLI before submit, but it does not download or mount URI inputs on Lambda yet. The training image must read the URI itself using credentials supplied by the user through `job.env` or the image environment.
+URI data inputs using `http://`, `https://`, `s3://`, or `gs://` are allowed only as container-visible references. Switchboard uploads staged S3 data with the local AWS CLI before submit, but it does not download or mount URI inputs on Lambda itself. The training image must read the URI itself using credentials supplied by the user through `job.env` or the image environment. A portable image can run the shared container materializer first; S3 inputs require `boto3` or `aws`, and GCS inputs require `google-cloud-storage`, `gcloud`, or `gsutil`.
 
 When `staging` is configured, Lambda containers also receive provider-independent object-storage env vars:
 
@@ -133,6 +135,8 @@ Training code should emit shared checkpoint events such as:
 ```
 
 `examples/lambda-s3-checkpoint.yaml` and `examples/lambda/s3_checkpoint` demonstrate a Lambda image that uploads a checkpoint to `SWITCHBOARD_CHECKPOINT_URI_PREFIX` with the AWS CLI before emitting the checkpoint event.
+
+Use `switchboard-cli plan --provider lambda --config <file> --resume-from s3://... --json` before a billable resume attempt to verify checkpoint scheme compatibility without launching an instance. See [Cloud Resume Walkthrough](cloud-resume-walkthrough.md).
 
 ## Hardware and Estimates
 

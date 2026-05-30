@@ -8,9 +8,9 @@ The CLI now has a pre-submit packaging layer for GCP script jobs. When `job.scri
 
 GCP capabilities are backed by live Google APIs when credentials and project permissions allow it: Cloud Billing Catalog public SKUs for on-demand pricing, Compute Engine aggregated machine/accelerator listings for regional inventory, and Compute Engine regional quotas for capacity signals. If those API calls are unavailable, Switchboard keeps the static catalog as a fallback and marks shapes with availability reasons.
 
-GCP checkpoint/resume support is implemented through shared `gs://` checkpoint URIs emitted by training code. Switchboard provides a `SWITCHBOARD_CHECKPOINT_URI_PREFIX` under the job output prefix, parses checkpoint events from Cloud Logging into `events.jsonl`, and passes the latest compatible `gs://` checkpoint back as `SWITCHBOARD_RESUME_FROM` on a later attempt. When `staging.data_uri_prefix` is `gs://...`, bundled local data inputs are uploaded before submit and rewritten to GCS URI inputs.
+GCP checkpoint/resume support is implemented through shared `gs://` checkpoint URIs emitted by training code. Switchboard provides a `SWITCHBOARD_CHECKPOINT_URI_PREFIX` under the job output prefix, parses checkpoint events from Cloud Logging into `events.jsonl`, and passes the latest compatible `gs://` checkpoint back as `SWITCHBOARD_RESUME_FROM` on a later attempt. When `staging.data_uri_prefix` is `gs://...`, bundled local data inputs are uploaded before submit and rewritten to GCS URI inputs. The GCP Iris example now uses the shared container data materializer to download declared `gs://` data inputs to their `/workspace` mounts inside the container.
 
-Source distribution upload, non-GCS data fetching, and multi-worker distributed training are deferred.
+Source distribution upload, non-GCS provider-facing data, and multi-worker distributed training are deferred.
 
 See [GCP Packaging Decision](gcp-packaging-decision.md) for the packaging direction.
 
@@ -85,7 +85,7 @@ gcp:
   artifact_registry_repository: switchboard
 ```
 
-The Dockerfile is responsible for copying the script and dependencies into the image. If `job.command` is omitted, Switchboard runs Python with the script path relative to `packaging.context`.
+The Dockerfile is responsible for copying the script and dependencies into the image. If `job.command` is omitted, Switchboard runs Python with the script path relative to `packaging.context`. Packaging diagnostics validate the context directory and Docker platform before invoking Docker, and build/push failures include daemon, platform, registry-auth, and Artifact Registry guidance.
 
 ## Supported Inputs
 
@@ -108,9 +108,9 @@ SWITCHBOARD_GCS_OUTPUT_DIR=gs://<output-prefix>/<run-id>
 SWITCHBOARD_CHECKPOINT_URI_PREFIX=gs://<output-prefix>/<run-id>/checkpoints
 ```
 
-Structured events should still be printed to stdout so Cloud Logging can mirror them back into local Switchboard artifacts. GCP v1 validates `gs://` data inputs but does not mount them into the container; the image should read or download those URIs itself. This is also true for bundled inputs after managed GCS staging: Switchboard uploads and rewrites the input source, while the container owns download/materialization inside the workload.
+Structured events should still be printed to stdout so Cloud Logging can mirror them back into local Switchboard artifacts. GCP v1 validates `gs://` data inputs but does not mount them into the container; the image should read or download those URIs itself. This is also true for bundled inputs after managed GCS staging: Switchboard uploads and rewrites the input source, while the container owns download/materialization inside the workload. Images can use `runtime/container/switchboard_materialize_data.py` as their entrypoint wrapper when they include `google-cloud-storage`, `gcloud`, or `gsutil`.
 
-For failover, GCP advertises `gs://` checkpoint resume support. File-local checkpoints from a container path are not considered reusable across providers. Emit shared `gs://` checkpoint URIs when a GCP job is expected to resume elsewhere. `examples/iris_pytorch.py` uploads checkpoints to `SWITCHBOARD_CHECKPOINT_URI_PREFIX` when it is set to a `gs://` prefix, emits those GCS checkpoint events, and can download a `gs://` resume checkpoint from `SWITCHBOARD_RESUME_FROM`.
+For failover, GCP advertises `gs://` checkpoint resume support. File-local checkpoints from a container path are not considered reusable across providers. Emit shared `gs://` checkpoint URIs when a GCP job is expected to resume elsewhere. `examples/iris_pytorch.py` uploads checkpoints to `SWITCHBOARD_CHECKPOINT_URI_PREFIX` when it is set to a `gs://` prefix, emits those GCS checkpoint events, and can download a `gs://` resume checkpoint from `SWITCHBOARD_RESUME_FROM`. See [Cloud Resume Walkthrough](cloud-resume-walkthrough.md) for the `plan --resume-from` and `resume` flow.
 
 ## Hardware and Estimates
 
@@ -150,6 +150,5 @@ switchboard-cli train --provider gcp --config examples/gcp-iris.yaml
 
 1. Keep the live smoke path current with the `switchboard-496606` smoke bucket and supported Artifact Registry images.
 2. Keep the PyTorch Iris image build repeatable on `linux/amd64` for Vertex CPU jobs.
-3. Add container download helpers for staged `gs://` data after GCS dataset behavior is stable.
-4. Add provider resource adoption only if long-running CustomJob workflows need to attach to resources that were not created by the current Switchboard run.
-5. Add more shared-checkpoint examples as additional cloud providers come online.
+3. Add provider resource adoption only if long-running CustomJob workflows need to attach to resources that were not created by the current Switchboard run.
+4. Add more shared-checkpoint examples as additional cloud providers come online.

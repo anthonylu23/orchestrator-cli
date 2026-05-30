@@ -2,8 +2,8 @@ job:
   name: "gcp-iris-pytorch-demo"
   image: "us-central1-docker.pkg.dev/my-project/switchboard/iris-pytorch:latest"
   args:
-    - "--data-uri"
-    - "gs://my-bucket/switchboard-demo/iris/Iris.csv"
+    - "--data"
+    - "/workspace/data/iris/Iris.csv"
     - "--epochs"
     - "40"
 
@@ -11,6 +11,7 @@ data:
   inputs:
     - name: "iris"
       source: "gs://my-bucket/switchboard-demo/iris/Iris.csv"
+      mount: "/workspace/data/iris/Iris.csv"
       mode: "uri"
 
 gcp:

@@ -18,7 +18,7 @@ Run a training job through one CLI, materialize its data inputs consistently, ch
 
 "Given my script, data, sizing profile, and budget, choose compatible provider and GPU hardware, run the job, and resume if execution fails."
 
-The first implementation proves the lifecycle through local and mock providers, then GCP and Lambda as real cloud APIs. The current product layer adds managed image packaging for GCP script jobs, first-pass auto hardware routing, object-storage staging env contracts, and provider resource tracking for execution resources such as Vertex CustomJobs and Lambda instances.
+The first implementation proves the lifecycle through local and mock providers, then GCP and Lambda as real cloud APIs. The current product layer adds side-effect-free planning, managed image packaging for GCP script jobs, first-pass auto hardware routing, object-storage staging env contracts, a shared container data materializer, and provider resource tracking for execution resources such as Vertex CustomJobs and Lambda instances.
 
 ## Differentiation
 
@@ -43,6 +43,7 @@ The first implementation proves the lifecycle through local and mock providers, 
 10. First-pass auto hardware routing after provider/hardware capability reporting exists.
 11. Lambda Cloud single-instance execution with tracked cleanup lifecycle.
 12. Shared `s3://`/`gs://` staging env vars for checkpoint prefixes, data prefixes, and declared URI inputs.
+13. `plan` preflight for routing, cost, staging, packaging, and checkpoint compatibility without submit/build/push/upload side effects.
 
 ## Deferred Scope
 
@@ -122,6 +123,8 @@ SWITCHBOARD_EVENTS_PATH
 ```
 
 The legacy `ORCHESTRATOR_*` runtime variables are still injected as compatibility aliases during the rename window.
+
+For image-based jobs, containers can use `runtime/container/switchboard_materialize_data.py` to download declared URI data inputs to their mount paths before running the training command.
 
 Training scripts may emit JSON lines to stdout for structured events. Plain logs remain valid and must be handled safely.
 

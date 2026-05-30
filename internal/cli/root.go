@@ -59,6 +59,56 @@ const (
 	logFollowPollInterval = 100 * time.Millisecond
 )
 
+type planOptions struct {
+	AsJSON        bool
+	ResumeFromURI string
+	ResumeStep    int64
+}
+
+type planReport struct {
+	PlanRunID         string               `json:"plan_run_id"`
+	Provider          string               `json:"provider"`
+	Job               app.JobSpec          `json:"job"`
+	DataManifest      app.DataManifest     `json:"data_manifest"`
+	Staging           planStagingReport    `json:"staging"`
+	Packaging         planPackagingReport  `json:"packaging"`
+	Routing           *app.RoutingDecision `json:"routing,omitempty"`
+	ProviderReport    *planProviderReport  `json:"provider_report,omitempty"`
+	Checkpoint        planCheckpointReport `json:"checkpoint"`
+	SuppressedActions []string             `json:"suppressed_actions"`
+}
+
+type planStagingReport struct {
+	WouldUpload     bool            `json:"would_upload"`
+	DataURIPrefix   string          `json:"data_uri_prefix,omitempty"`
+	PlannedUploads  []string        `json:"planned_uploads,omitempty"`
+	ResolvedInputs  []app.DataInput `json:"resolved_inputs,omitempty"`
+	NoUploadStarted bool            `json:"no_upload_started"`
+}
+
+type planPackagingReport struct {
+	WouldPackage     bool     `json:"would_package"`
+	Image            string   `json:"image,omitempty"`
+	Command          []string `json:"command,omitempty"`
+	NoBuildOrPushRun bool     `json:"no_build_or_push_run"`
+}
+
+type planProviderReport struct {
+	Name         string                   `json:"name"`
+	Supported    bool                     `json:"supported"`
+	Reasons      []string                 `json:"reasons,omitempty"`
+	Capabilities app.ProviderCapabilities `json:"capabilities"`
+	Estimate     app.CostEstimate         `json:"estimate"`
+}
+
+type planCheckpointReport struct {
+	ResumeFromURI       string   `json:"resume_from_uri,omitempty"`
+	Scheme              string   `json:"scheme,omitempty"`
+	SupportedSchemes    []string `json:"supported_schemes,omitempty"`
+	SupportedBySelected bool     `json:"supported_by_selected"`
+	Reason              string   `json:"reason,omitempty"`
+}
+
 func NewRootCommand(opts Options) *cobra.Command {
 	if opts.Stdout == nil {
 		opts.Stdout = os.Stdout
@@ -76,6 +126,7 @@ func NewRootCommand(opts Options) *cobra.Command {
 	}
 	root.PersistentFlags().StringVar(&home, "home", "", "Switchboard home directory")
 	root.AddCommand(newTrainCommand(opts, &home))
+	root.AddCommand(newPlanCommand(opts, &home))
 	root.AddCommand(newResumeCommand(opts, &home))
 	root.AddCommand(newStatusCommand(opts, &home))
 	root.AddCommand(newLogsCommand(opts, &home))
@@ -124,6 +175,39 @@ func newTrainCommand(opts Options, home *string) *cobra.Command {
 	cmd.Flags().StringVar(&flags.Script, "script", "", "Training script path")
 	cmd.Flags().StringArrayVar(&flags.Args, "arg", nil, "Argument to pass to the script; repeat for multiple args")
 	cmd.Flags().BoolVar(&flags.AllowLargeDataBundle, "allow-large-data-bundle", false, "Allow local data bundles above configured limit")
+	return cmd
+}
+
+func newPlanCommand(opts Options, home *string) *cobra.Command {
+	var flags config.TrainFlags
+	var planFlags planOptions
+	cmd := &cobra.Command{
+		Use:   "plan",
+		Short: "Preview provider routing, packaging, staging, and cost without submitting",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			flags.SwitchboardHome = *home
+			resolved, err := config.LoadTrain(flags)
+			if err != nil {
+				return err
+			}
+			code, err := runPlan(cmd.Context(), opts, resolved, planFlags)
+			if err != nil {
+				return err
+			}
+			if code != 0 {
+				return exitCodeError{code: code}
+			}
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&flags.ConfigPath, "config", "", "Path to switchboard-cli YAML config")
+	cmd.Flags().StringVar(&flags.Provider, "provider", "local", "Provider to plan")
+	cmd.Flags().StringVar(&flags.Script, "script", "", "Training script path")
+	cmd.Flags().StringArrayVar(&flags.Args, "arg", nil, "Argument to pass to the script; repeat for multiple args")
+	cmd.Flags().BoolVar(&flags.AllowLargeDataBundle, "allow-large-data-bundle", false, "Allow local data bundles above configured limit")
+	cmd.Flags().BoolVar(&planFlags.AsJSON, "json", false, "Print JSON")
+	cmd.Flags().StringVar(&planFlags.ResumeFromURI, "resume-from", "", "Checkpoint URI to include in compatibility planning")
+	cmd.Flags().Int64Var(&planFlags.ResumeStep, "resume-step", 0, "Checkpoint step for --resume-from")
 	return cmd
 }
 
@@ -240,6 +324,71 @@ func runResume(ctx context.Context, opts Options, runID string, resolved config.
 	return runAttempts(ctx, opts, resolved, credentialResolver, store, paths, runID, job, manifest, resumeFrom)
 }
 
+func runPlan(ctx context.Context, opts Options, resolved config.ResolvedTrainConfig, planFlags planOptions) (int, error) {
+	runID := app.NewRunID()
+	resumeFrom := checkpointFromPlanFlags(planFlags)
+	report := planReport{
+		PlanRunID: runID,
+		Provider:  resolved.Provider,
+		SuppressedActions: []string{
+			"provider submit",
+			"docker build",
+			"docker push",
+			"managed data upload",
+			"run state/artifact writes",
+		},
+	}
+	job, manifest, stagingReport, packagingReport, err := preparePlanJob(ctx, resolved, runID)
+	if err != nil {
+		report.Job = resolved.Job
+		renderPlanReport(opts, report, planFlags.AsJSON)
+		return exitCodeInvalidSpec, err
+	}
+	report.Job = job
+	report.DataManifest = manifest
+	report.Staging = stagingReport
+	report.Packaging = packagingReport
+	registry := buildPlanProviderRegistry(opts, resolved)
+	if resolved.Provider == string(app.ProviderAuto) {
+		decision, err := routing.Select(ctx, registry, job, routingOptions(resolved, nil, resumeFrom))
+		decision.RunID = runID
+		report.Routing = &decision
+		if decision.SelectedProvider != "" {
+			report.Checkpoint = checkpointCompatibilityFromDecision(ctx, registry, decision.SelectedProvider, resumeFrom)
+		} else {
+			report.Checkpoint = checkpointCompatibilityForResume(resumeFrom)
+		}
+		renderPlanReport(opts, report, planFlags.AsJSON)
+		if err != nil {
+			return exitCodeRouting, err
+		}
+		return 0, nil
+	}
+	providerReport, checkpointReport, err := planExplicitProvider(ctx, registry, resolved.Provider, job, resumeFrom)
+	report.ProviderReport = &providerReport
+	report.Checkpoint = checkpointReport
+	renderPlanReport(opts, report, planFlags.AsJSON)
+	if err != nil {
+		return exitCodeRouting, err
+	}
+	if !providerReport.Supported {
+		reason := "job is not supported"
+		if len(providerReport.Reasons) > 0 {
+			reason = providerReport.Reasons[0]
+		}
+		return exitCodeInvalidSpec, fmt.Errorf("%s", reason)
+	}
+	return 0, nil
+}
+
+func checkpointFromPlanFlags(planFlags planOptions) *app.CheckpointRef {
+	if strings.TrimSpace(planFlags.ResumeFromURI) == "" {
+		return nil
+	}
+	step := planFlags.ResumeStep
+	return &app.CheckpointRef{URI: strings.TrimSpace(planFlags.ResumeFromURI), Step: step}
+}
+
 func prepareRunJob(ctx context.Context, opts Options, resolved config.ResolvedTrainConfig, runID string) (app.JobSpec, app.DataManifest, string, error) {
 	manifest, err := data.Prepare(resolved.Job, data.PreflightOptions{
 		BundleSizeLimitBytes: resolved.BundleMaxSizeBytes,
@@ -274,6 +423,82 @@ func prepareRunJob(ctx context.Context, opts Options, resolved config.ResolvedTr
 		job = packaged
 	}
 	return job, manifest, originalScript, nil
+}
+
+func preparePlanJob(ctx context.Context, resolved config.ResolvedTrainConfig, runID string) (app.JobSpec, app.DataManifest, planStagingReport, planPackagingReport, error) {
+	manifest, err := data.Prepare(resolved.Job, data.PreflightOptions{
+		BundleSizeLimitBytes: resolved.BundleMaxSizeBytes,
+		RequireOverride:      resolved.RequireOverrideAboveLimit,
+		AllowLargeBundle:     resolved.AllowLargeDataBundle,
+	})
+	if err != nil {
+		return app.JobSpec{}, app.DataManifest{}, planStagingReport{}, planPackagingReport{}, err
+	}
+	job := resolved.Job
+	job.Data = append([]app.DataInput(nil), manifest.Inputs...)
+	stagingReport := planStagingReport{
+		DataURIPrefix:   resolved.Staging.DataURIPrefix,
+		ResolvedInputs:  append([]app.DataInput(nil), job.Data...),
+		NoUploadStarted: true,
+	}
+	if shouldStageBundledInputs(resolved, manifest) {
+		if err := validateStagingDataPrefixForProvider(resolved); err != nil {
+			return app.JobSpec{}, app.DataManifest{}, planStagingReport{}, planPackagingReport{}, err
+		}
+		uploader := &planningUploader{}
+		staged, err := staging.StageBundledInputs(ctx, resolved.Staging, runID, job, manifest, uploader)
+		if err != nil {
+			return app.JobSpec{}, app.DataManifest{}, planStagingReport{}, planPackagingReport{}, err
+		}
+		job = staged.Job
+		manifest = staged.Manifest
+		stagingReport.WouldUpload = len(uploader.destinations) > 0
+		stagingReport.PlannedUploads = append([]string(nil), uploader.destinations...)
+		stagingReport.ResolvedInputs = append([]app.DataInput(nil), job.Data...)
+	}
+	packagingReport := planPackagingReport{NoBuildOrPushRun: true}
+	if shouldPackageForProvider(resolved, job) {
+		packaged, err := planPackagedJob(resolved, job, runID)
+		if err != nil {
+			return app.JobSpec{}, app.DataManifest{}, planStagingReport{}, planPackagingReport{}, err
+		}
+		job = packaged
+		packagingReport.WouldPackage = true
+		packagingReport.Image = job.Image
+		packagingReport.Command = append([]string(nil), job.Command...)
+	}
+	return job, manifest, stagingReport, packagingReport, nil
+}
+
+type planningUploader struct {
+	destinations []string
+}
+
+func (u *planningUploader) UploadFile(ctx context.Context, sourcePath string, destinationURI string) error {
+	u.destinations = append(u.destinations, destinationURI)
+	return nil
+}
+
+func planPackagedJob(resolved config.ResolvedTrainConfig, job app.JobSpec, runID string) (app.JobSpec, error) {
+	image := resolved.Packaging.Image
+	var err error
+	if image == "" {
+		image, err = packaging.ArtifactRegistryImage(resolved.GCP.Location, resolved.GCP.ProjectID, resolved.GCP.ArtifactRegistryRepository, runID)
+		if err != nil {
+			return app.JobSpec{}, err
+		}
+	}
+	packaged := job
+	packaged.Image = image
+	if len(packaged.Command) == 0 {
+		scriptPath, err := containerScriptPath(job.Script, resolved.Packaging.Context)
+		if err != nil {
+			return app.JobSpec{}, err
+		}
+		packaged.Command = []string{"python3", scriptPath}
+	}
+	packaged.Script = ""
+	return packaged, nil
 }
 
 func applySizingProbe(ctx context.Context, opts Options, resolved config.ResolvedTrainConfig) (config.ResolvedTrainConfig, error) {
@@ -374,6 +599,77 @@ func ensureProviderSupportsCheckpoint(ctx context.Context, registry *provider.Re
 		}
 	}
 	return fmt.Errorf("provider %s does not support %q checkpoint resume URI %q", selectedProvider, scheme, resumeFrom.URI)
+}
+
+func planExplicitProvider(ctx context.Context, registry *provider.Registry, providerName string, job app.JobSpec, resumeFrom *app.CheckpointRef) (planProviderReport, planCheckpointReport, error) {
+	adapter, err := registry.Get(providerName)
+	if err != nil {
+		return planProviderReport{Name: providerName}, checkpointCompatibilityForResume(resumeFrom), err
+	}
+	capabilities, capErr := adapter.Capabilities(ctx)
+	report := planProviderReport{Name: string(adapter.Name()), Capabilities: capabilities}
+	checkpointReport := checkpointCompatibility(adapter.Name(), capabilities, resumeFrom)
+	if capErr != nil {
+		report.Reasons = []string{capErr.Error()}
+		return report, checkpointReport, capErr
+	}
+	support := adapter.ValidateJob(ctx, job)
+	report.Supported = support.Supported
+	report.Reasons = append([]string(nil), support.Reasons...)
+	if resumeFrom != nil && !checkpointReport.SupportedBySelected {
+		report.Supported = false
+		report.Reasons = append(report.Reasons, checkpointReport.Reason)
+		return report, checkpointReport, fmt.Errorf("%s", checkpointReport.Reason)
+	}
+	estimate, err := adapter.Estimate(ctx, job)
+	if err != nil {
+		report.Reasons = append(report.Reasons, err.Error())
+		return report, checkpointReport, err
+	}
+	report.Estimate = estimate
+	return report, checkpointReport, nil
+}
+
+func checkpointCompatibilityFromDecision(ctx context.Context, registry *provider.Registry, selectedProvider string, resumeFrom *app.CheckpointRef) planCheckpointReport {
+	if resumeFrom == nil {
+		return checkpointCompatibilityForResume(nil)
+	}
+	adapter, err := registry.Get(selectedProvider)
+	if err != nil {
+		return planCheckpointReport{ResumeFromURI: resumeFrom.URI, Scheme: checkpointScheme(resumeFrom.URI), Reason: err.Error()}
+	}
+	capabilities, err := adapter.Capabilities(ctx)
+	if err != nil {
+		return planCheckpointReport{ResumeFromURI: resumeFrom.URI, Scheme: checkpointScheme(resumeFrom.URI), Reason: err.Error()}
+	}
+	return checkpointCompatibility(adapter.Name(), capabilities, resumeFrom)
+}
+
+func checkpointCompatibility(providerName app.ProviderName, capabilities app.ProviderCapabilities, resumeFrom *app.CheckpointRef) planCheckpointReport {
+	if resumeFrom == nil {
+		return planCheckpointReport{SupportedSchemes: append([]string(nil), capabilities.SupportedCheckpointSchemes...)}
+	}
+	scheme := checkpointScheme(resumeFrom.URI)
+	report := planCheckpointReport{
+		ResumeFromURI:    resumeFrom.URI,
+		Scheme:           scheme,
+		SupportedSchemes: append([]string(nil), capabilities.SupportedCheckpointSchemes...),
+	}
+	for _, supported := range capabilities.SupportedCheckpointSchemes {
+		if strings.EqualFold(supported, scheme) {
+			report.SupportedBySelected = true
+			return report
+		}
+	}
+	report.Reason = fmt.Sprintf("provider %s does not support %q checkpoint resume URI %q", providerName, scheme, resumeFrom.URI)
+	return report
+}
+
+func checkpointCompatibilityForResume(resumeFrom *app.CheckpointRef) planCheckpointReport {
+	if resumeFrom == nil {
+		return planCheckpointReport{}
+	}
+	return planCheckpointReport{ResumeFromURI: resumeFrom.URI, Scheme: checkpointScheme(resumeFrom.URI)}
 }
 
 func checkpointScheme(uri string) string {
@@ -1306,6 +1602,77 @@ func mergeResourceMetadata(current map[string]string, extra map[string]string) m
 	return merged
 }
 
+func renderPlanReport(opts Options, report planReport, asJSON bool) {
+	if asJSON {
+		_ = json.NewEncoder(opts.Stdout).Encode(report)
+		return
+	}
+	fmt.Fprintf(opts.Stdout, "Plan %s\n", report.PlanRunID)
+	fmt.Fprintf(opts.Stdout, "Provider: %s\n", report.Provider)
+	if report.Job.Image != "" {
+		fmt.Fprintf(opts.Stdout, "Job image: %s\n", report.Job.Image)
+	} else {
+		fmt.Fprintf(opts.Stdout, "Job script: %s\n", report.Job.Script)
+	}
+	fmt.Fprintf(opts.Stdout, "Data inputs: %d\n", len(report.DataManifest.Inputs))
+	if report.DataManifest.BundleSizeBytes > 0 {
+		fmt.Fprintf(opts.Stdout, "Bundle size: %d bytes\n", report.DataManifest.BundleSizeBytes)
+	}
+	if report.Staging.WouldUpload {
+		fmt.Fprintln(opts.Stdout, "Planned staged data uploads:")
+		for _, uri := range report.Staging.PlannedUploads {
+			fmt.Fprintf(opts.Stdout, "  %s\n", uri)
+		}
+	}
+	if report.Packaging.WouldPackage {
+		fmt.Fprintf(opts.Stdout, "Packaging: would build and push %s\n", report.Packaging.Image)
+	}
+	if report.Routing != nil {
+		if report.Routing.SelectedProvider != "" {
+			fmt.Fprintf(opts.Stdout, "Selected provider: %s\n", report.Routing.SelectedProvider)
+		}
+		if report.Routing.SelectedHardware != nil {
+			hardware := report.Routing.SelectedHardware
+			fmt.Fprintf(opts.Stdout, "Selected hardware: %s", hardware.ShapeID)
+			if hardware.Region != "" {
+				fmt.Fprintf(opts.Stdout, " in %s", hardware.Region)
+			}
+			if hardware.HourlyUSD > 0 {
+				fmt.Fprintf(opts.Stdout, " at $%.2f/hr", hardware.HourlyUSD)
+			}
+			fmt.Fprintln(opts.Stdout)
+		}
+		if report.Routing.EstimatedTotalCostUSD != nil {
+			fmt.Fprintf(opts.Stdout, "Estimated run cost: $%.2f\n", *report.Routing.EstimatedTotalCostUSD)
+		}
+		if len(report.Routing.RejectedProviders) > 0 {
+			fmt.Fprintln(opts.Stdout, "Rejected providers:")
+			for _, rejected := range report.Routing.RejectedProviders {
+				fmt.Fprintf(opts.Stdout, "  %s: %s\n", rejected.Provider, strings.Join(rejected.Reasons, ", "))
+			}
+		}
+	} else if report.ProviderReport != nil {
+		fmt.Fprintf(opts.Stdout, "Provider supported: %t\n", report.ProviderReport.Supported)
+		if report.ProviderReport.Estimate.HourlyUSD > 0 {
+			fmt.Fprintf(opts.Stdout, "Estimated hourly cost: $%.2f\n", report.ProviderReport.Estimate.HourlyUSD)
+		}
+		if len(report.ProviderReport.Reasons) > 0 {
+			fmt.Fprintf(opts.Stdout, "Provider reasons: %s\n", strings.Join(report.ProviderReport.Reasons, ", "))
+		}
+	}
+	if report.Checkpoint.ResumeFromURI != "" {
+		fmt.Fprintf(opts.Stdout, "Checkpoint compatibility: %t", report.Checkpoint.SupportedBySelected)
+		if report.Checkpoint.Reason != "" {
+			fmt.Fprintf(opts.Stdout, " (%s)", report.Checkpoint.Reason)
+		}
+		fmt.Fprintln(opts.Stdout)
+	}
+	fmt.Fprintln(opts.Stdout, "Suppressed actions:")
+	for _, action := range report.SuppressedActions {
+		fmt.Fprintf(opts.Stdout, "  %s\n", action)
+	}
+}
+
 func newProvidersCommand(opts Options) *cobra.Command {
 	var asJSON bool
 	cmd := &cobra.Command{
@@ -1698,6 +2065,10 @@ func buildProviderRegistry(opts Options, mockConfig config.MockConfig, gcpConfig
 
 func buildTrainProviderRegistry(opts Options, resolved config.ResolvedTrainConfig, credentialResolver credentials.Resolver) *provider.Registry {
 	return buildProviderRegistryWithOptions(opts, resolved.Mock, resolved.GCP, resolved.Lambda, resolved.ChinaCloud, credentialResolver, shouldRegisterGCPForTrain(resolved), shouldRegisterLambdaForTrain(resolved))
+}
+
+func buildPlanProviderRegistry(opts Options, resolved config.ResolvedTrainConfig) *provider.Registry {
+	return buildProviderRegistryWithOptions(opts, resolved.Mock, resolved.GCP, resolved.Lambda, resolved.ChinaCloud, credentials.Resolver{}, shouldRegisterGCPForTrain(resolved), shouldRegisterLambdaForTrain(resolved))
 }
 
 func buildProviderRegistryWithOptions(opts Options, mockConfig config.MockConfig, gcpConfig config.GCPConfig, lambdaConfig config.LambdaConfig, chinaConfig config.ChinaCloudConfig, credentialResolver credentials.Resolver, includeGCP bool, includeLambda bool) *provider.Registry {
