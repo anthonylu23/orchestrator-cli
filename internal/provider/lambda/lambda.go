@@ -155,12 +155,12 @@ func (p *Provider) Estimate(ctx context.Context, spec app.JobSpec) (app.CostEsti
 func (p *Provider) Submit(ctx context.Context, req app.SubmitRequest) (app.SubmitResult, error) {
 	redactor := redact.FromEnvironment(req.JobSpec.Env, req.RuntimeEnv, p.registryAuthRedactionEnv())
 	paths := artifact.ForRun(filepath.Dir(filepath.Dir(req.RunDir)), req.RunID)
-	logFile, err := os.OpenFile(paths.Logs, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	logFile, err := os.OpenFile(paths.Logs, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
 		return app.SubmitResult{}, fmt.Errorf("open logs artifact: %w", err)
 	}
 	defer logFile.Close()
-	eventFile, err := os.OpenFile(paths.EventsJSONL, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	eventFile, err := os.OpenFile(paths.EventsJSONL, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
 		return app.SubmitResult{}, fmt.Errorf("open events artifact: %w", err)
 	}
@@ -248,7 +248,10 @@ func (p *Provider) GetStatus(ctx context.Context, ref app.ProviderJobRef) (app.P
 	if err != nil {
 		return app.ProviderJobStatus{}, normalizeError(err)
 	}
-	return app.ProviderJobStatus{State: attemptStateFromInstanceStatus(instance.Status)}, nil
+	return app.ProviderJobStatus{
+		State:         attemptStateFromInstanceStatus(instance.Status),
+		ResourceState: providerResourceStateFromInstanceStatus(instance.Status),
+	}, nil
 }
 
 func (p *Provider) StreamLogs(ctx context.Context, req app.LogStreamRequest) (app.LogStream, error) {
@@ -645,6 +648,23 @@ func attemptStateFromInstanceStatus(status string) app.AttemptState {
 		return app.AttemptStateFailed
 	default:
 		return app.AttemptStateFailed
+	}
+}
+
+func providerResourceStateFromInstanceStatus(status string) app.ProviderResourceState {
+	switch status {
+	case "booting":
+		return app.ProviderResourceStateBooting
+	case "active":
+		return app.ProviderResourceStateRunning
+	case "terminating":
+		return app.ProviderResourceStateTerminating
+	case "terminated":
+		return app.ProviderResourceStateTerminated
+	case "unhealthy", "preempted":
+		return app.ProviderResourceStateFailed
+	default:
+		return app.ProviderResourceStateUnknown
 	}
 }
 

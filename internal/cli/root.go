@@ -166,6 +166,10 @@ func runTrain(ctx context.Context, opts Options, resolved config.ResolvedTrainCo
 	if err != nil {
 		return exitCodeInvalidSpec, err
 	}
+	credentialResolver, err := credentialResolverForTrain(opts, resolved)
+	if err != nil {
+		return exitCodeInvalidSpec, err
+	}
 
 	runID := app.NewRunID()
 	job, manifest, originalScript, err := prepareRunJob(ctx, opts, resolved, runID)
@@ -186,10 +190,13 @@ func runTrain(ctx context.Context, opts Options, resolved config.ResolvedTrainCo
 	if err := store.CreateRun(ctx, run); err != nil {
 		return exitCodeInternal, err
 	}
-	return runAttempts(ctx, opts, resolved, store, paths, runID, job, manifest, nil)
+	return runAttempts(ctx, opts, resolved, credentialResolver, store, paths, runID, job, manifest, nil)
 }
 
 func runResume(ctx context.Context, opts Options, runID string, resolved config.ResolvedTrainConfig) (int, error) {
+	if err := artifact.ValidateRunID(runID); err != nil {
+		return exitCodeInvalidSpec, err
+	}
 	if err := artifact.EnsureHome(resolved.SwitchboardHome); err != nil {
 		return exitCodeInternal, err
 	}
@@ -217,6 +224,10 @@ func runResume(ctx context.Context, opts Options, runID string, resolved config.
 	if resumeFrom == nil {
 		return exitCodeMissingResume, fmt.Errorf("run %s has no checkpoint events to resume from", runID)
 	}
+	credentialResolver, err := credentialResolverForTrain(opts, resolved)
+	if err != nil {
+		return exitCodeInvalidSpec, err
+	}
 	job, manifest, originalScript, err := prepareRunJob(ctx, opts, resolved, runID)
 	if err != nil {
 		return exitCodeInvalidSpec, err
@@ -226,7 +237,7 @@ func runResume(ctx context.Context, opts Options, runID string, resolved config.
 		return exitCodeInternal, err
 	}
 	fmt.Fprintf(opts.Stdout, "Found checkpoint: step %d\n", resumeFrom.Step)
-	return runAttempts(ctx, opts, resolved, store, paths, runID, job, manifest, resumeFrom)
+	return runAttempts(ctx, opts, resolved, credentialResolver, store, paths, runID, job, manifest, resumeFrom)
 }
 
 func prepareRunJob(ctx context.Context, opts Options, resolved config.ResolvedTrainConfig, runID string) (app.JobSpec, app.DataManifest, string, error) {
@@ -282,12 +293,8 @@ func applySizingProbe(ctx context.Context, opts Options, resolved config.Resolve
 	return resolved, nil
 }
 
-func runAttempts(ctx context.Context, opts Options, resolved config.ResolvedTrainConfig, store *state.Store, paths artifact.Paths, runID string, job app.JobSpec, manifest app.DataManifest, initialResumeFrom *app.CheckpointRef) (int, error) {
+func runAttempts(ctx context.Context, opts Options, resolved config.ResolvedTrainConfig, credentialResolver credentials.Resolver, store *state.Store, paths artifact.Paths, runID string, job app.JobSpec, manifest app.DataManifest, initialResumeFrom *app.CheckpointRef) (int, error) {
 	runRedactor := redact.FromEnvironment(job.Env)
-	credentialResolver, err := credentialResolverForTrain(opts, resolved)
-	if err != nil {
-		return exitCodeInvalidSpec, err
-	}
 	registry := buildTrainProviderRegistry(opts, resolved, credentialResolver)
 	maxAttempts := resolved.Routing.MaxAttempts
 	if maxAttempts < 1 {
@@ -1081,7 +1088,7 @@ func newResourcesCommand(opts Options, home *string) *cobra.Command {
 					return err
 				}
 				now := time.Now().UTC()
-				resource.State = providerResourceStateFromAttempt(status.State)
+				resource.State = providerResourceStateFromStatus(status)
 				resource.UpdatedAt = now
 				resource.LastObservedAt = &now
 				resource.Metadata = mergeResourceMetadata(resource.Metadata, map[string]string{"refreshed_at": now.Format(time.RFC3339Nano)})
@@ -1224,6 +1231,13 @@ func providerResourceStateFromAttempt(state app.AttemptState) app.ProviderResour
 	default:
 		return app.ProviderResourceStateUnknown
 	}
+}
+
+func providerResourceStateFromStatus(status app.ProviderJobStatus) app.ProviderResourceState {
+	if status.ResourceState != "" {
+		return status.ResourceState
+	}
+	return providerResourceStateFromAttempt(status.State)
 }
 
 func cleanupAdapterForResource(opts Options, resolvedHome string, resource app.ProviderResource, lambdaResolver **credentials.Resolver) (app.ProviderAdapter, error) {

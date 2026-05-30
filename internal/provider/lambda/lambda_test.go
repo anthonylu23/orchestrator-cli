@@ -222,6 +222,62 @@ func TestSubmitLaunchesCollectsArtifactsAndTerminates(t *testing.T) {
 	}
 }
 
+func TestSubmitCreatesPrivateArtifactsWhenMissing(t *testing.T) {
+	home := t.TempDir()
+	paths := artifact.ForRun(home, "r_private")
+	if err := artifact.EnsureRun(paths); err != nil {
+		t.Fatalf("ensure run: %v", err)
+	}
+	if err := os.Remove(paths.Logs); err != nil {
+		t.Fatalf("remove logs: %v", err)
+	}
+	if err := os.Remove(paths.EventsJSONL); err != nil {
+		t.Fatalf("remove events: %v", err)
+	}
+	client := &fakeClient{
+		launchIDs: []string{"i-private"},
+		instances: []Instance{
+			{ID: "i-private", Status: "active", IP: "203.0.113.10"},
+			{ID: "i-private", Status: "active", IP: "203.0.113.10"},
+		},
+	}
+	remote := &fakeRemote{files: map[string]string{
+		remoteLogsPath: "private log\n",
+		remoteExitPath: "{\"exit_code\":0,\"exit_reason\":\"completed\"}",
+	}}
+	provider := NewWithClient(testConfig(), client, remote, &bytes.Buffer{}, &bytes.Buffer{})
+	provider.Sleep = func(ctx context.Context, d time.Duration) error { return nil }
+
+	result, err := provider.Submit(context.Background(), app.SubmitRequest{
+		JobSpec:   app.JobSpec{Name: "valid", Image: "ghcr.io/example/smoke:latest"},
+		RunID:     "r_private",
+		AttemptID: "a_private",
+		RunDir:    paths.RunDir,
+	})
+	if err != nil {
+		t.Fatalf("Submit returned error: %v", err)
+	}
+	if result.ExitCode != 0 {
+		t.Fatalf("result = %#v", result)
+	}
+	assertFileMode(t, paths.Logs, 0o600)
+	assertFileMode(t, paths.EventsJSONL, 0o600)
+}
+
+func TestGetStatusIncludesProviderResourceState(t *testing.T) {
+	provider := NewWithClient(testConfig(), &fakeClient{
+		instances: []Instance{{ID: "i-terminated", Status: "terminated"}},
+	}, &fakeRemote{}, &bytes.Buffer{}, &bytes.Buffer{})
+
+	status, err := provider.GetStatus(context.Background(), app.ProviderJobRef{ID: "lambda:i-terminated"})
+	if err != nil {
+		t.Fatalf("GetStatus returned error: %v", err)
+	}
+	if status.State != app.AttemptStateCanceled || status.ResourceState != app.ProviderResourceStateTerminated {
+		t.Fatalf("status = %#v", status)
+	}
+}
+
 func TestNormalizeErrorMapsLambdaAPIErrorKinds(t *testing.T) {
 	tests := []struct {
 		err  error
@@ -236,6 +292,17 @@ func TestNormalizeErrorMapsLambdaAPIErrorKinds(t *testing.T) {
 		if got := app.ProviderErrorKindOf(normalizeError(tt.err)); got != tt.kind {
 			t.Fatalf("kind = %s, want %s for %v", got, tt.kind, tt.err)
 		}
+	}
+}
+
+func assertFileMode(t *testing.T, path string, want os.FileMode) {
+	t.Helper()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat %s: %v", path, err)
+	}
+	if got := info.Mode().Perm(); got != want {
+		t.Fatalf("%s mode = %o, want %o", path, got, want)
 	}
 }
 

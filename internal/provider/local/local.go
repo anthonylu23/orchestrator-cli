@@ -70,12 +70,12 @@ func (p *Provider) Estimate(ctx context.Context, spec app.JobSpec) (app.CostEsti
 
 func (p *Provider) Submit(ctx context.Context, req app.SubmitRequest) (app.SubmitResult, error) {
 	paths := artifact.ForRun(filepath.Dir(filepath.Dir(req.RunDir)), req.RunID)
-	logFile, err := os.OpenFile(paths.Logs, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	logFile, err := os.OpenFile(paths.Logs, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
 		return app.SubmitResult{}, fmt.Errorf("open logs artifact: %w", err)
 	}
 	defer logFile.Close()
-	eventFile, err := os.OpenFile(paths.EventsJSONL, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	eventFile, err := os.OpenFile(paths.EventsJSONL, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
 		return app.SubmitResult{}, fmt.Errorf("open events artifact: %w", err)
 	}

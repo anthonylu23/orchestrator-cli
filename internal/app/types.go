@@ -363,7 +363,8 @@ type ProviderJobRef struct {
 }
 
 type ProviderJobStatus struct {
-	State AttemptState
+	State         AttemptState
+	ResourceState ProviderResourceState
 }
 
 type LogStreamRequest struct {

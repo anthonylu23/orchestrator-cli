@@ -72,6 +72,40 @@ func TestSubmitSuccessWritesArtifactsAndProviderRef(t *testing.T) {
 	}
 }
 
+func TestSubmitCreatesPrivateArtifactsWhenMissing(t *testing.T) {
+	dir := t.TempDir()
+	paths := artifact.ForRun(dir, "r_private")
+	if err := artifact.EnsureRun(paths); err != nil {
+		t.Fatalf("EnsureRun returned error: %v", err)
+	}
+	if err := os.Remove(paths.Logs); err != nil {
+		t.Fatalf("remove logs: %v", err)
+	}
+	if err := os.Remove(paths.EventsJSONL); err != nil {
+		t.Fatalf("remove events: %v", err)
+	}
+	script := filepath.Join(dir, "train.py")
+	if err := os.WriteFile(script, []byte("print('ok')\n"), 0o600); err != nil {
+		t.Fatalf("write script: %v", err)
+	}
+
+	provider := New(&bytes.Buffer{}, &bytes.Buffer{})
+	result, err := provider.Submit(context.Background(), app.SubmitRequest{
+		JobSpec:   app.JobSpec{Script: script, WorkDir: paths.Workspace},
+		RunID:     "r_private",
+		AttemptID: "a_private",
+		RunDir:    paths.RunDir,
+	})
+	if err != nil {
+		t.Fatalf("Submit returned error: %v", err)
+	}
+	if result.ExitCode != 0 {
+		t.Fatalf("result = %#v", result)
+	}
+	assertFileMode(t, paths.Logs, 0o600)
+	assertFileMode(t, paths.EventsJSONL, 0o600)
+}
+
 func TestSubmitFailure(t *testing.T) {
 	dir := t.TempDir()
 	paths := artifact.ForRun(dir, "r_1")
@@ -94,6 +128,17 @@ func TestSubmitFailure(t *testing.T) {
 	}
 	if result.ExitCode != 3 {
 		t.Fatalf("exit code = %d", result.ExitCode)
+	}
+}
+
+func assertFileMode(t *testing.T, path string, want os.FileMode) {
+	t.Helper()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat %s: %v", path, err)
+	}
+	if got := info.Mode().Perm(); got != want {
+		t.Fatalf("%s mode = %o, want %o", path, got, want)
 	}
 }
 

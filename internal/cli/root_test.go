@@ -22,6 +22,7 @@ import (
 	"github.com/anthonylu23/switchboard-cli/internal/artifact"
 	"github.com/anthonylu23/switchboard-cli/internal/config"
 	"github.com/anthonylu23/switchboard-cli/internal/credentials"
+	"github.com/anthonylu23/switchboard-cli/internal/event"
 	"github.com/anthonylu23/switchboard-cli/internal/packaging"
 	mockprovider "github.com/anthonylu23/switchboard-cli/internal/provider/mock"
 	"github.com/anthonylu23/switchboard-cli/internal/state"
@@ -133,6 +134,21 @@ func TestResumeLocalRunUsesLatestCheckpoint(t *testing.T) {
 	}
 }
 
+func TestResumeRejectsInvalidRunIDWithoutPanic(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "home")
+	var stdout, stderr bytes.Buffer
+	cmd := NewRootCommand(Options{Stdout: &stdout, Stderr: &stderr})
+	cmd.SetArgs([]string{"--home", home, "resume", "../bad", "--provider", "local", "--script", filepath.Join(repoRoot(t), "examples", "train.py")})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected invalid run id error")
+	}
+	if !strings.Contains(err.Error(), "invalid run id") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
 func TestResumeRejectsProviderWithoutCheckpointScheme(t *testing.T) {
 	repo := repoRoot(t)
 	dir := t.TempDir()
@@ -177,6 +193,115 @@ gcp:
 	}
 	if fake.lastSubmit.RunID != "" {
 		t.Fatalf("submit should not be called: %#v", fake.lastSubmit)
+	}
+}
+
+func TestLambdaCredentialErrorBeforeSubmitDoesNotCreateRun(t *testing.T) {
+	dir := t.TempDir()
+	home := filepath.Join(dir, "home")
+	if err := artifact.EnsureHome(home); err != nil {
+		t.Fatalf("ensure home: %v", err)
+	}
+	if err := os.WriteFile(credentials.DefaultPath(home), []byte("not-a-valid-store"), 0o600); err != nil {
+		t.Fatalf("write credentials marker: %v", err)
+	}
+	t.Setenv(credentials.PassphraseEnv, "")
+
+	code, err := runTrain(context.Background(), Options{Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}, config.ResolvedTrainConfig{
+		Provider:        "lambda",
+		SwitchboardHome: home,
+		Job:             app.JobSpec{Name: "lambda-credential-check", Image: "ghcr.io/example/smoke:latest"},
+		Lambda: config.LambdaConfig{
+			RegionName:       "us-west-1",
+			InstanceTypeName: "gpu_1x_a10",
+			SSHKeyName:       "switchboard",
+			SSHPrivateKey:    "~/.ssh/id_ed25519",
+		},
+	})
+	if err == nil {
+		t.Fatal("expected credential resolver error")
+	}
+	if code != exitCodeInvalidSpec {
+		t.Fatalf("exit code = %d, want %d", code, exitCodeInvalidSpec)
+	}
+	entries, readErr := os.ReadDir(filepath.Join(home, "runs"))
+	if readErr != nil {
+		t.Fatalf("read runs directory: %v", readErr)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("expected no run directories after pre-submit credential failure, got %#v", entries)
+	}
+}
+
+func TestLambdaResumeCredentialErrorDoesNotRestartExistingRun(t *testing.T) {
+	dir := t.TempDir()
+	home := filepath.Join(dir, "home")
+	runID := "r_resume_credentials"
+	paths := artifact.ForRun(home, runID)
+	if err := artifact.EnsureHome(home); err != nil {
+		t.Fatalf("ensure home: %v", err)
+	}
+	if err := artifact.EnsureRun(paths); err != nil {
+		t.Fatalf("ensure run: %v", err)
+	}
+	store, err := state.Open(paths.DB)
+	if err != nil {
+		t.Fatalf("open state: %v", err)
+	}
+	started := time.Now().UTC()
+	if err := store.CreateRun(context.Background(), app.Run{ID: runID, JobName: "complete", Image: "image", Provider: "lambda", State: app.RunStateSucceeded, StartedAt: started}); err != nil {
+		t.Fatalf("CreateRun returned error: %v", err)
+	}
+	if err := store.FinishRun(context.Background(), runID, app.RunStateSucceeded, 0, "completed", started.Add(time.Minute)); err != nil {
+		t.Fatalf("FinishRun returned error: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("close state: %v", err)
+	}
+	file, err := os.OpenFile(paths.EventsJSONL, os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatalf("open events: %v", err)
+	}
+	step := int64(1)
+	if err := event.WriteJSONL(file, app.Event{Type: app.EventTypeCheckpoint, Step: &step, CheckpointURI: "s3://bucket/ckpt.pt"}); err != nil {
+		t.Fatalf("write checkpoint: %v", err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatalf("close events: %v", err)
+	}
+	if err := os.WriteFile(credentials.DefaultPath(home), []byte("not-a-valid-store"), 0o600); err != nil {
+		t.Fatalf("write credentials marker: %v", err)
+	}
+	t.Setenv(credentials.PassphraseEnv, "")
+
+	code, err := runResume(context.Background(), Options{Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}, runID, config.ResolvedTrainConfig{
+		Provider:        "lambda",
+		SwitchboardHome: home,
+		Job:             app.JobSpec{Name: "lambda-resume", Image: "ghcr.io/example/smoke:latest"},
+		Lambda: config.LambdaConfig{
+			RegionName:       "us-west-1",
+			InstanceTypeName: "gpu_1x_a10",
+			SSHKeyName:       "switchboard",
+			SSHPrivateKey:    "~/.ssh/id_ed25519",
+		},
+	})
+	if err == nil {
+		t.Fatal("expected credential resolver error")
+	}
+	if code != exitCodeInvalidSpec {
+		t.Fatalf("exit code = %d, want %d", code, exitCodeInvalidSpec)
+	}
+	store, err = state.Open(paths.DB)
+	if err != nil {
+		t.Fatalf("reopen state: %v", err)
+	}
+	defer store.Close()
+	run, err := store.GetRun(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("GetRun returned error: %v", err)
+	}
+	if run.State != app.RunStateSucceeded || run.ExitCode != 0 || run.Error != "completed" {
+		t.Fatalf("run should remain completed after pre-restart credential failure: %#v", run)
 	}
 }
 
@@ -1254,6 +1379,73 @@ func TestResourcesRefreshUpdatesProviderResourceState(t *testing.T) {
 	}
 }
 
+func TestResourcesRefreshUsesProviderResourceStateWhenAvailable(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "home")
+	if err := artifact.EnsureHome(home); err != nil {
+		t.Fatalf("ensure home: %v", err)
+	}
+	store, err := state.Open(artifact.DBPath(home))
+	if err != nil {
+		t.Fatalf("open state: %v", err)
+	}
+	started := time.Now().UTC()
+	if err := store.CreateRun(context.Background(), app.Run{ID: "r_lambda_refresh", JobName: "train", Image: "image", Provider: "lambda", State: app.RunStateRunning, StartedAt: started}); err != nil {
+		t.Fatalf("CreateRun returned error: %v", err)
+	}
+	if err := store.CreateAttempt(context.Background(), app.Attempt{ID: "a_lambda_refresh", RunID: "r_lambda_refresh", Provider: "lambda", State: app.AttemptStateRunning, StartedAt: started}); err != nil {
+		t.Fatalf("CreateAttempt returned error: %v", err)
+	}
+	if _, err := store.SaveProviderResource(context.Background(), app.ProviderResource{
+		ID:                   "res_lambda_refresh",
+		RunID:                "r_lambda_refresh",
+		AttemptID:            "a_lambda_refresh",
+		Provider:             "lambda",
+		Kind:                 app.ProviderResourceKindInstance,
+		ExternalID:           "i-terminated",
+		ProviderRef:          "lambda:i-terminated",
+		Region:               "us-west-1",
+		State:                app.ProviderResourceStateRunning,
+		CreatedBySwitchboard: true,
+		CleanupPolicy:        app.ProviderResourceCleanupAlways,
+	}); err != nil {
+		t.Fatalf("SaveProviderResource returned error: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("close state: %v", err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	cmd := NewRootCommand(Options{
+		Stdout: &stdout,
+		Stderr: &stderr,
+		LambdaProviderFactory: func(cfg config.LambdaConfig, stdout io.Writer, stderr io.Writer) app.ProviderAdapter {
+			return &fakeLambdaAdapter{status: app.ProviderJobStatus{
+				State:         app.AttemptStateCanceled,
+				ResourceState: app.ProviderResourceStateTerminated,
+			}}
+		},
+	})
+	cmd.SetArgs([]string{"--home", home, "resources", "refresh", "--run", "r_lambda_refresh"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("resources refresh returned error: %v\nstdout=%s\nstderr=%s", err, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "refreshed\tres_lambda_refresh\tlambda\tterminated") {
+		t.Fatalf("refresh output = %s", stdout.String())
+	}
+	store, err = state.Open(artifact.DBPath(home))
+	if err != nil {
+		t.Fatalf("reopen state: %v", err)
+	}
+	defer store.Close()
+	resources, err := store.ProviderResourcesByRun(context.Background(), "r_lambda_refresh")
+	if err != nil {
+		t.Fatalf("resources: %v", err)
+	}
+	if len(resources) != 1 || resources[0].State != app.ProviderResourceStateTerminated {
+		t.Fatalf("resources = %#v", resources)
+	}
+}
+
 func TestGCPProviderFailureUsesStableRoutingExit(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "switchboard.yaml")
@@ -1943,6 +2135,7 @@ var errUnsupportedFakeLogs = errors.New("unsupported")
 type fakeLambdaAdapter struct {
 	lastSubmit app.SubmitRequest
 	cancelRef  string
+	status     app.ProviderJobStatus
 }
 
 func (a *fakeLambdaAdapter) Name() app.ProviderName {
@@ -2029,6 +2222,9 @@ func (a *fakeLambdaAdapter) Submit(ctx context.Context, req app.SubmitRequest) (
 }
 
 func (a *fakeLambdaAdapter) GetStatus(ctx context.Context, ref app.ProviderJobRef) (app.ProviderJobStatus, error) {
+	if a.status.State != "" || a.status.ResourceState != "" {
+		return a.status, nil
+	}
 	return app.ProviderJobStatus{State: app.AttemptStateSucceeded}, nil
 }
 

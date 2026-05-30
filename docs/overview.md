@@ -66,7 +66,7 @@ Auto hardware routing is implemented for first-pass single-node provider and sha
 2. `auto_provider`: the user selects hardware requirements, and Switchboard selects the provider.
 3. `manual`: the user selects both provider and hardware.
 
-The default objective is fastest compatible infrastructure within a max estimated run cost. The current sizing path uses user hints such as model size, batch size, precision, and optimizer; probe artifacts are still future work. If Switchboard cannot estimate memory fit or total cost with enough confidence, it fails before submit with clear guidance rather than overprovisioning silently.
+The default objective is fastest compatible infrastructure within a max estimated run cost. The current sizing path uses user hints such as model size, batch size, precision, and optimizer, and can merge a JSON sizing probe artifact with measured required or peak VRAM before routing. If Switchboard cannot estimate memory fit or total cost with enough confidence, it fails before submit with clear guidance rather than overprovisioning silently.
 
 ## Early Runtime Assumptions
 
