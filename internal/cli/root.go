@@ -23,6 +23,7 @@ import (
 	"github.com/anthonylu23/switchboard-cli/internal/provider"
 	chinacloudprovider "github.com/anthonylu23/switchboard-cli/internal/provider/chinacloud"
 	gcpprovider "github.com/anthonylu23/switchboard-cli/internal/provider/gcp"
+	hyperbolicprovider "github.com/anthonylu23/switchboard-cli/internal/provider/hyperbolic"
 	lambdaprovider "github.com/anthonylu23/switchboard-cli/internal/provider/lambda"
 	localprovider "github.com/anthonylu23/switchboard-cli/internal/provider/local"
 	mockprovider "github.com/anthonylu23/switchboard-cli/internal/provider/mock"
@@ -37,12 +38,13 @@ import (
 )
 
 type Options struct {
-	Stdout                io.Writer
-	Stderr                io.Writer
-	GCPProviderFactory    func(config.GCPConfig, io.Writer, io.Writer) app.ProviderAdapter
-	LambdaProviderFactory func(config.LambdaConfig, io.Writer, io.Writer) app.ProviderAdapter
-	ImageBuilderFactory   func(io.Writer, io.Writer) ImageBuilder
-	StagingUploader       staging.Uploader
+	Stdout                    io.Writer
+	Stderr                    io.Writer
+	GCPProviderFactory        func(config.GCPConfig, io.Writer, io.Writer) app.ProviderAdapter
+	LambdaProviderFactory     func(config.LambdaConfig, io.Writer, io.Writer) app.ProviderAdapter
+	HyperbolicProviderFactory func(config.HyperbolicConfig, io.Writer, io.Writer) app.ProviderAdapter
+	ImageBuilderFactory       func(io.Writer, io.Writer) ImageBuilder
+	StagingUploader           staging.Uploader
 }
 
 type ImageBuilder interface {
@@ -735,9 +737,9 @@ func validateStagingDataPrefixForProvider(resolved config.ResolvedTrainConfig) e
 		if scheme != "gs" {
 			return fmt.Errorf("provider gcp cannot read staged data prefix scheme %q; use a gs:// staging.data_uri_prefix", scheme)
 		}
-	case lambdaprovider.ProviderName:
+	case lambdaprovider.ProviderName, hyperbolicprovider.ProviderName:
 		if scheme != "s3" && scheme != "gs" {
-			return fmt.Errorf("provider lambda cannot read staged data prefix scheme %q; use an s3:// or gs:// staging.data_uri_prefix", scheme)
+			return fmt.Errorf("provider %s cannot read staged data prefix scheme %q; use an s3:// or gs:// staging.data_uri_prefix", resolved.Provider, scheme)
 		}
 	}
 	return nil
@@ -1021,7 +1023,7 @@ func providerResourceKey(resource app.ProviderResource) string {
 func runtimeEnvForProvider(selectedProvider string, runID string, attemptID string, resumeValue string, paths artifact.Paths, stagingConfig config.StagingConfig, inputs []app.DataInput) map[string]string {
 	checkpointDir := paths.Checkpoints
 	eventsPath := paths.EventsJSONL
-	if selectedProvider == gcpprovider.ProviderName || selectedProvider == lambdaprovider.ProviderName || isChinaCloudProvider(selectedProvider) {
+	if selectedProvider == gcpprovider.ProviderName || selectedProvider == lambdaprovider.ProviderName || selectedProvider == hyperbolicprovider.ProviderName || isChinaCloudProvider(selectedProvider) {
 		checkpointDir = "/tmp/switchboard/checkpoints"
 		eventsPath = "/tmp/switchboard/events.jsonl"
 	}
@@ -1219,14 +1221,18 @@ func cancelAdapterForAttempt(ctx context.Context, opts Options, resolvedHome str
 		}
 	}
 	resolver := credentials.Resolver{}
-	if attempt.Provider == lambdaprovider.ProviderName || isChinaCloudProvider(attempt.Provider) {
+	if attempt.Provider == hyperbolicprovider.ProviderName && strings.TrimSpace(os.Getenv("HYPERBOLIC_API_KEY")) != "" {
+		registry := buildProviderRegistryWithOptions(opts, config.MockConfig{}, config.GCPConfig{}, config.LambdaConfig{}, config.HyperbolicConfig{}, config.ChinaCloudConfig{}, resolver, true, true, true)
+		return registry.Get(attempt.Provider)
+	}
+	if attempt.Provider == lambdaprovider.ProviderName || attempt.Provider == hyperbolicprovider.ProviderName || isChinaCloudProvider(attempt.Provider) {
 		optionalResolver, err := optionalCredentialResolverAtHome(opts, resolvedHome)
 		if err != nil {
 			return nil, err
 		}
 		resolver = optionalResolver
 	}
-	registry := buildProviderRegistryWithOptions(opts, config.MockConfig{}, config.GCPConfig{}, config.LambdaConfig{}, config.ChinaCloudConfig{}, resolver, true, true)
+	registry := buildProviderRegistryWithOptions(opts, config.MockConfig{}, config.GCPConfig{}, config.LambdaConfig{}, config.HyperbolicConfig{}, config.ChinaCloudConfig{}, resolver, true, true, true)
 	return registry.Get(attempt.Provider)
 }
 
@@ -1369,13 +1375,13 @@ func newResourcesCommand(opts Options, home *string) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			var lambdaResolver *credentials.Resolver
+			var credentialResolver *credentials.Resolver
 			refreshed := make([]app.ProviderResource, 0, len(resources))
 			for _, resource := range resources {
 				if !resourceRefreshSupported(resource) {
 					continue
 				}
-				adapter, err := refreshAdapterForResource(opts, resolvedHome, resource, &lambdaResolver)
+				adapter, err := refreshAdapterForResource(opts, resolvedHome, resource, &credentialResolver)
 				if err != nil {
 					return err
 				}
@@ -1432,7 +1438,7 @@ func newResourcesCommand(opts Options, home *string) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			var lambdaResolver *credentials.Resolver
+			var credentialResolver *credentials.Resolver
 			cleaned := 0
 			for _, resource := range resources {
 				if !resourceCleanupEligible(resource) {
@@ -1443,7 +1449,7 @@ func newResourcesCommand(opts Options, home *string) *cobra.Command {
 					cleaned++
 					continue
 				}
-				adapter, err := cleanupAdapterForResource(opts, resolvedHome, resource, &lambdaResolver)
+				adapter, err := cleanupAdapterForResource(opts, resolvedHome, resource, &credentialResolver)
 				if err != nil {
 					return err
 				}
@@ -1502,13 +1508,13 @@ func providerResourceStateActive(state app.ProviderResourceState) bool {
 }
 
 func resourceRefreshSupported(resource app.ProviderResource) bool {
-	return resource.ProviderRef != "" && (resource.Provider == gcpprovider.ProviderName || resource.Provider == lambdaprovider.ProviderName)
+	return resource.ProviderRef != "" && (resource.Provider == gcpprovider.ProviderName || resource.Provider == lambdaprovider.ProviderName || resource.Provider == hyperbolicprovider.ProviderName)
 }
 
-func refreshAdapterForResource(opts Options, resolvedHome string, resource app.ProviderResource, lambdaResolver **credentials.Resolver) (app.ProviderAdapter, error) {
+func refreshAdapterForResource(opts Options, resolvedHome string, resource app.ProviderResource, credentialResolver **credentials.Resolver) (app.ProviderAdapter, error) {
 	switch resource.Provider {
-	case gcpprovider.ProviderName, lambdaprovider.ProviderName:
-		return cleanupAdapterForResource(opts, resolvedHome, resource, lambdaResolver)
+	case gcpprovider.ProviderName, lambdaprovider.ProviderName, hyperbolicprovider.ProviderName:
+		return cleanupAdapterForResource(opts, resolvedHome, resource, credentialResolver)
 	default:
 		return nil, fmt.Errorf("resource refresh is not supported for provider %q", resource.Provider)
 	}
@@ -1536,7 +1542,7 @@ func providerResourceStateFromStatus(status app.ProviderJobStatus) app.ProviderR
 	return providerResourceStateFromAttempt(status.State)
 }
 
-func cleanupAdapterForResource(opts Options, resolvedHome string, resource app.ProviderResource, lambdaResolver **credentials.Resolver) (app.ProviderAdapter, error) {
+func cleanupAdapterForResource(opts Options, resolvedHome string, resource app.ProviderResource, credentialResolver **credentials.Resolver) (app.ProviderAdapter, error) {
 	switch resource.Provider {
 	case gcpprovider.ProviderName:
 		cfg := config.GCPConfig{ProjectID: resource.ProjectOrAccount, Location: resource.Region}
@@ -1549,27 +1555,43 @@ func cleanupAdapterForResource(opts Options, resolvedHome string, resource app.P
 		if opts.LambdaProviderFactory != nil {
 			return opts.LambdaProviderFactory(cfg, opts.Stdout, opts.Stderr), nil
 		}
-		if *lambdaResolver == nil {
+		if *credentialResolver == nil {
 			resolver, err := optionalCredentialResolverAtHome(opts, resolvedHome)
 			if err != nil {
 				return nil, err
 			}
-			*lambdaResolver = &resolver
+			*credentialResolver = &resolver
 		}
-		return lambdaprovider.New(lambdaConfigFromConfig(cfg, **lambdaResolver), opts.Stdout, opts.Stderr), nil
+		return lambdaprovider.New(lambdaConfigFromConfig(cfg, **credentialResolver), opts.Stdout, opts.Stderr), nil
+	case hyperbolicprovider.ProviderName:
+		cfg := config.HyperbolicConfig{}
+		if opts.HyperbolicProviderFactory != nil {
+			return opts.HyperbolicProviderFactory(cfg, opts.Stdout, opts.Stderr), nil
+		}
+		if strings.TrimSpace(os.Getenv("HYPERBOLIC_API_KEY")) != "" {
+			return hyperbolicprovider.New(hyperbolicConfigFromConfig(cfg, credentials.Resolver{}), opts.Stdout, opts.Stderr), nil
+		}
+		if *credentialResolver == nil {
+			resolver, err := optionalCredentialResolverAtHome(opts, resolvedHome)
+			if err != nil {
+				return nil, err
+			}
+			*credentialResolver = &resolver
+		}
+		return hyperbolicprovider.New(hyperbolicConfigFromConfig(cfg, **credentialResolver), opts.Stdout, opts.Stderr), nil
 	default:
 		if def, err := chinacloudprovider.DefinitionFor(resource.Provider); err == nil {
-			if *lambdaResolver == nil {
+			if *credentialResolver == nil {
 				resolver, err := optionalCredentialResolverAtHome(opts, resolvedHome)
 				if err != nil {
 					return nil, err
 				}
-				*lambdaResolver = &resolver
+				*credentialResolver = &resolver
 			}
 			cfg := chinacloudprovider.VMProviderConfig{
 				Region:           resource.Region,
 				ProjectOrAccount: resource.ProjectOrAccount,
-				Credentials:      **lambdaResolver,
+				Credentials:      **credentialResolver,
 			}
 			return chinacloudprovider.NewVMProvider(def, cfg, opts.Stdout, opts.Stderr), nil
 		}
@@ -1579,7 +1601,7 @@ func cleanupAdapterForResource(opts Options, resolvedHome string, resource app.P
 
 func cleanupRequestedState(resource app.ProviderResource) app.ProviderResourceState {
 	switch resource.Provider {
-	case lambdaprovider.ProviderName:
+	case lambdaprovider.ProviderName, hyperbolicprovider.ProviderName:
 		return app.ProviderResourceStateTerminating
 	case gcpprovider.ProviderName:
 		return app.ProviderResourceStateCanceled
@@ -2060,18 +2082,18 @@ func credentialValue(opts Options, key string, fromEnv string, valueStdin bool) 
 }
 
 func buildProviderRegistry(opts Options, mockConfig config.MockConfig, gcpConfig config.GCPConfig) *provider.Registry {
-	return buildProviderRegistryWithOptions(opts, mockConfig, gcpConfig, config.LambdaConfig{}, config.ChinaCloudConfig{}, credentials.Resolver{}, true, true)
+	return buildProviderRegistryWithOptions(opts, mockConfig, gcpConfig, config.LambdaConfig{}, config.HyperbolicConfig{}, config.ChinaCloudConfig{}, credentials.Resolver{}, true, true, true)
 }
 
 func buildTrainProviderRegistry(opts Options, resolved config.ResolvedTrainConfig, credentialResolver credentials.Resolver) *provider.Registry {
-	return buildProviderRegistryWithOptions(opts, resolved.Mock, resolved.GCP, resolved.Lambda, resolved.ChinaCloud, credentialResolver, shouldRegisterGCPForTrain(resolved), shouldRegisterLambdaForTrain(resolved))
+	return buildProviderRegistryWithOptions(opts, resolved.Mock, resolved.GCP, resolved.Lambda, resolved.Hyperbolic, resolved.ChinaCloud, credentialResolver, shouldRegisterGCPForTrain(resolved), shouldRegisterLambdaForTrain(resolved), shouldRegisterHyperbolicForTrain(resolved))
 }
 
 func buildPlanProviderRegistry(opts Options, resolved config.ResolvedTrainConfig) *provider.Registry {
-	return buildProviderRegistryWithOptions(opts, resolved.Mock, resolved.GCP, resolved.Lambda, resolved.ChinaCloud, credentials.Resolver{}, shouldRegisterGCPForTrain(resolved), shouldRegisterLambdaForTrain(resolved))
+	return buildProviderRegistryWithOptions(opts, resolved.Mock, resolved.GCP, resolved.Lambda, resolved.Hyperbolic, resolved.ChinaCloud, credentials.Resolver{}, shouldRegisterGCPForTrain(resolved), shouldRegisterLambdaForTrain(resolved), shouldRegisterHyperbolicForTrain(resolved))
 }
 
-func buildProviderRegistryWithOptions(opts Options, mockConfig config.MockConfig, gcpConfig config.GCPConfig, lambdaConfig config.LambdaConfig, chinaConfig config.ChinaCloudConfig, credentialResolver credentials.Resolver, includeGCP bool, includeLambda bool) *provider.Registry {
+func buildProviderRegistryWithOptions(opts Options, mockConfig config.MockConfig, gcpConfig config.GCPConfig, lambdaConfig config.LambdaConfig, hyperbolicConfig config.HyperbolicConfig, chinaConfig config.ChinaCloudConfig, credentialResolver credentials.Resolver, includeGCP bool, includeLambda bool, includeHyperbolic bool) *provider.Registry {
 	adapters := []app.ProviderAdapter{localprovider.New(opts.Stdout, opts.Stderr)}
 	adapters = append(adapters, chinaCloudAdapters(chinaConfig, credentialResolver, opts.Stdout, opts.Stderr)...)
 	for _, providerConfig := range mergedMockProviders(mockConfig) {
@@ -2093,14 +2115,22 @@ func buildProviderRegistryWithOptions(opts Options, mockConfig config.MockConfig
 	} else if includeLambda {
 		adapters = append(adapters, lambdaprovider.New(lambdaConfigFromConfig(lambdaConfig, credentialResolver), opts.Stdout, opts.Stderr))
 	}
+	if opts.HyperbolicProviderFactory != nil && includeHyperbolic {
+		adapters = append(adapters, opts.HyperbolicProviderFactory(hyperbolicConfig, opts.Stdout, opts.Stderr))
+	} else if includeHyperbolic {
+		adapters = append(adapters, hyperbolicprovider.New(hyperbolicConfigFromConfig(hyperbolicConfig, credentialResolver), opts.Stdout, opts.Stderr))
+	}
 	return provider.NewRegistry(adapters...)
 }
 
 func credentialResolverForTrain(opts Options, resolved config.ResolvedTrainConfig) (credentials.Resolver, error) {
-	if opts.LambdaProviderFactory != nil && !shouldRegisterAnyChinaVMForTrain(resolved) {
+	needsLambda := shouldRegisterLambdaForTrain(resolved) && opts.LambdaProviderFactory == nil
+	needsHyperbolic := shouldRegisterHyperbolicForTrain(resolved) && opts.HyperbolicProviderFactory == nil
+	needsChina := shouldRegisterAnyChinaVMForTrain(resolved)
+	if needsHyperbolic && !needsLambda && !needsChina && strings.TrimSpace(os.Getenv("HYPERBOLIC_API_KEY")) != "" {
 		return credentials.Resolver{}, nil
 	}
-	if !shouldRegisterLambdaForTrain(resolved) && !shouldRegisterAnyChinaVMForTrain(resolved) {
+	if !needsLambda && !needsHyperbolic && !needsChina {
 		return credentials.Resolver{}, nil
 	}
 	return optionalCredentialResolverAtHome(opts, resolved.SwitchboardHome)
@@ -2124,6 +2154,16 @@ func shouldRegisterLambdaForTrain(resolved config.ResolvedTrainConfig) bool {
 		return false
 	}
 	return resolved.Lambda.RegionName != "" && resolved.Lambda.InstanceTypeName != "" && resolved.Lambda.SSHKeyName != "" && resolved.Lambda.SSHPrivateKey != ""
+}
+
+func shouldRegisterHyperbolicForTrain(resolved config.ResolvedTrainConfig) bool {
+	if resolved.Provider == hyperbolicprovider.ProviderName {
+		return true
+	}
+	if resolved.Provider != string(app.ProviderAuto) {
+		return false
+	}
+	return resolved.Hyperbolic.SSHPrivateKey != ""
 }
 
 func shouldRegisterAnyChinaVMForTrain(resolved config.ResolvedTrainConfig) bool {
@@ -2257,6 +2297,37 @@ func lambdaConfigFromConfig(cfg config.LambdaConfig, credentialResolver credenti
 		SSHConnectTimeoutSecs:    cfg.SSHConnectTimeoutSecs,
 		SSHReadyTimeoutSeconds:   cfg.SSHReadyTimeoutSeconds,
 		RegistryAuth: lambdaprovider.RegistryAuth{
+			Server:   cfg.RegistryAuth.Server,
+			Username: os.Getenv(cfg.RegistryAuth.UsernameEnv),
+			Password: os.Getenv(cfg.RegistryAuth.PasswordEnv),
+		},
+		Credentials: credentialResolver,
+	}
+}
+
+func hyperbolicConfigFromConfig(cfg config.HyperbolicConfig, credentialResolver credentials.Resolver) hyperbolicprovider.Config {
+	terminateOnCompletion := true
+	terminateSet := false
+	if cfg.TerminateOnCompletion != nil {
+		terminateOnCompletion = *cfg.TerminateOnCompletion
+		terminateSet = true
+	}
+	return hyperbolicprovider.Config{
+		VMConfigID:               cfg.VMConfigID,
+		GPUCount:                 cfg.GPUCount,
+		GPUType:                  cfg.GPUType,
+		SSHUser:                  cfg.SSHUser,
+		SSHPrivateKey:            cfg.SSHPrivateKey,
+		PollIntervalSeconds:      cfg.PollIntervalSeconds,
+		TerminateOnCompletion:    terminateOnCompletion,
+		TerminateOnCompletionSet: terminateSet,
+		KeepInstanceOnFailure:    cfg.KeepInstanceOnFailure,
+		APITimeoutSeconds:        cfg.APITimeoutSeconds,
+		SSHConnectTimeoutSecs:    cfg.SSHConnectTimeoutSecs,
+		SSHReadyTimeoutSeconds:   cfg.SSHReadyTimeoutSeconds,
+		EstimateHourlyUSD:        cfg.EstimateHourlyUSD,
+		BaseURL:                  cfg.APIBaseURL,
+		RegistryAuth: hyperbolicprovider.RegistryAuth{
 			Server:   cfg.RegistryAuth.Server,
 			Username: os.Getenv(cfg.RegistryAuth.UsernameEnv),
 			Password: os.Getenv(cfg.RegistryAuth.PasswordEnv),

@@ -312,6 +312,38 @@ func TestLambdaCredentialErrorBeforeSubmitDoesNotCreateRun(t *testing.T) {
 	}
 }
 
+func TestHyperbolicEnvCredentialBypassesEncryptedStore(t *testing.T) {
+	dir := t.TempDir()
+	home := filepath.Join(dir, "home")
+	if err := artifact.EnsureHome(home); err != nil {
+		t.Fatalf("ensure home: %v", err)
+	}
+	if err := os.WriteFile(credentials.DefaultPath(home), []byte("not-a-valid-store"), 0o600); err != nil {
+		t.Fatalf("write credentials marker: %v", err)
+	}
+	t.Setenv(credentials.PassphraseEnv, "")
+	t.Setenv("HYPERBOLIC_API_KEY", "env-api-key")
+
+	resolver, err := credentialResolverForTrain(Options{Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}, config.ResolvedTrainConfig{
+		Provider:        "hyperbolic",
+		SwitchboardHome: home,
+		Job:             app.JobSpec{Name: "hyperbolic-credential-check", Image: "ghcr.io/example/smoke:latest"},
+		Hyperbolic: config.HyperbolicConfig{
+			SSHPrivateKey: "~/.ssh/id_ed25519",
+		},
+	})
+	if err != nil {
+		t.Fatalf("credentialResolverForTrain returned error: %v", err)
+	}
+	secret, err := resolver.Resolve(credentials.Query{Provider: "hyperbolic", Name: "api_key", Env: []string{"HYPERBOLIC_API_KEY"}})
+	if err != nil {
+		t.Fatalf("Resolve returned error: %v", err)
+	}
+	if secret.Value != "env-api-key" {
+		t.Fatalf("secret = %#v", secret)
+	}
+}
+
 func TestLambdaResumeCredentialErrorDoesNotRestartExistingRun(t *testing.T) {
 	dir := t.TempDir()
 	home := filepath.Join(dir, "home")
@@ -753,7 +785,7 @@ func TestProvidersListIncludesMocks(t *testing.T) {
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("providers list returned error: %v", err)
 	}
-	for _, name := range []string{"local", "mock-lambda", "mock-gcp", "gcp", "lambda", "alibaba-cloud", "huawei-cloud", "tencent-cloud", "tianyi-cloud", "baidu-ai-cloud"} {
+	for _, name := range []string{"local", "mock-lambda", "mock-gcp", "gcp", "lambda", "hyperbolic", "alibaba-cloud", "huawei-cloud", "tencent-cloud", "tianyi-cloud", "baidu-ai-cloud"} {
 		if !strings.Contains(stdout.String(), name) {
 			t.Fatalf("%q missing from %s", name, stdout.String())
 		}
@@ -1453,6 +1485,143 @@ lambda:
 	}
 }
 
+func TestHyperbolicTrainIntegrationUsesConfiguredProvider(t *testing.T) {
+	dir := t.TempDir()
+	home := filepath.Join(dir, "home")
+	configPath := filepath.Join(dir, "switchboard.yaml")
+	configContent := `
+job:
+  name: hyperbolic-test
+  image: ghcr.io/example/switchboard-hyperbolic-smoke:latest
+  command: ["python", "/app/train.py"]
+  args: ["--epochs", "1"]
+data:
+  inputs:
+    - name: train-set
+      source: s3://example-bucket/train.csv
+      mode: uri
+staging:
+  checkpoint_uri_prefix: s3://example-bucket/switchboard/checkpoints
+  data_uri_prefix: s3://example-bucket/switchboard/data
+hyperbolic:
+  vm_config_id: vm-config-test
+  gpu_count: 2
+  gpu_type: H100-SXM5-80GB
+  ssh_private_key: ~/.ssh/id_ed25519
+`
+	if err := os.WriteFile(configPath, []byte(configContent), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	var captured config.HyperbolicConfig
+	fake := &fakeHyperbolicAdapter{}
+	var stdout, stderr bytes.Buffer
+	cmd := NewRootCommand(Options{
+		Stdout: &stdout,
+		Stderr: &stderr,
+		HyperbolicProviderFactory: func(cfg config.HyperbolicConfig, stdout io.Writer, stderr io.Writer) app.ProviderAdapter {
+			captured = cfg
+			return fake
+		},
+	})
+	cmd.SetArgs([]string{"--home", home, "train", "--provider", "hyperbolic", "--config", configPath})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("train returned error: %v\nstdout=%s\nstderr=%s", err, stdout.String(), stderr.String())
+	}
+	if captured.VMConfigID != "vm-config-test" || captured.GPUCount != 2 || captured.GPUType != "H100-SXM5-80GB" {
+		t.Fatalf("captured config = %#v", captured)
+	}
+	runID := extractRunID(t, stdout.String())
+	paths := artifact.ForRun(home, runID)
+	store, err := state.Open(paths.DB)
+	if err != nil {
+		t.Fatalf("open state: %v", err)
+	}
+	defer store.Close()
+	attempts, err := store.AttemptsByRun(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("attempts: %v", err)
+	}
+	if len(attempts) != 1 {
+		t.Fatalf("attempts = %#v", attempts)
+	}
+	if attempts[0].Provider != "hyperbolic" || attempts[0].ProviderRef != "hyperbolic:123" {
+		t.Fatalf("attempt = %#v", attempts[0])
+	}
+	resources, err := store.ProviderResourcesByRun(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("resources: %v", err)
+	}
+	if len(resources) != 1 || resources[0].Kind != app.ProviderResourceKindInstance || resources[0].State != app.ProviderResourceStateTerminating {
+		t.Fatalf("resources = %#v", resources)
+	}
+	if fake.lastSubmit.RuntimeEnv["SWITCHBOARD_CHECKPOINT_DIR"] != "/tmp/switchboard/checkpoints" {
+		t.Fatalf("hyperbolic checkpoint env = %#v", fake.lastSubmit.RuntimeEnv)
+	}
+	if fake.lastSubmit.RuntimeEnv["SWITCHBOARD_CHECKPOINT_URI_PREFIX"] != "s3://example-bucket/switchboard/checkpoints/"+runID+"/checkpoints" {
+		t.Fatalf("hyperbolic checkpoint uri prefix = %#v", fake.lastSubmit.RuntimeEnv)
+	}
+	if fake.lastSubmit.RuntimeEnv["SWITCHBOARD_DATA_TRAIN_SET_URI"] != "s3://example-bucket/train.csv" {
+		t.Fatalf("hyperbolic data env = %#v", fake.lastSubmit.RuntimeEnv)
+	}
+	if strings.Contains(fake.lastSubmit.RuntimeEnv["SWITCHBOARD_EVENTS_PATH"], home) {
+		t.Fatalf("hyperbolic events path should not point at local artifact path: %#v", fake.lastSubmit.RuntimeEnv)
+	}
+}
+
+func TestHyperbolicTrainStagesBundledDataToS3BeforeSubmit(t *testing.T) {
+	dir := t.TempDir()
+	home := filepath.Join(dir, "home")
+	dataPath := filepath.Join(dir, "train.csv")
+	if err := os.WriteFile(dataPath, []byte("x,y\n1,2\n"), 0o600); err != nil {
+		t.Fatalf("write data: %v", err)
+	}
+	configPath := filepath.Join(dir, "switchboard.yaml")
+	configContent := fmt.Sprintf(`
+job:
+  name: hyperbolic-staged-data
+  image: ghcr.io/example/switchboard-hyperbolic-smoke:latest
+data:
+  inputs:
+    - name: train
+      source: %q
+      mount: /workspace/data/train.csv
+      mode: bundle
+staging:
+  data_uri_prefix: s3://example-bucket/staged
+hyperbolic:
+  ssh_private_key: ~/.ssh/id_ed25519
+`, dataPath)
+	if err := os.WriteFile(configPath, []byte(configContent), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	fake := &fakeHyperbolicAdapter{}
+	uploader := &fakeStagingUploader{}
+	var stdout, stderr bytes.Buffer
+	cmd := NewRootCommand(Options{
+		Stdout:          &stdout,
+		Stderr:          &stderr,
+		StagingUploader: uploader,
+		HyperbolicProviderFactory: func(cfg config.HyperbolicConfig, stdout io.Writer, stderr io.Writer) app.ProviderAdapter {
+			return fake
+		},
+	})
+	cmd.SetArgs([]string{"--home", home, "train", "--provider", "hyperbolic", "--config", configPath})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("train returned error: %v\nstdout=%s\nstderr=%s", err, stdout.String(), stderr.String())
+	}
+	runID := extractRunID(t, stdout.String())
+	wantURI := "s3://example-bucket/staged/" + runID + "/data/train/train.csv"
+	if len(uploader.destinations) != 1 || uploader.destinations[0] != wantURI {
+		t.Fatalf("staged destinations = %#v, want %s", uploader.destinations, wantURI)
+	}
+	if len(fake.lastSubmit.JobSpec.Data) != 1 || fake.lastSubmit.JobSpec.Data[0].Mode != app.DataInputModeURI || fake.lastSubmit.JobSpec.Data[0].Source != wantURI {
+		t.Fatalf("submitted data = %#v", fake.lastSubmit.JobSpec.Data)
+	}
+	if fake.lastSubmit.RuntimeEnv["SWITCHBOARD_DATA_TRAIN_URI"] != wantURI {
+		t.Fatalf("runtime env = %#v", fake.lastSubmit.RuntimeEnv)
+	}
+}
+
 func TestResourcesListAndCleanup(t *testing.T) {
 	home := filepath.Join(t.TempDir(), "home")
 	if err := artifact.EnsureHome(home); err != nil {
@@ -1802,6 +1971,54 @@ func TestRunTrainPackagesLocalScriptForLambdaWithExplicitImage(t *testing.T) {
 	}
 	if !reflect.DeepEqual(fakeLambda.lastSubmit.JobSpec.Command, []string{"python3", "train.py"}) {
 		t.Fatalf("command = %#v", fakeLambda.lastSubmit.JobSpec.Command)
+	}
+}
+
+func TestRunTrainPackagesLocalScriptForHyperbolicWithExplicitImage(t *testing.T) {
+	dir := t.TempDir()
+	contextDir := filepath.Join(dir, "context")
+	if err := os.MkdirAll(contextDir, 0o755); err != nil {
+		t.Fatalf("create context: %v", err)
+	}
+	script := filepath.Join(contextDir, "train.py")
+	if err := os.WriteFile(script, []byte("print('ok')\n"), 0o600); err != nil {
+		t.Fatalf("write script: %v", err)
+	}
+	fakeHyperbolic := &fakeHyperbolicAdapter{}
+	fakeBuilder := &fakeImageBuilder{image: "ghcr.io/example/switchboard-hyperbolic:latest"}
+	var stdout bytes.Buffer
+	code, err := runTrain(context.Background(), Options{
+		Stdout: &stdout,
+		Stderr: &bytes.Buffer{},
+		HyperbolicProviderFactory: func(cfg config.HyperbolicConfig, stdout io.Writer, stderr io.Writer) app.ProviderAdapter {
+			return fakeHyperbolic
+		},
+		ImageBuilderFactory: func(stdout io.Writer, stderr io.Writer) ImageBuilder {
+			return fakeBuilder
+		},
+	}, config.ResolvedTrainConfig{
+		Provider:        "hyperbolic",
+		SwitchboardHome: filepath.Join(dir, "home"),
+		Job:             app.JobSpec{Name: "train.py", Script: script},
+		Packaging: config.PackagingConfig{
+			Context: contextDir,
+			Image:   "ghcr.io/example/switchboard-hyperbolic:latest",
+		},
+		Hyperbolic: config.HyperbolicConfig{
+			SSHPrivateKey: "~/.ssh/id_ed25519",
+		},
+	})
+	if err != nil || code != 0 {
+		t.Fatalf("runTrain code=%d err=%v stdout=%s", code, err, stdout.String())
+	}
+	if fakeBuilder.request.Config.Image != "ghcr.io/example/switchboard-hyperbolic:latest" {
+		t.Fatalf("build request = %#v", fakeBuilder.request)
+	}
+	if fakeHyperbolic.lastSubmit.JobSpec.Image != fakeBuilder.image || fakeHyperbolic.lastSubmit.JobSpec.Script != "" {
+		t.Fatalf("submitted job = %#v", fakeHyperbolic.lastSubmit.JobSpec)
+	}
+	if !reflect.DeepEqual(fakeHyperbolic.lastSubmit.JobSpec.Command, []string{"python3", "train.py"}) {
+		t.Fatalf("command = %#v", fakeHyperbolic.lastSubmit.JobSpec.Command)
 	}
 }
 
@@ -2447,6 +2664,109 @@ func (a *fakeLambdaAdapter) StreamLogs(ctx context.Context, req app.LogStreamReq
 }
 
 func (a *fakeLambdaAdapter) Cancel(ctx context.Context, ref app.ProviderJobRef) error {
+	a.cancelRef = ref.ID
+	return nil
+}
+
+type fakeHyperbolicAdapter struct {
+	lastSubmit app.SubmitRequest
+	cancelRef  string
+	status     app.ProviderJobStatus
+}
+
+func (a *fakeHyperbolicAdapter) Name() app.ProviderName {
+	return "hyperbolic"
+}
+
+func (a *fakeHyperbolicAdapter) ValidateAuth(ctx context.Context) error {
+	return nil
+}
+
+func (a *fakeHyperbolicAdapter) Capabilities(ctx context.Context) (app.ProviderCapabilities, error) {
+	return app.ProviderCapabilities{
+		SupportsDockerImage:        true,
+		SupportedURISchemes:        []string{"http", "https", "s3", "gs"},
+		SupportedCheckpointSchemes: []string{"s3", "gs"},
+		HardwareShapes: []app.HardwareShape{{
+			ID:                "hyperbolic-ondemand-vm-1g",
+			Provider:          "hyperbolic",
+			Region:            "global",
+			MachineType:       "ondemand-vm",
+			AcceleratorType:   "H100-SXM5-80GB",
+			AcceleratorCount:  1,
+			GPUFamily:         "H100",
+			VRAMGBPerGPU:      80,
+			TotalVRAMGB:       80,
+			OnDemandHourlyUSD: 2.50,
+			SupportsOnDemand:  true,
+		}},
+	}, nil
+}
+
+func (a *fakeHyperbolicAdapter) ValidateJob(ctx context.Context, spec app.JobSpec) app.SupportReport {
+	if spec.Image == "" {
+		return app.SupportReport{Supported: false, Reasons: []string{"hyperbolic provider requires job.image"}}
+	}
+	return app.SupportReport{Supported: true}
+}
+
+func (a *fakeHyperbolicAdapter) Estimate(ctx context.Context, spec app.JobSpec) (app.CostEstimate, error) {
+	return app.CostEstimate{HourlyUSD: 2.50, Currency: "USD"}, nil
+}
+
+func (a *fakeHyperbolicAdapter) Submit(ctx context.Context, req app.SubmitRequest) (app.SubmitResult, error) {
+	a.lastSubmit = req
+	ref := "hyperbolic:123"
+	if req.OnResourceCreated != nil {
+		if err := req.OnResourceCreated(app.ProviderResource{
+			RunID:                req.RunID,
+			AttemptID:            req.AttemptID,
+			Provider:             "hyperbolic",
+			Kind:                 app.ProviderResourceKindInstance,
+			ExternalID:           "123",
+			ProviderRef:          ref,
+			State:                app.ProviderResourceStateRunning,
+			CreatedBySwitchboard: true,
+			CleanupPolicy:        app.ProviderResourceCleanupAlways,
+		}); err != nil {
+			return app.SubmitResult{}, err
+		}
+	}
+	if req.OnStarted != nil {
+		if err := req.OnStarted(app.ProviderJobRef{ID: ref}); err != nil {
+			return app.SubmitResult{}, err
+		}
+	}
+	if req.OnResourceUpdated != nil {
+		if err := req.OnResourceUpdated(app.ProviderResource{
+			RunID:                req.RunID,
+			AttemptID:            req.AttemptID,
+			Provider:             "hyperbolic",
+			Kind:                 app.ProviderResourceKindInstance,
+			ExternalID:           "123",
+			ProviderRef:          ref,
+			State:                app.ProviderResourceStateTerminating,
+			CreatedBySwitchboard: true,
+			CleanupPolicy:        app.ProviderResourceCleanupAlways,
+		}); err != nil {
+			return app.SubmitResult{}, err
+		}
+	}
+	return app.SubmitResult{ProviderJobRef: ref, ExitCode: 0, ExitReason: "completed"}, nil
+}
+
+func (a *fakeHyperbolicAdapter) GetStatus(ctx context.Context, ref app.ProviderJobRef) (app.ProviderJobStatus, error) {
+	if a.status.State != "" || a.status.ResourceState != "" {
+		return a.status, nil
+	}
+	return app.ProviderJobStatus{State: app.AttemptStateSucceeded}, nil
+}
+
+func (a *fakeHyperbolicAdapter) StreamLogs(ctx context.Context, req app.LogStreamRequest) (app.LogStream, error) {
+	return nil, errUnsupportedFakeLogs
+}
+
+func (a *fakeHyperbolicAdapter) Cancel(ctx context.Context, ref app.ProviderJobRef) error {
 	a.cancelRef = ref.ID
 	return nil
 }

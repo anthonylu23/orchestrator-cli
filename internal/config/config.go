@@ -26,6 +26,7 @@ type Config struct {
 	Mock       MockConfig       `yaml:"mock"`
 	GCP        GCPConfig        `yaml:"gcp"`
 	Lambda     LambdaConfig     `yaml:"lambda"`
+	Hyperbolic HyperbolicConfig `yaml:"hyperbolic"`
 	ChinaCloud ChinaCloudConfig `yaml:"china_cloud"`
 }
 
@@ -153,6 +154,23 @@ type LambdaConfig struct {
 	SSHReadyTimeoutSeconds int                `yaml:"ssh_ready_timeout_seconds"`
 }
 
+type HyperbolicConfig struct {
+	VMConfigID             string             `yaml:"vm_config_id"`
+	GPUCount               int                `yaml:"gpu_count"`
+	GPUType                string             `yaml:"gpu_type"`
+	SSHUser                string             `yaml:"ssh_user"`
+	SSHPrivateKey          string             `yaml:"ssh_private_key"`
+	RegistryAuth           RegistryAuthConfig `yaml:"registry_auth"`
+	PollIntervalSeconds    int                `yaml:"poll_interval_seconds"`
+	TerminateOnCompletion  *bool              `yaml:"terminate_on_completion"`
+	KeepInstanceOnFailure  bool               `yaml:"keep_instance_on_failure"`
+	APITimeoutSeconds      int                `yaml:"api_timeout_seconds"`
+	SSHConnectTimeoutSecs  int                `yaml:"ssh_connect_timeout_seconds"`
+	SSHReadyTimeoutSeconds int                `yaml:"ssh_ready_timeout_seconds"`
+	EstimateHourlyUSD      float64            `yaml:"estimate_hourly_usd"`
+	APIBaseURL             string             `yaml:"api_base_url"`
+}
+
 type RegistryAuthConfig struct {
 	Server      string `yaml:"server"`
 	UsernameEnv string `yaml:"username_env"`
@@ -232,6 +250,7 @@ type ResolvedTrainConfig struct {
 	Mock                      MockConfig
 	GCP                       GCPConfig
 	Lambda                    LambdaConfig
+	Hyperbolic                HyperbolicConfig
 	ChinaCloud                ChinaCloudConfig
 	BundleMaxSizeBytes        int64
 	RequireOverrideAboveLimit bool
@@ -300,6 +319,7 @@ func LoadTrain(flags TrainFlags) (ResolvedTrainConfig, error) {
 		cfg.Packaging = resolvePackagingPaths(cfg.Packaging, configDir)
 		cfg.Sizing = resolveSizingPaths(cfg.Sizing, configDir)
 		cfg.Lambda = resolveLambdaPaths(cfg.Lambda, configDir)
+		cfg.Hyperbolic = resolveHyperbolicPaths(cfg.Hyperbolic, configDir)
 		cfg.ChinaCloud = resolveChinaCloudPaths(cfg.ChinaCloud, configDir)
 	}
 
@@ -328,12 +348,13 @@ func LoadTrain(flags TrainFlags) (ResolvedTrainConfig, error) {
 		Mock:                      cfg.Mock,
 		GCP:                       resolveGCP(cfg.GCP),
 		Lambda:                    resolveLambda(cfg.Lambda),
+		Hyperbolic:                resolveHyperbolic(cfg.Hyperbolic),
 		ChinaCloud:                resolveChinaCloud(cfg.ChinaCloud),
 		BundleMaxSizeBytes:        int64(maxSizeMB) * 1024 * 1024,
 		RequireOverrideAboveLimit: requireOverride,
 		AllowLargeDataBundle:      flags.AllowLargeDataBundle,
 		SwitchboardHome:           resolvedHome,
-	}, validateResolvedConfig(provider, job, cfg.Staging, resolvePackaging(cfg.Packaging), resolveGCP(cfg.GCP), resolveLambda(cfg.Lambda), resolveChinaCloud(cfg.ChinaCloud))
+	}, validateResolvedConfig(provider, job, cfg.Staging, resolvePackaging(cfg.Packaging), resolveGCP(cfg.GCP), resolveLambda(cfg.Lambda), resolveHyperbolic(cfg.Hyperbolic), resolveChinaCloud(cfg.ChinaCloud))
 }
 
 func resolvePackaging(packaging PackagingConfig) PackagingConfig {
@@ -375,6 +396,17 @@ func resolveLambdaPaths(lambda LambdaConfig, baseDir string) LambdaConfig {
 	}
 	lambda.SSHPrivateKey = resolveLocalPath(lambda.SSHPrivateKey, baseDir)
 	return lambda
+}
+
+func resolveHyperbolicPaths(hyperbolic HyperbolicConfig, baseDir string) HyperbolicConfig {
+	if strings.HasPrefix(hyperbolic.SSHPrivateKey, "~/") {
+		if homeDir, err := os.UserHomeDir(); err == nil {
+			hyperbolic.SSHPrivateKey = filepath.Join(homeDir, strings.TrimPrefix(hyperbolic.SSHPrivateKey, "~/"))
+		}
+		return hyperbolic
+	}
+	hyperbolic.SSHPrivateKey = resolveLocalPath(hyperbolic.SSHPrivateKey, baseDir)
+	return hyperbolic
 }
 
 func resolveChinaCloudPaths(china ChinaCloudConfig, baseDir string) ChinaCloudConfig {
@@ -460,6 +492,38 @@ func resolveLambda(lambda LambdaConfig) LambdaConfig {
 		lambda.SSHReadyTimeoutSeconds = 600
 	}
 	return lambda
+}
+
+func resolveHyperbolic(hyperbolic HyperbolicConfig) HyperbolicConfig {
+	if hyperbolic.VMConfigID == "" {
+		hyperbolic.VMConfigID = "c6fd6253-cbb6-4ea8-a20c-47644b431f1c"
+	}
+	if hyperbolic.GPUCount == 0 {
+		hyperbolic.GPUCount = 1
+	}
+	if hyperbolic.GPUType == "" {
+		hyperbolic.GPUType = "H100-SXM5-80GB"
+	}
+	if hyperbolic.SSHUser == "" {
+		hyperbolic.SSHUser = "ubuntu"
+	}
+	if hyperbolic.PollIntervalSeconds == 0 {
+		hyperbolic.PollIntervalSeconds = 30
+	}
+	if hyperbolic.TerminateOnCompletion == nil {
+		defaultTerminate := true
+		hyperbolic.TerminateOnCompletion = &defaultTerminate
+	}
+	if hyperbolic.APITimeoutSeconds == 0 {
+		hyperbolic.APITimeoutSeconds = 30
+	}
+	if hyperbolic.SSHConnectTimeoutSecs == 0 {
+		hyperbolic.SSHConnectTimeoutSecs = 10
+	}
+	if hyperbolic.SSHReadyTimeoutSeconds == 0 {
+		hyperbolic.SSHReadyTimeoutSeconds = 600
+	}
+	return hyperbolic
 }
 
 func resolveChinaCloud(china ChinaCloudConfig) ChinaCloudConfig {
@@ -568,11 +632,11 @@ func resolveChinaCloudProvider(provider ChinaCloudProviderConfig) ChinaCloudProv
 	return provider
 }
 
-func validateResolvedConfig(provider string, job app.JobSpec, staging StagingConfig, packaging PackagingConfig, gcp GCPConfig, lambda LambdaConfig, china ChinaCloudConfig) error {
+func validateResolvedConfig(provider string, job app.JobSpec, staging StagingConfig, packaging PackagingConfig, gcp GCPConfig, lambda LambdaConfig, hyperbolic HyperbolicConfig, china ChinaCloudConfig) error {
 	if err := validateStagingConfig(staging); err != nil {
 		return err
 	}
-	return validateProviderConfig(provider, job, packaging, gcp, lambda, china)
+	return validateProviderConfig(provider, job, packaging, gcp, lambda, hyperbolic, china)
 }
 
 func validateStagingConfig(staging StagingConfig) error {
@@ -596,12 +660,14 @@ func validateStagingConfig(staging StagingConfig) error {
 	return nil
 }
 
-func validateProviderConfig(provider string, job app.JobSpec, packaging PackagingConfig, gcp GCPConfig, lambda LambdaConfig, china ChinaCloudConfig) error {
+func validateProviderConfig(provider string, job app.JobSpec, packaging PackagingConfig, gcp GCPConfig, lambda LambdaConfig, hyperbolic HyperbolicConfig, china ChinaCloudConfig) error {
 	switch provider {
 	case "gcp":
 		return validateGCPConfig(job, packaging, gcp)
 	case "lambda":
 		return validateLambdaConfig(job, packaging, lambda)
+	case "hyperbolic":
+		return validateHyperbolicConfig(job, packaging, hyperbolic)
 	case "alibaba-cloud":
 		return validateChinaCloudConfig(provider, job, china.AlibabaCloud)
 	case "huawei-cloud":
@@ -657,27 +723,59 @@ func validateLambdaConfig(job app.JobSpec, packaging PackagingConfig, lambda Lam
 	if lambda.SSHPrivateKey == "" {
 		reasons = append(reasons, "lambda.ssh_private_key is required")
 	}
-	if lambda.RegistryAuth.Server != "" || lambda.RegistryAuth.UsernameEnv != "" || lambda.RegistryAuth.PasswordEnv != "" {
-		if lambda.RegistryAuth.Server == "" {
-			reasons = append(reasons, "lambda.registry_auth.server is required when registry auth is configured")
-		}
-		if lambda.RegistryAuth.UsernameEnv == "" {
-			reasons = append(reasons, "lambda.registry_auth.username_env is required when registry auth is configured")
-		}
-		if lambda.RegistryAuth.PasswordEnv == "" {
-			reasons = append(reasons, "lambda.registry_auth.password_env is required when registry auth is configured")
-		}
-		if lambda.RegistryAuth.UsernameEnv != "" && os.Getenv(lambda.RegistryAuth.UsernameEnv) == "" {
-			reasons = append(reasons, fmt.Sprintf("lambda.registry_auth.username_env %s is empty or unset", lambda.RegistryAuth.UsernameEnv))
-		}
-		if lambda.RegistryAuth.PasswordEnv != "" && os.Getenv(lambda.RegistryAuth.PasswordEnv) == "" {
-			reasons = append(reasons, fmt.Sprintf("lambda.registry_auth.password_env %s is empty or unset", lambda.RegistryAuth.PasswordEnv))
-		}
-	}
+	reasons = append(reasons, validateRegistryAuthConfig("lambda", lambda.RegistryAuth)...)
 	if len(reasons) > 0 {
 		return errors.New(strings.Join(reasons, "; "))
 	}
 	return nil
+}
+
+func validateHyperbolicConfig(job app.JobSpec, packaging PackagingConfig, hyperbolic HyperbolicConfig) error {
+	var reasons []string
+	if job.Image == "" && !canPackageWithExplicitImage(job, packaging) {
+		reasons = append(reasons, "hyperbolic provider requires job.image or packaging.image for job.script")
+	}
+	if job.Script != "" && !canPackageWithExplicitImage(job, packaging) {
+		reasons = append(reasons, "hyperbolic provider v1 does not package local scripts; provide job.image")
+	}
+	if hyperbolic.VMConfigID == "" {
+		reasons = append(reasons, "hyperbolic.vm_config_id is required")
+	}
+	if hyperbolic.GPUCount <= 0 {
+		reasons = append(reasons, "hyperbolic.gpu_count must be greater than 0")
+	}
+	if hyperbolic.SSHPrivateKey == "" {
+		reasons = append(reasons, "hyperbolic.ssh_private_key is required")
+	}
+	reasons = append(reasons, validateRegistryAuthConfig("hyperbolic", hyperbolic.RegistryAuth)...)
+	if len(reasons) > 0 {
+		return errors.New(strings.Join(reasons, "; "))
+	}
+	return nil
+}
+
+func validateRegistryAuthConfig(provider string, auth RegistryAuthConfig) []string {
+	if auth.Server == "" && auth.UsernameEnv == "" && auth.PasswordEnv == "" {
+		return nil
+	}
+	var reasons []string
+	prefix := provider + ".registry_auth"
+	if auth.Server == "" {
+		reasons = append(reasons, prefix+".server is required when registry auth is configured")
+	}
+	if auth.UsernameEnv == "" {
+		reasons = append(reasons, prefix+".username_env is required when registry auth is configured")
+	}
+	if auth.PasswordEnv == "" {
+		reasons = append(reasons, prefix+".password_env is required when registry auth is configured")
+	}
+	if auth.UsernameEnv != "" && os.Getenv(auth.UsernameEnv) == "" {
+		reasons = append(reasons, fmt.Sprintf("%s.username_env %s is empty or unset", prefix, auth.UsernameEnv))
+	}
+	if auth.PasswordEnv != "" && os.Getenv(auth.PasswordEnv) == "" {
+		reasons = append(reasons, fmt.Sprintf("%s.password_env %s is empty or unset", prefix, auth.PasswordEnv))
+	}
+	return reasons
 }
 
 func validateChinaCloudConfig(provider string, job app.JobSpec, cfg ChinaCloudProviderConfig) error {

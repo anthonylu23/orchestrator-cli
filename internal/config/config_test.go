@@ -277,6 +277,54 @@ lambda:
 	}
 }
 
+func TestLoadTrainAcceptsHyperbolicImageJob(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("GHCR_USER", "switchboard")
+	t.Setenv("GHCR_TOKEN", "registry-secret-token")
+	configPath := filepath.Join(dir, "switchboard.yaml")
+	content := []byte(`
+job:
+  name: hyperbolic-container
+  image: ghcr.io/example/switchboard-hyperbolic-smoke:latest
+  command: ["python", "/app/train.py"]
+staging:
+  checkpoint_uri_prefix: s3://switchboard-smoke/checkpoints
+  data_uri_prefix: s3://switchboard-smoke/data
+hyperbolic:
+  gpu_count: 2
+  gpu_type: H100-SXM5-80GB
+  ssh_private_key: keys/hyperbolic.pem
+  registry_auth:
+    server: ghcr.io
+    username_env: GHCR_USER
+    password_env: GHCR_TOKEN
+`)
+	if err := os.MkdirAll(filepath.Join(dir, "keys"), 0o755); err != nil {
+		t.Fatalf("mkdir keys: %v", err)
+	}
+	if err := os.WriteFile(configPath, content, 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	got, err := LoadTrain(TrainFlags{
+		ConfigPath:      configPath,
+		Provider:        "hyperbolic",
+		SwitchboardHome: filepath.Join(dir, "home"),
+	})
+	if err != nil {
+		t.Fatalf("LoadTrain returned error: %v", err)
+	}
+	if got.Job.Image != "ghcr.io/example/switchboard-hyperbolic-smoke:latest" || got.Hyperbolic.GPUCount != 2 || got.Hyperbolic.SSHUser != "ubuntu" {
+		t.Fatalf("resolved = %#v", got)
+	}
+	if got.Hyperbolic.SSHPrivateKey != filepath.Join(dir, "keys", "hyperbolic.pem") {
+		t.Fatalf("ssh private key = %q", got.Hyperbolic.SSHPrivateKey)
+	}
+	if got.Hyperbolic.TerminateOnCompletion == nil || !*got.Hyperbolic.TerminateOnCompletion || got.Hyperbolic.SSHReadyTimeoutSeconds != 600 {
+		t.Fatalf("hyperbolic defaults = %#v", got.Hyperbolic)
+	}
+}
+
 func TestLoadTrainRejectsInvalidStagingPrefix(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "switchboard.yaml")
@@ -336,6 +384,39 @@ lambda:
 	}
 }
 
+func TestLoadTrainRejectsMissingHyperbolicRegistryAuthEnv(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "switchboard.yaml")
+	content := []byte(`
+job:
+  name: hyperbolic-container
+  image: ghcr.io/example/switchboard-hyperbolic-smoke:latest
+hyperbolic:
+  ssh_private_key: ~/.ssh/id_ed25519
+  registry_auth:
+    server: ghcr.io
+    username_env: MISSING_GHCR_USER
+    password_env: MISSING_GHCR_TOKEN
+`)
+	if err := os.WriteFile(configPath, content, 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	_, err := LoadTrain(TrainFlags{
+		ConfigPath:      configPath,
+		Provider:        "hyperbolic",
+		SwitchboardHome: filepath.Join(dir, "home"),
+	})
+	if err == nil {
+		t.Fatal("expected registry auth validation error")
+	}
+	for _, want := range []string{"MISSING_GHCR_USER is empty or unset", "MISSING_GHCR_TOKEN is empty or unset"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("expected %q in error: %v", want, err)
+		}
+	}
+}
+
 func TestLoadTrainRequiresLambdaImageAndFields(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "switchboard.yaml")
@@ -352,6 +433,28 @@ func TestLoadTrainRequiresLambdaImageAndFields(t *testing.T) {
 		t.Fatal("expected lambda validation error")
 	}
 	for _, want := range []string{"lambda provider requires job.image", "lambda provider v1 does not package local scripts", "lambda.region_name is required", "lambda.ssh_private_key is required"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("expected %q in error: %v", want, err)
+		}
+	}
+}
+
+func TestLoadTrainRequiresHyperbolicImageAndFields(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "switchboard.yaml")
+	if err := os.WriteFile(configPath, []byte("job:\n  script: train.py\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	_, err := LoadTrain(TrainFlags{
+		ConfigPath:      configPath,
+		Provider:        "hyperbolic",
+		SwitchboardHome: filepath.Join(dir, "home"),
+	})
+	if err == nil {
+		t.Fatal("expected hyperbolic validation error")
+	}
+	for _, want := range []string{"hyperbolic provider requires job.image", "hyperbolic provider v1 does not package local scripts", "hyperbolic.ssh_private_key is required"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("expected %q in error: %v", want, err)
 		}
@@ -528,6 +631,39 @@ lambda:
 		t.Fatalf("job = %#v", got.Job)
 	}
 	if got.Packaging.Image != "ghcr.io/example/switchboard-lambda:latest" || got.Packaging.Dockerfile != filepath.Join(dir, "Dockerfile") {
+		t.Fatalf("packaging = %#v", got.Packaging)
+	}
+}
+
+func TestLoadTrainAcceptsHyperbolicPackagingWithExplicitImage(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "switchboard.yaml")
+	content := []byte(`
+job:
+  script: train.py
+packaging:
+  image: ghcr.io/example/switchboard-hyperbolic:latest
+  dockerfile: Dockerfile
+  context: .
+hyperbolic:
+  ssh_private_key: ~/.ssh/id_ed25519
+`)
+	if err := os.WriteFile(configPath, content, 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	got, err := LoadTrain(TrainFlags{
+		ConfigPath:      configPath,
+		Provider:        "hyperbolic",
+		SwitchboardHome: filepath.Join(dir, "home"),
+	})
+	if err != nil {
+		t.Fatalf("LoadTrain returned error: %v", err)
+	}
+	if got.Job.Script != filepath.Join(dir, "train.py") || got.Job.Image != "" {
+		t.Fatalf("job = %#v", got.Job)
+	}
+	if got.Packaging.Image != "ghcr.io/example/switchboard-hyperbolic:latest" || got.Packaging.Dockerfile != filepath.Join(dir, "Dockerfile") {
 		t.Fatalf("packaging = %#v", got.Packaging)
 	}
 }
