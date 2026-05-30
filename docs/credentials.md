@@ -38,6 +38,7 @@ Set a credential from an environment variable:
 
 ```sh
 switchboard-cli credentials set lambda api-key --from-env LAMBDA_API_KEY
+switchboard-cli credentials set hyperbolic api-key --from-env HYPERBOLIC_API_KEY
 ```
 
 Set a credential from stdin:
@@ -81,6 +82,8 @@ Providers resolve credentials in this order:
 4. Actionable auth error.
 
 Lambda resolves API auth only from encrypted `lambda/api_key`.
+
+Hyperbolic resolves API auth from `HYPERBOLIC_API_KEY` first, then encrypted `hyperbolic/api_key`.
 
 China VM providers accept environment variables for CI/live smoke and canonical encrypted-store keys for local use:
 

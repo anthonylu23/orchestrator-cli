@@ -42,7 +42,7 @@ Core entities:
 
 1. `Run`: job spec, desired state, current state, timestamps, and final outcome.
 2. `Attempt`: provider name, provider job reference, attempt state, resume checkpoint URI/step, cost estimate, and exit reason.
-3. `ProviderResource`: provider-created external resource linked to an attempt, such as a GCP CustomJob or Lambda instance, with provider ref, state, region/project/account, cleanup policy, and metadata.
+3. `ProviderResource`: provider-created external resource linked to an attempt, such as a GCP CustomJob, Lambda instance, or Hyperbolic VM, with provider ref, state, region/project/account, cleanup policy, and metadata.
 4. `Event`: structured metric, checkpoint, status, and log payloads linked to a run and attempt.
 5. `Summary`: derived final metrics, best metrics, runtime, checkpoint count, resume count, provider attempts, routing decision, and exit reason.
 
@@ -136,9 +136,9 @@ type ProviderResource struct {
 Current resource kinds:
 
 1. `custom_job`: a GCP Vertex AI CustomJob. Cleanup policy is `never`; lifecycle control is cancellation, not deletion.
-2. `instance`: a Lambda Cloud instance. Cleanup policy is derived from `terminate_on_completion` and `keep_instance_on_failure`.
+2. `instance`: a Lambda Cloud instance or Hyperbolic On-Demand VM. Cleanup policy is derived from `terminate_on_completion` and `keep_instance_on_failure`.
 
-Providers call `OnResourceCreated` immediately after the external resource exists and `OnResourceUpdated` when observed state changes. The orchestration layer persists those records in SQLite and exposes them through `switchboard-cli resources list`. `switchboard-cli resources refresh` asks GCP or Lambda for current status and updates tracked resource state without creating or cleaning anything. `switchboard-cli resources cleanup` requests provider cleanup only for tracked, active, Switchboard-created resources whose cleanup policy is not `never`.
+Providers call `OnResourceCreated` immediately after the external resource exists and `OnResourceUpdated` when observed state changes. The orchestration layer persists those records in SQLite and exposes them through `switchboard-cli resources list`. `switchboard-cli resources refresh` asks GCP, Lambda, or Hyperbolic for current status and updates tracked resource state without creating or cleaning anything. `switchboard-cli resources cleanup` requests provider cleanup only for tracked, active, Switchboard-created resources whose cleanup policy is not `never`.
 
 ## Provider Capabilities and Errors
 
@@ -253,7 +253,7 @@ type RuntimeBundle struct {
 }
 ```
 
-Local execution may run scripts directly. Cloud execution uses images. For GCP, the CLI can build and push a Docker image before submit when `job.script` and `packaging` are configured, then hand an image job to the provider adapter. For Lambda, the adapter launches an on-demand instance, uses cloud-init to run a prebuilt Docker image, and collects logs/events from remote `/tmp/switchboard` files over SSH.
+Local execution may run scripts directly. Cloud execution uses images. For GCP, the CLI can build and push a Docker image before submit when `job.script` and `packaging` are configured, then hand an image job to the provider adapter. For Lambda, the adapter launches an on-demand instance, uses cloud-init to run a prebuilt Docker image, and collects logs/events from remote `/tmp/switchboard` files over SSH. For Hyperbolic, the adapter rents an On-Demand VM, uploads a runner script over SSH, runs a prebuilt Docker image, and collects logs/events from the same remote `/tmp/switchboard` files.
 
 The local provider materializes bundled data into the workspace and executes the script from that workspace. The mock provider simulates data preparation, URI fetch success, configured logs/events, and retryable failures. Future cloud providers can upload bundled data to staging storage or use provider-native transfer behavior.
 
@@ -275,9 +275,9 @@ Artifacts:
 ~/.switchboard-cli/runs/<run-id>/workspace/
 ```
 
-Remote providers use remote-safe runtime paths rather than local artifact paths. GCP and Lambda jobs receive `/tmp/switchboard/checkpoints` and `/tmp/switchboard/events.jsonl`; provider adapters are responsible for mirroring remote logs and structured events back into local run artifacts. When configured, shared staging env vars expose `s3://` or `gs://` checkpoint/data prefixes and name-scoped URI data inputs to the container. Managed object-store staging can also transform bundled inputs into URI inputs before submit; containers still own object-store download/materialization. Images can include `runtime/container/switchboard_materialize_data.py` to perform that download step consistently before the training command starts.
+Remote providers use remote-safe runtime paths rather than local artifact paths. GCP, Lambda, and Hyperbolic jobs receive `/tmp/switchboard/checkpoints` and `/tmp/switchboard/events.jsonl`; provider adapters are responsible for mirroring remote logs and structured events back into local run artifacts. When configured, shared staging env vars expose `s3://` or `gs://` checkpoint/data prefixes and name-scoped URI data inputs to the container. Managed object-store staging can also transform bundled inputs into URI inputs before submit; containers still own object-store download/materialization. Images can include `runtime/container/switchboard_materialize_data.py` to perform that download step consistently before the training command starts.
 
-Provider adapters are also responsible for reporting external resource lifecycle transitions through the submit callbacks. GCP records CustomJobs as running/succeeded/failed/canceled. Lambda records instances as booting/running/failed/terminating based on launch, poll, remote execution, and cleanup behavior. Lambda can perform a private registry `docker login` before pull from env-var-backed config; registry secrets are redacted from local artifacts but launch user data remains provider-side sensitive metadata.
+Provider adapters are also responsible for reporting external resource lifecycle transitions through the submit callbacks. GCP records CustomJobs as running/succeeded/failed/canceled. Lambda and Hyperbolic record instances as booting/running/failed/terminating based on launch or rent, poll, remote execution, and cleanup behavior. Lambda and Hyperbolic can perform a private registry `docker login` before pull from env-var-backed config; registry secrets are redacted from local artifacts but the provider-side launch metadata or uploaded runner script should still be treated as sensitive.
 
 ## Data Failure Behavior
 

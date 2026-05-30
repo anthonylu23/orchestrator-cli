@@ -188,7 +188,35 @@ Next steps:
 4. Decide whether retained Lambda instances should support explicit adoption/reuse beyond refresh.
 5. Decide whether Lambda filesystems should become first-class staging or checkpoint backends.
 
-## Phase 7 - China Cloud VM Readiness
+## Phase 7 - Hyperbolic On-Demand VM Adapter
+
+Status: code-ready and fake-backed. The adapter can be configured as `provider=hyperbolic`, validates image-first jobs, can receive packageable scripts from the shared Docker build/push layer when `packaging.image` is explicit, discovers VM option GPU counts and prices through the Hyperbolic API when available, rents one On-Demand VM, optionally logs into a private registry from env-var-backed config, runs a Docker image over SSH, collects logs/events over SSH, records run artifacts, resolves Hyperbolic API keys from `HYPERBOLIC_API_KEY` or the encrypted local credential store, persists VM resource lifecycle records, and terminates the VM by default. Live auth and submit smokes are pending.
+
+Goals:
+
+1. Validate Hyperbolic API auth with encrypted `hyperbolic/api_key` or `HYPERBOLIC_API_KEY`.
+2. Map On-Demand VM options into provider capabilities.
+3. Rent one Hyperbolic On-Demand VM for a prebuilt container-image job.
+4. Collect `/tmp/switchboard/logs.txt`, `/tmp/switchboard/events.jsonl`, and `/tmp/switchboard/exit.json` over SSH.
+5. Terminate successful smoke VMs automatically and support keeping failed VMs for debugging.
+
+Exit criteria:
+
+1. A smoke job can run on real Hyperbolic infrastructure through `switchboard-cli train --provider hyperbolic`.
+2. The run produces SQLite state, `logs.txt`, `events.jsonl`, and `summary.json`.
+3. The test VM is terminated after successful completion.
+4. Hyperbolic VM resources are visible through `switchboard-cli resources list`.
+5. Hyperbolic behavior passes fake-backed provider contract checks.
+6. Current limits and live-smoke workflow are documented in [Hyperbolic Provider](hyperbolic-provider.md).
+
+Next steps:
+
+1. Run live auth and submit smoke tests against a short-lived Hyperbolic VM.
+2. Confirm live VM metadata shape for public IP, SSH command, status values, and rental IDs.
+3. Add richer hardware/capacity mapping if stable option metadata is available.
+4. Add provider-native registry secret handling if Hyperbolic exposes a safer path than uploaded runner scripts.
+
+## Phase 8 - China Cloud VM Readiness
 
 Status: readiness provider adapters and config-gated VM + Docker execution paths are implemented for `alibaba-cloud`, `huawei-cloud`, `tencent-cloud`, `tianyi-cloud`, and `baidu-ai-cloud`. Live VM verification is pending a China colleague smoke and must not be marked complete yet.
 
@@ -225,8 +253,8 @@ Next steps:
 
 ## Later Phases
 
-1. Add Hyperbolic and/or RunPod adapters after the Lambda live smoke is stable and their create/status/log/cancel/pricing API shape is verified.
-2. Promote China cloud VM adapters from code-ready to live-supported after colleague smoke evidence exists.
+1. Add RunPod after its create/status/log/cancel/pricing API shape is verified.
+2. Promote Hyperbolic and China cloud VM adapters from code-ready to live-supported after smoke evidence exists.
 3. Extend provider-specific object-store examples after the corresponding providers are live verified.
 4. Add multi-node and distributed training topology after single-node auto hardware proves useful.
 5. Add basic experiment fan-out.
@@ -255,5 +283,5 @@ The initial two-week milestone is not three-provider cloud coverage. It is a pol
 5. Routing: cheapest eligible provider by default; fastest-within-budget provider and hardware selection under declared sizing, budget, and data requirements when hardware routing is active.
 6. Failure handling: retryable provider failures trigger alternate attempts.
 7. Resume: latest checkpoint is passed through `SubmitRequest.ResumeFrom` only when the selected provider supports the checkpoint URI scheme.
-8. Provider resources: GCP CustomJobs and Lambda instances are tracked separately from attempts and can be inspected after a run.
+8. Provider resources: GCP CustomJobs, Lambda instances, and Hyperbolic VMs are tracked separately from attempts and can be inspected after a run.
 9. Provider contract: local, mock, and future real providers satisfy the same core expectations.

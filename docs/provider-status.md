@@ -9,6 +9,7 @@ This project is pre-alpha. Provider labels describe the current repository state
 | `mock-lambda` | Test execution | Test-only | Yes | Used for deterministic routing, failover, checkpoint, and summary behavior. Not a real cloud provider. |
 | `gcp` | Execution | First provider milestone | Yes | Submits Vertex AI CustomJobs from container images, supports managed Docker build/push before submit, reads logs, tracks CustomJob resources, and supports GCS checkpoint URIs. |
 | `lambda` | Execution | Initial adapter milestone | Yes | Launches one Lambda Cloud instance, supports optional private registry login, runs an image through cloud-init, collects logs/events over SSH, tracks instance resources, and terminates by default. |
+| `hyperbolic` | Execution | Code-ready provider | No | Targets Hyperbolic On-Demand VMs, supports optional private registry login, runs a Docker image over SSH, collects logs/events over SSH, tracks VM resources, and terminates by default; live verification is pending. |
 | `alibaba-cloud` | China VM | Code-ready provider | Pending China smoke | Config-gated ECS VM + Docker execution path is implemented and fake-backed; not live verified. |
 | `huawei-cloud` | China VM | Code-ready provider | Pending China smoke | Config-gated ECS VM + Docker execution path is implemented and fake-backed; Huawei async job behavior still needs live confirmation. |
 | `tencent-cloud` | China VM | Code-ready provider | Pending China smoke | Config-gated CVM VM + Docker execution path is implemented and fake-backed; not live verified. |

@@ -18,7 +18,7 @@ Run a training job through one CLI, materialize its data inputs consistently, ch
 
 "Given my script, data, sizing profile, and budget, choose compatible provider and GPU hardware, run the job, and resume if execution fails."
 
-The first implementation proves the lifecycle through local and mock providers, then GCP and Lambda as real cloud APIs. The current product layer adds side-effect-free planning, managed image packaging for GCP script jobs, first-pass auto hardware routing, object-storage staging env contracts, a shared container data materializer, and provider resource tracking for execution resources such as Vertex CustomJobs and Lambda instances.
+The first implementation proves the lifecycle through local and mock providers, then GCP and Lambda as real cloud APIs. The current product layer adds side-effect-free planning, managed image packaging for GCP script jobs, explicit-image packaging for Lambda and Hyperbolic script jobs, first-pass auto hardware routing, object-storage staging env contracts, a shared container data materializer, and provider resource tracking for execution resources such as Vertex CustomJobs, Lambda instances, and Hyperbolic VMs.
 
 ## Differentiation
 
@@ -42,6 +42,7 @@ The first implementation proves the lifecycle through local and mock providers, 
 9. GCP as the first real provider after local/mock behavior is proven.
 10. First-pass auto hardware routing after provider/hardware capability reporting exists.
 11. Lambda Cloud single-instance execution with tracked cleanup lifecycle.
+12. Hyperbolic On-Demand VM execution with tracked cleanup lifecycle, pending live verification.
 12. Shared `s3://`/`gs://` staging env vars for checkpoint prefixes, data prefixes, and declared URI inputs.
 13. `plan` preflight for routing, cost, staging, packaging, and checkpoint compatibility without submit/build/push/upload side effects.
 

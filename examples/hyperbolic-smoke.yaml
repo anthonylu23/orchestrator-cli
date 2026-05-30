@@ -1,0 +1,17 @@
+job:
+  name: hyperbolic-smoke
+  image: ghcr.io/<owner>/switchboard-hyperbolic-smoke:latest
+  command: ["python", "/app/train.py"]
+  args: ["--epochs", "1"]
+
+staging:
+  checkpoint_uri_prefix: s3://<bucket>/switchboard/checkpoints
+  data_uri_prefix: s3://<bucket>/switchboard/data
+
+hyperbolic:
+  gpu_count: 1
+  gpu_type: H100-SXM5-80GB
+  ssh_user: ubuntu
+  ssh_private_key: ~/.ssh/id_ed25519
+  terminate_on_completion: true
+  keep_instance_on_failure: false

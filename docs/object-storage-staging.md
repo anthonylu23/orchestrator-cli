@@ -76,7 +76,7 @@ SWITCHBOARD_DATA_TRAIN_SET_URI=s3://my-bucket/datasets/train.csv
 SWITCHBOARD_DATA_TRAIN_SET_MOUNT=/workspace/data/train.csv
 ```
 
-Cloud providers still differ in how they make data available. GCP validates `gs://` inputs and leaves reads to the container. Lambda passes URI inputs and staging env vars to the container. Local bundled data still uses the workspace materialization path.
+Cloud providers still differ in how they make data available. GCP validates `gs://` inputs and leaves reads to the container. Lambda and Hyperbolic pass URI inputs and staging env vars to the container. Local bundled data still uses the workspace materialization path.
 
 Image-based jobs can include the shared helper at `runtime/container/switchboard_materialize_data.py`:
 
@@ -95,7 +95,7 @@ Training code should upload checkpoints to `SWITCHBOARD_CHECKPOINT_URI_PREFIX` a
 {"type":"checkpoint","step":100,"checkpoint_uri":"s3://my-bucket/switchboard/checkpoints/r_123/checkpoints/step-100.pt"}
 ```
 
-Provider failover can only resume from checkpoint schemes supported by the next provider. Lambda advertises `s3://` and `gs://`; GCP advertises `gs://`.
+Provider failover can only resume from checkpoint schemes supported by the next provider. Lambda and Hyperbolic advertise `s3://` and `gs://`; GCP advertises `gs://`.
 
 ## Current Limits
 
