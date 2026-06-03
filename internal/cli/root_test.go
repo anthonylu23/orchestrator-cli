@@ -524,21 +524,19 @@ func TestCancelRunningLocalRun(t *testing.T) {
 	}()
 
 	runID := waitForRunID(t, home)
+	waitForText(t, trainStdout, "slow start")
 	followStdout := &lockedBuffer{}
 	followCtx, cancelFollow := context.WithCancel(context.Background())
 	defer cancelFollow()
 	followCmd := NewRootCommand(Options{Stdout: followStdout, Stderr: &bytes.Buffer{}})
 	followCmd.SetContext(followCtx)
 	followCmd.SetArgs([]string{"--home", home, "logs", runID, "--follow"})
-	var followWG sync.WaitGroup
-	followWG.Add(1)
-	var followErr error
+	followDone := make(chan error, 1)
 	go func() {
-		defer followWG.Done()
-		followErr = followCmd.Execute()
+		followDone <- followCmd.Execute()
 	}()
 
-	waitForText(t, followStdout, "slow start")
+	waitForTextBeforeDone(t, followStdout, "slow start", followDone)
 	var cancelStdout bytes.Buffer
 	cancelCmd := NewRootCommand(Options{Stdout: &cancelStdout, Stderr: &bytes.Buffer{}})
 	cancelCmd.SetArgs([]string{"--home", home, "cancel", runID})
@@ -547,7 +545,7 @@ func TestCancelRunningLocalRun(t *testing.T) {
 	}
 	wg.Wait()
 	cancelFollow()
-	followWG.Wait()
+	followErr := <-followDone
 	if followErr != nil && !errors.Is(followErr, context.Canceled) {
 		t.Fatalf("logs follow returned error: %v", followErr)
 	}
@@ -2349,15 +2347,53 @@ func waitForRunID(t *testing.T, home string) string {
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		entries, _ := os.ReadDir(filepath.Join(home, "runs"))
+		dbPath := artifact.DBPath(home)
+		if _, err := os.Stat(dbPath); err != nil {
+			time.Sleep(25 * time.Millisecond)
+			continue
+		}
+		store, err := state.Open(dbPath)
+		if err != nil {
+			time.Sleep(25 * time.Millisecond)
+			continue
+		}
 		for _, entry := range entries {
-			if entry.IsDir() && strings.HasPrefix(entry.Name(), "r_") {
+			if !entry.IsDir() || !strings.HasPrefix(entry.Name(), "r_") {
+				continue
+			}
+			if _, err := store.GetRun(context.Background(), entry.Name()); err == nil {
+				_ = store.Close()
 				return entry.Name()
 			}
 		}
+		_ = store.Close()
 		time.Sleep(25 * time.Millisecond)
 	}
-	t.Fatal("run id not created")
+	t.Fatal("run record not created")
 	return ""
+}
+
+func waitForTextBeforeDone(t *testing.T, buf interface{ String() string }, text string, done <-chan error) {
+	t.Helper()
+	deadline := time.NewTimer(5 * time.Second)
+	defer deadline.Stop()
+	ticker := time.NewTicker(25 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if strings.Contains(buf.String(), text) {
+			return
+		}
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("%q not found before command exited with error %v; output = %q", text, err, buf.String())
+			}
+			t.Fatalf("%q not found before command exited; output = %q", text, buf.String())
+		case <-ticker.C:
+		case <-deadline.C:
+			t.Fatalf("%q not found in %q", text, buf.String())
+		}
+	}
 }
 
 func waitForText(t *testing.T, buf interface{ String() string }, text string) {
